@@ -2,7 +2,7 @@
 
 本文是第一版开发说明书，整理自原始 README 与需求澄清 Q1–Q25。业务规则以本文为准；领域术语见 [CONTEXT.md](CONTEXT.md)。确认日期：2026-10-14。
 
-第一版代码已实现。启动步骤见 [运行指南](docs/RUNNING.md)，开发与测试命令见 [开发指南](docs/DEVELOPMENT.md)，实际验证范围见 [测试报告](docs/TESTING.md)。下文保留业务规范与验收要求。
+第一版代码已实现。Windows 用户可通过 Actions 下载预构建 Docker Desktop 安装包，见 [Windows 安装说明](docs/WINDOWS.md)。启动步骤见 [运行指南](docs/RUNNING.md)，开发与测试命令见 [开发指南](docs/DEVELOPMENT.md)，实际验证范围见 [测试报告](docs/TESTING.md)。下文保留业务规范与验收要求。
 
 ![本期概览](docs/screenshots/overview.png)
 

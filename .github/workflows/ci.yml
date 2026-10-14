@@ -72,8 +72,18 @@ jobs:
         with:
           name: browser-report
           path: frontend/playwright-report
+  windows-scripts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Windows PowerShell 5.1 installer checks
+        shell: powershell
+        run: ./scripts/test_windows.ps1
+      - name: PowerShell 7 installer checks
+        shell: pwsh
+        run: ./scripts/test_windows.ps1
   images:
-    needs: verify
+    needs: [verify, windows-scripts]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -128,6 +138,32 @@ jobs:
           name: marksix-images
           path: marksix-images.tar.gz
           retention-days: 7
+      - name: Package Windows Docker Desktop deployment
+        env:
+          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
+          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
+          DB_PASSWORD: disposable-image-db
+          DB_ROOT_PASSWORD: disposable-image-root
+          ADMIN_PASSWORD: disposable-image-admin
+        run: |
+          python3 scripts/package_windows.py --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
+          docker compose -f windows-package/compose.yaml config --quiet
+          docker load --input windows-package/images.tar.gz
+          docker compose -f windows-package/compose.yaml up -d --no-build --pull never --wait --wait-timeout 180
+          curl -fsS http://127.0.0.1:8088/api/health
+        # The package contains no .env or credentials.
+      - uses: actions/upload-artifact@v4
+        id: windows-package
+        with:
+          name: MarkSix-Windows-x64
+          path: windows-package/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - name: Windows download link
+        env:
+          PACKAGE_URL: ${{ steps.windows-package.outputs.artifact-url }}
+        run: printf 'Windows x64 Docker Desktop installer: [Download package](%s)\nExtract the complete ZIP and run Install.cmd.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Publish tested images
         if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:

@@ -9,3 +9,6 @@ test-results/
 *.log
 backups/
 .DS_Store
+
+/windows-package/
+/deploy/windows/data/
