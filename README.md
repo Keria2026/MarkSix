@@ -462,3 +462,9 @@ Rust Web 框架、数据库访问库、前端路由方案及内部接口路径�
 第一版完成需要上述页面、配置、投注、自动结算、历史及精确风险能力可用，并通过第 12 节验收。在实现早期应优先验证精确极值在 2 vCPU／1 GB／60 秒约束下的可行性，再推进完整交付。
 
 实现与测试状态详见 [测试报告](docs/TESTING.md)；未覆盖的验收项不视为通过。
+
+## Windows 原生安装包（无需 Docker）
+
+GitHub Actions 的 **Windows Native** 工作流构建 `MarkSix-Windows-Native-x64`：包含 Windows 原生后端、前端和 MySQL 数据库。在对应成功运行的 Artifacts 下载 ZIP，完整解压，首次安装 VC++ 运行库（包内 `vc_redist.x64.exe`），随后双击 `Install.cmd`。日常使用 `Start.cmd` / `Stop.cmd`，浏览器访问 `http://127.0.0.1:8088`。
+
+支持 Windows 10/11 x64，使用本机用户进程，不依赖 Docker、WSL 或开发工具。数据存放 `%LOCALAPPDATA%\MarkSix`，凭据使用当前 Windows 用户的 DPAPI 加密。详情与备份、升级限制见 [原生部署说明](deploy/windows-native/README.md)。原 `MarkSix-Windows-x64` 工件仍为 Docker Desktop 版，请注意下载名称。

@@ -77,6 +77,9 @@ fn cookie(state: &AppState, value: &str, max_age: u32) -> String {
 struct ReceivedAt(chrono::NaiveDateTime);
 
 pub fn router(state: AppState) -> Router {
+    router_with_frontend(state, None)
+}
+pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf>) -> Router {
     let private = Router::new()
         .route("/session", get(session))
         .route("/logout", post(logout))
@@ -93,18 +96,22 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/closing", put(update_closing))
         .route("/settings/mapping", put(update_mapping))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
-    Router::new()
-        .nest(
-            "/api",
-            private
-                .route("/login", post(login))
-                .route("/health", get(health)),
-        )
-        .layer(DefaultBodyLimit::max(64 * 1024))
-        .layer(middleware::from_fn(security_headers))
-        .layer(middleware::from_fn_with_state(state.clone(), receive_time))
-        .layer(tower_http::trace::TraceLayer::new_for_http())
-        .with_state(state)
+    let mut app = Router::new();
+    if let Some(directory) = frontend {
+        app = app.fallback_service(tower_http::services::ServeDir::new(directory));
+    }
+    app.nest(
+        "/api",
+        private
+            .route("/login", post(login))
+            .route("/health", get(health))
+            .fallback(|| async { (StatusCode::NOT_FOUND, "Unknown API endpoint") }),
+    )
+    .layer(DefaultBodyLimit::max(64 * 1024))
+    .layer(middleware::from_fn(security_headers))
+    .layer(middleware::from_fn_with_state(state.clone(), receive_time))
+    .layer(tower_http::trace::TraceLayer::new_for_http())
+    .with_state(state)
 }
 async fn receive_time(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     req.extensions_mut().insert(ReceivedAt(state.now()));
@@ -129,6 +136,16 @@ async fn security_headers(req: Request, next: Next) -> Response {
     response
         .headers_mut()
         .insert("x-content-type-options", "nosniff".parse().unwrap());
+    for (name, value) in [
+        ("x-frame-options", "DENY"),
+        ("referrer-policy", "same-origin"),
+        (
+            "content-security-policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+        ),
+    ] {
+        response.headers_mut().insert(name, value.parse().unwrap());
+    }
     response
 }
 async fn authenticate(State(state): State<AppState>, req: Request, next: Next) -> Response {

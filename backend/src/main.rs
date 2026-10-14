@@ -16,6 +16,16 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "marksix=info,tower_http=info".into()),
         )
         .init();
+    let frontend = std::env::var_os("FRONTEND_DIR")
+        .map(std::path::PathBuf::from)
+        .map(std::fs::canonicalize)
+        .transpose()?;
+    if let Some(directory) = &frontend {
+        anyhow::ensure!(
+            directory.join("index.html").is_file(),
+            "FRONTEND_DIR must contain index.html"
+        );
+    }
     let database_url =
         std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("请设置 DATABASE_URL"))?;
     let pool = store::connect(&database_url).await?;
@@ -32,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     let address = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address,"MarkSix is running");
-    axum::serve(listener, api::router(state))
+    axum::serve(listener, api::router_with_frontend(state, frontend))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
