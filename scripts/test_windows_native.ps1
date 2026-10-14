@@ -34,7 +34,7 @@ try {
     Assert ((Get-Content -LiteralPath $backup[0].FullName -Raw) -match 'CREATE TABLE') 'Backup does not contain schema.'
     & $scriptPath -Action Stop -DataDirectory $testData
     & $scriptPath -Action Install -DataDirectory $testData -NoBrowser
-    $session = Login
+    # Reuse the pre-restart session to prove persisted database state, not just defaults.
     $again = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/bootstrap' -WebSession $session
     Assert ($again.plays[2].id -eq $bootstrap.plays[2].id) 'Database did not persist across restart.'
     Assert ((Get-Content -LiteralPath (Join-Path $testData 'config.json') -Raw) -ceq $before) 'Reinstall overwrote credentials.'

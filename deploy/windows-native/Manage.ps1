@@ -159,7 +159,7 @@ try {
             if ((New-Object Net.NetworkCredential('', $AdminPassword)).Password -cne (New-Object Net.NetworkCredential('', $confirm)).Password) { throw 'Passwords do not match.' }
         }
         $plain = (New-Object Net.NetworkCredential('', $AdminPassword)).Password
-        if ($plain.Length -lt 12 -or [Text.Encoding]::UTF8.GetByteCount($plain) -gt 256) { throw 'Password must be at least 12 characters and at most 256 UTF-8 bytes.' }
+        if (([Text.Encoding]::UTF32.GetByteCount($plain) / 4) -lt 12 -or [Text.Encoding]::UTF8.GetByteCount($plain) -gt 256) { throw 'Password must be at least 12 characters and at most 256 UTF-8 bytes.' }
         Protect-Data
         $newConfig = @{ version = 1; username = $AdminUsername; adminPassword = ($AdminPassword | ConvertFrom-SecureString); rootPassword = (Encrypt-Text (Random-Hex)); dbPassword = (Encrypt-Text (Random-Hex)) }
         Write-PrivateText $configPath ($newConfig | ConvertTo-Json)
