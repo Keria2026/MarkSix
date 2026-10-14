@@ -1,0 +1,11 @@
+.env
+.env.*.local
+target/
+node_modules/
+dist/
+.svelte-kit/
+playwright-report/
+test-results/
+*.log
+backups/
+.DS_Store

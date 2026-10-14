@@ -1,0 +1,271 @@
+export type Kind = "number" | "zodiac" | "wave" | "tail" | "parity";
+export type Scope = "regular" | "special" | "all";
+export type Condition = "all" | "none" | "any";
+export type Relation = "eq" | "le" | "ge";
+export interface Rule {
+  name: string;
+  kind: Kind;
+  scope: Scope;
+  condition: Condition;
+  relation: Relation;
+  quantity: number;
+  combination_size: number;
+  odds: string;
+  rebate_percent: string;
+  special_odds: string | null;
+}
+export interface Play {
+  id: number;
+  version: number;
+  rule: Rule;
+  enabled: boolean;
+}
+export interface Mapping {
+  zodiac: number[];
+  natal: number;
+}
+export interface Draw {
+  expect: string;
+  open_time: string;
+  numbers: number[];
+  zodiac: number[];
+  waves: number[];
+}
+export interface Risk {
+  min_payout: number;
+  max_payout: number;
+  best_draw: number[];
+  worst_draw: number[];
+  elapsed_ms: number;
+  nodes: number;
+  strategy: string;
+}
+export interface Totals {
+  records: number;
+  units: number;
+  stake: number;
+  rebate: number;
+  exposure: number;
+  payout: number;
+  winning_stake: number;
+  losing_stake: number;
+  gross: number | null;
+  net: number | null;
+}
+export interface Period {
+  id: string;
+  business_date: string;
+  close_time: string;
+  mapping: Mapping;
+  state: string;
+  phase: string;
+  bet_version: number;
+  draw: Draw | null;
+  error: string | null;
+  mapping_warning: boolean;
+  last_fetch_at: string | null;
+  settled_at: string | null;
+  risk_status: string;
+  risk_version: number | null;
+  risk_result: Risk | null;
+  risk_error: string | null;
+  risk_started_at: string | null;
+  totals: Totals;
+  server_time: string;
+}
+export interface Bootstrap {
+  today: Period;
+  plays: Play[];
+  zodiacs: string[];
+}
+export interface Bet {
+  id: string;
+  period_id: string;
+  play_id: number;
+  play_version: number;
+  rule: Rule;
+  selections: number[];
+  compound: boolean;
+  amount: number;
+  unit_count: number;
+  stake: number;
+  rebate: number;
+  status: string;
+  payout: number | null;
+  winning_stake: number | null;
+  created_at: string;
+  cancelled_at: string | null;
+  natal: number;
+}
+export interface Atom {
+  options: number[];
+  stake: number;
+  payout: number;
+  rebate: number;
+  odds: string;
+}
+export interface AtomResult {
+  won: boolean;
+  payout: number;
+  rebate: number;
+  net: number;
+}
+export interface Detail {
+  record: Bet;
+  atoms: Atom[];
+  results: AtomResult[] | null;
+}
+export interface Page<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+export interface Quote {
+  units: number;
+  stake: number;
+  rebate: number;
+  max_return: number;
+  max_profit: number;
+  result: Risk;
+}
+export interface Settings {
+  closing: { effective_date: string; close_time: string }[];
+  mappings: { effective_date: string; mapping: Mapping }[];
+  tomorrow: string;
+}
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+export async function api<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    ...options,
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Marksix": "1",
+      ...options.headers,
+    },
+  });
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = {
+      error: response.ok ? "响应格式错误" : `请求失败（${response.status}）`,
+    };
+  }
+  if (!response.ok)
+    throw new ApiError(response.status, data.error ?? "操作失败");
+  return data as T;
+}
+export const kinds: Record<Kind, string> = {
+  number: "号码",
+  zodiac: "生肖",
+  wave: "波色",
+  tail: "尾数",
+  parity: "单双",
+};
+export const scopes: Record<Scope, string> = {
+  regular: "平码 · 前 6 个",
+  special: "特码 · 最后 1 个",
+  all: "全部 · 7 个号码",
+};
+export const conditions: Record<Condition, string> = {
+  all: "全部命中",
+  none: "全部不命中",
+  any: "至少命中一个",
+};
+export const relations: Record<Relation, string> = {
+  eq: "等于",
+  le: "小于等于",
+  ge: "大于等于",
+};
+export const phases: Record<string, string> = {
+  scheduled: "尚未开盘",
+  open: "接受投注",
+  closed: "已封盘",
+  fetching: "等待开奖",
+  settling: "结算中",
+  settled: "已结算",
+  missing: "开奖缺失",
+};
+export const zodiacs = [
+  "鼠",
+  "牛",
+  "虎",
+  "兔",
+  "龙",
+  "蛇",
+  "马",
+  "羊",
+  "猴",
+  "鸡",
+  "狗",
+  "猪",
+];
+export function money(
+  cents: number | bigint | null | undefined,
+  symbol = true,
+): string {
+  if (cents == null) return "—";
+  const n = BigInt(cents);
+  const a = n < 0n ? -n : n;
+  return `${n < 0n ? "−" : ""}${symbol ? "¥ " : ""}${new Intl.NumberFormat("zh-CN").format(a / 100n)}.${String(a % 100n).padStart(2, "0")}`;
+}
+export function signed(cents: number | null): string {
+  return cents == null ? "待结算" : `${cents > 0 ? "+" : ""}${money(cents)}`;
+}
+export function wave(n: number): number {
+  return [
+    1, 2, 7, 8, 12, 13, 18, 19, 23, 24, 29, 30, 34, 35, 40, 45, 46,
+  ].includes(n)
+    ? 0
+    : [3, 4, 9, 10, 14, 15, 20, 25, 26, 31, 36, 37, 41, 42, 47, 48].includes(n)
+      ? 1
+      : 2;
+}
+export function label(kind: Kind, value: number): string {
+  return kind === "number"
+    ? String(value).padStart(2, "0")
+    : kind === "zodiac"
+      ? zodiacs[value]
+      : kind === "wave"
+        ? ["红波", "蓝波", "绿波"][value]
+        : kind === "tail"
+          ? `${value}尾`
+          : ["双", "单"][value];
+}
+export function options(kind: Kind): number[] {
+  const size = { number: 49, zodiac: 12, wave: 3, tail: 10, parity: 2 }[kind];
+  return Array.from({ length: size }, (_, i) =>
+    kind === "number" ? i + 1 : i,
+  );
+}
+export function count(n: number, k: number): number {
+  if (k > n || k < 1) return 0;
+  let r = 1;
+  k = Math.min(k, n - k);
+  for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1);
+  return Math.round(r);
+}
+export function time(value: string | null): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(`${value}Z`));
+}
