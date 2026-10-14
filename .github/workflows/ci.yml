@@ -163,7 +163,8 @@ jobs:
       - name: Windows download link
         env:
           PACKAGE_URL: ${{ steps.windows-package.outputs.artifact-url }}
-        run: printf 'Windows x64 Docker Desktop installer: [Download package](%s)\nExtract the complete ZIP and run Install.cmd.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          printf 'Windows x64 Docker Desktop installer: [Download package](%s)\nExtract the complete ZIP and run Install.cmd.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Publish tested images
         if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:
