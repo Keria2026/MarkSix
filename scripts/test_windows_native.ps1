@@ -46,5 +46,7 @@ try {
     }
     throw
 } finally {
-    if (Test-Path -LiteralPath (Join-Path $testData 'config.json')) { & $scriptPath -Action Stop -DataDirectory $testData }
+    if (Test-Path -LiteralPath (Join-Path $testData 'config.json')) {
+        try { & $scriptPath -Action Stop -DataDirectory $testData } catch { Write-Warning "Cleanup failed: $_" }
+    }
 }

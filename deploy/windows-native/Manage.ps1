@@ -65,8 +65,18 @@ function Invoke-Database([string]$Tool, [string[]]$ToolArguments) {
     $clientPath = Join-Path $DataDirectory ('client-' + [guid]::NewGuid().ToString('N') + '.cnf')
     Write-PrivateText $clientPath "[client]`r`nhost=127.0.0.1`r`nport=33306`r`nuser=root`r`npassword=$script:rootPassword`r`nprotocol=tcp`r`n"
     try {
-        $output = & (Join-Path $package "mysql\bin\$Tool.exe") "--defaults-extra-file=$clientPath" @ToolArguments 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "$Tool failed. Check the private database log in $DataDirectory." }
+        # Windows PowerShell 5.1 treats native stderr as ErrorRecord objects.
+        # Capture the complete diagnostic before checking the executable exit code.
+        $savedPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = & (Join-Path $package "mysql\bin\$Tool.exe") "--defaults-extra-file=$clientPath" @ToolArguments 2>&1
+            $nativeExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $savedPreference }
+        if ($nativeExit -ne 0) {
+            $diagnostic = ($output | Out-String).Replace($script:rootPassword, '[redacted]').Replace($script:dbPassword, '[redacted]')
+            throw "$Tool failed: $diagnostic"
+        }
         return $output
     } finally { Remove-Item -LiteralPath $clientPath -Force -ErrorAction SilentlyContinue }
 }
@@ -104,6 +114,7 @@ function Start-Native {
         if (-not (Test-Path -LiteralPath $provisioned)) {
             $bootstrapPath = Join-Path $DataDirectory 'bootstrap.sql'
             $sql = "ALTER USER 'root'@'localhost' IDENTIFIED BY '$script:rootPassword';`nCREATE DATABASE IF NOT EXISTS marksix CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`n"
+            $sql += "CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '$script:rootPassword';`nGRANT ALL ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;`n"
             foreach ($hostName in @('localhost','127.0.0.1')) {
                 $sql += "CREATE USER IF NOT EXISTS 'marksix'@'$hostName' IDENTIFIED BY '$script:dbPassword';`nGRANT ALL ON marksix.* TO 'marksix'@'$hostName';`n"
             }
