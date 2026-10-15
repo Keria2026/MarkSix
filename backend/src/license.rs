@@ -155,7 +155,10 @@ fn authority_url(input: &str) -> anyhow::Result<String> {
                 && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))),
         "授权地址须使用 HTTPS；本机测试可使用 http://127.0.0.1"
     );
-    ensure!(input.len() <= 500, "授权服务地址过长");
+    ensure!(
+        input.len() <= 500 && url.as_str().len() <= 500,
+        "授权服务地址编码后过长"
+    );
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 async fn call(url: &str, path: &str, body: Value) -> anyhow::Result<Certificate> {
@@ -262,6 +265,7 @@ async fn check(state: &AppState, force: bool) -> ApiResult<Claims> {
         return Err(activation_error("授权响应无效或授权服务器时间回退"));
     }
     let lease = Lease {
+        license_id: updated.id.clone(),
         fingerprint: digest(&serde_json::to_string(&fresh).map_err(anyhow::Error::from)?),
         binding,
         started: now,
@@ -306,6 +310,11 @@ pub async fn status(State(state): State<AppState>) -> ApiResult<Json<Value>> {
             let remaining = runtime
                 .lease
                 .as_ref()
+                .filter(|lease| {
+                    lease.license_id == claims.id
+                        && lease.server_time == claims.checked_at
+                        && lease.expires_at == claims.expires_at
+                })
                 .and_then(|lease| lease.remaining((client.monotonic)().ok()?).ok())
                 .unwrap_or(0);
             if remaining == 0 {
@@ -376,6 +385,7 @@ pub async fn activate(
         .verify(&client.key, &binding)
         .map_err(|_| activation_error("授权服务签名与本安装包不匹配"))?;
     let lease = Lease {
+        license_id: claims.id.clone(),
         fingerprint: digest(&serde_json::to_string(&certificate).map_err(anyhow::Error::from)?),
         binding,
         started,
@@ -713,6 +723,7 @@ mod tests {
         ] {
             assert!(authority_url(url).is_err());
         }
+        assert!(authority_url(&format!("https://example.com/{}", "马".repeat(100))).is_err());
         for url in ["https://license.example.com/api", "http://127.0.0.1:8090"] {
             assert!(authority_url(url).is_ok());
         }

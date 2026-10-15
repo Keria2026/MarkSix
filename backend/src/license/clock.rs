@@ -36,6 +36,7 @@ pub(super) fn boot_time() -> anyhow::Result<Duration> {
 
 #[derive(Clone)]
 pub(super) struct Lease {
+    pub license_id: String,
     pub fingerprint: String,
     pub binding: String,
     pub started: Duration,
@@ -77,6 +78,7 @@ mod tests {
         let b = boot_time().unwrap();
         assert!(b >= a);
         let lease = Lease {
+            license_id: "id".into(),
             fingerprint: "x".into(),
             binding: "b".into(),
             started: Duration::from_secs(100),

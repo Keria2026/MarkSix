@@ -332,18 +332,16 @@ test("activation and expiry keep business screens inaccessible until renewed", a
     await route.fulfill({ json: { active: true } });
   });
   await page.getByText("旧码与服务迁移", { exact: true }).click();
-  await page
-    .getByLabel("签名迁移文件")
-    .setInputFiles({
-      name: "route.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(
-        JSON.stringify({
-          payload: "signed-fixture",
-          signature: "a".repeat(128),
-        }),
-      ),
-    });
+  await page.getByLabel("签名迁移文件").setInputFiles({
+    name: "route.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(
+      JSON.stringify({
+        payload: "signed-fixture",
+        signature: "a".repeat(128),
+      }),
+    ),
+  });
   await page.getByRole("button", { name: "更新服务地址并重新核验" }).click();
   await expect(
     page.getByRole("heading", { name: "玩法与配置", exact: true }),
