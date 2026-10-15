@@ -16,14 +16,94 @@ fn main() {
         compound: true,
         amount: "100".into(),
         request_id: String::new(),
+        bettor: "基准测试".into(),
     };
-    let compound = plan(&defaults()[2], &input, &mapping).unwrap();
-    for name in ["special_numbers", "zodiac_compound", "mixed"] {
+    let mut rule = defaults()[2].clone();
+    rule.compound_enabled = true;
+    let compound = plan(&rule, &input, &mapping).unwrap();
+    let mut new_rules = Vec::new();
+    for condition in [Condition::HardPair, Condition::SoftPair, Condition::AtLeast] {
+        let mut rule = defaults()[0].clone();
+        rule.scope = Scope::All;
+        rule.condition = condition;
+        rule.quantity = if condition == Condition::AtLeast {
+            3
+        } else {
+            2
+        };
+        rule.combination_size = rule.quantity;
+        rule.minimum_hits = 2;
+        let mut bet = input.clone();
+        bet.compound = false;
+        bet.selections = if condition == Condition::AtLeast {
+            vec![6, 45, 49]
+        } else {
+            vec![6, 45]
+        };
+        new_rules.extend(plan(&rule, &bet, &mapping).unwrap().atoms);
+    }
+    for scope in [Scope::Regular, Scope::Special, Scope::All] {
+        let mut rule = defaults()[0].clone();
+        rule.kind = Kind::Size;
+        rule.scope = scope;
+        rule.odds = "1.95".into();
+        let mut bet = input.clone();
+        bet.compound = false;
+        bet.selections = vec![0, 1];
+        new_rules.extend(plan(&rule, &bet, &mapping).unwrap().atoms);
+    }
+    let mut count_and_pairs = Vec::new();
+    for (count, odds) in [(4, "15"), (5, "3"), (6, "2"), (7, "5")] {
+        let mut rule = defaults()[0].clone();
+        rule.kind = Kind::ZodiacCount;
+        rule.scope = Scope::All;
+        rule.zodiac_count = Some(count);
+        rule.odds = odds.into();
+        rule.rebate_percent = "10".into();
+        let mut bet = input.clone();
+        bet.compound = false;
+        bet.selections = vec![count];
+        count_and_pairs.extend(plan(&rule, &bet, &mapping).unwrap().atoms);
+    }
+    let mut rule = defaults()[0].clone();
+    rule.scope = Scope::All;
+    rule.quantity = 2;
+    rule.combination_size = 2;
+    rule.odds = "55".into();
+    rule.special_hit_odds = Some("25".into());
+    let mut bet = input.clone();
+    bet.compound = false;
+    bet.selections = vec![6, 45];
+    count_and_pairs.extend(plan(&rule, &bet, &mapping).unwrap().atoms);
+    for name in [
+        "special_numbers",
+        "zodiac_compound",
+        "mixed",
+        "new_rules_with_layoffs",
+        "zodiac_counts_and_pair_rates",
+    ] {
         if !only.is_empty() && name != only {
             continue;
         }
         let atoms: Vec<Atom> = (0..10000)
             .map(|i| {
+                if name == "new_rules_with_layoffs" || name == "zodiac_counts_and_pair_rates" {
+                    let source = if name == "new_rules_with_layoffs" {
+                        &new_rules
+                    } else {
+                        &count_and_pairs
+                    };
+                    let mut atom = source[i % source.len()].clone();
+                    // Separate received and outgoing positions, with signed settlement.
+                    if i >= 5000 {
+                        atom.position = -1;
+                        atom.stake /= 2;
+                        atom.payout /= 2;
+                        atom.special_hit_payout = atom.special_hit_payout.map(|p| p / 2);
+                        atom.rebate /= 2;
+                    }
+                    return atom;
+                }
                 if name == "zodiac_compound" || (name == "mixed" && i % 5 == 2) {
                     return compound.atoms[i % compound.atoms.len()].clone();
                 }
@@ -43,10 +123,16 @@ fn main() {
                     kind,
                     scope,
                     condition,
+                    minimum_hits: 1,
                     stake: 10000,
                     payout: pay,
                     rebate: 200,
                     odds: "43".into(),
+                    rebate_percent: "2".into(),
+                    void_on_49: false,
+                    position: 1,
+                    special_hit_odds: None,
+                    special_hit_payout: None,
                 }
             })
             .collect();
@@ -58,12 +144,16 @@ fn main() {
         ) {
             Ok(result) => {
                 for (numbers, expected) in [
-                    (result.best_draw, result.min_payout),
-                    (result.worst_draw, result.max_payout),
+                    (result.best_draw, result.max_net.unwrap()),
+                    (result.worst_draw, result.min_net.unwrap()),
                 ] {
                     let draw = Draw::predicted(numbers, &mapping);
                     assert_eq!(
-                        settle(&atoms, &draw).iter().map(|r| r.payout).sum::<i64>(),
+                        settle(&atoms, &draw)
+                            .iter()
+                            .zip(&atoms)
+                            .map(|(r, a)| r.net * i64::from(a.position))
+                            .sum::<i64>(),
                         expected
                     );
                     let mut ns = numbers;

@@ -29,14 +29,34 @@ pub async fn run(state: AppState) {
     }
 }
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
-    ensure_period(state, state.now().date()).await?;
+    let active = crate::license::require(state).await.is_ok();
+    if !active {
+        for flag in state.cancellations.lock().await.values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        if state.hosted.is_none() {
+            return Ok(());
+        }
+    }
+    if let Some(policy) = &state.hosted
+        && !crate::hosted::background_allowed(policy)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.1))?
+    {
+        return Ok(());
+    }
+    if active {
+        ensure_period(state, state.now().date()).await?;
+    }
     let settling: Vec<String> = sqlx::query_scalar("SELECT id FROM periods WHERE state='settling'")
         .fetch_all(&state.pool)
         .await?;
     for id in settling {
         settle_period(state, &id).await?;
     }
-    start_risk(state).await?;
+    if active {
+        start_risk(state).await?;
+    }
     let now = state.now();
     let periods: Vec<Period> =
         sqlx::query_as("SELECT * FROM periods WHERE state='pending' ORDER BY business_date")
@@ -84,6 +104,20 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 async fn fetch(state: &AppState) -> anyhow::Result<Vec<Value>> {
+    if let Some(cache) = &state.draw_cache {
+        let mut cache = cache.lock().await;
+        if let Some((time, values)) = cache.as_ref()
+            && time.elapsed() < Duration::from_secs(30)
+        {
+            return values.clone().map_err(anyhow::Error::msg);
+        }
+        let values = fetch_uncached(state).await.map_err(|e| e.to_string());
+        *cache = Some((std::time::Instant::now(), values.clone()));
+        return values.map_err(anyhow::Error::msg);
+    }
+    fetch_uncached(state).await
+}
+async fn fetch_uncached(state: &AppState) -> anyhow::Result<Vec<Value>> {
     let mut response = state
         .client
         .get(&state.draw_url)
@@ -207,33 +241,37 @@ pub async fn settle_period(state: &AppState, id: &str) -> anyhow::Result<()> {
     let draw = p
         .draw
         .ok_or_else(|| anyhow::anyhow!("结算期次缺少开奖快照"))?;
-    let rows =
-        sqlx::query("SELECT id,atoms FROM bets WHERE period_id=? AND status='pending' FOR UPDATE")
-            .bind(id)
-            .fetch_all(&mut *tx)
-            .await?;
-    for row in rows {
-        let bet_id: String = row.try_get("id")?;
-        let atoms: Json<Vec<Atom>> = row.try_get("atoms")?;
-        let results = settle(&atoms, &draw);
-        let payout = checked_sum(results.iter().map(|r| r.payout)).map_err(anyhow::Error::msg)?;
-        let winning_stake = checked_sum(
-            atoms
+    // Both ledgers commit with the period, so reports never observe half a settlement.
+    for table in ["bets", "layoffs"] {
+        let rows = sqlx::query(&format!(
+            "SELECT id,atoms FROM {table} WHERE period_id=? AND status='pending' FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for row in rows {
+            let bet_id: String = row.try_get("id")?;
+            let atoms: Json<Vec<Atom>> = row.try_get("atoms")?;
+            let results = settle(&atoms, &draw);
+            let sum = |values: Vec<i64>| checked_sum(values).map_err(anyhow::Error::msg);
+            let payout = sum(results.iter().map(|r| r.payout).collect())?;
+            let rebate = sum(results.iter().map(|r| r.rebate).collect())?;
+            let winning = sum(atoms
                 .iter()
                 .zip(&results)
                 .filter(|(_, r)| r.won)
-                .map(|(a, _)| a.stake),
-        )
-        .map_err(anyhow::Error::msg)?;
-        sqlx::query(
-            "UPDATE bets SET status='settled',payout=?,winning_stake=?,results=? WHERE id=?",
-        )
-        .bind(payout)
-        .bind(winning_stake)
-        .bind(Json(results))
-        .bind(bet_id)
-        .execute(&mut *tx)
-        .await?;
+                .map(|(a, _)| a.stake)
+                .collect())?;
+            let refunded = sum(atoms
+                .iter()
+                .zip(&results)
+                .filter(|(_, r)| r.voided)
+                .map(|(a, _)| a.stake)
+                .collect())?;
+            let void_units = results.iter().filter(|r| r.voided).count() as i32;
+            sqlx::query(&format!("UPDATE {table} SET status='settled',payout=?,rebate=?,winning_stake=?,void_stake=?,void_units=?,results=? WHERE id=?"))
+                .bind(payout).bind(rebate).bind(winning).bind(refunded).bind(void_units).bind(Json(results)).bind(bet_id).execute(&mut *tx).await?;
+        }
     }
     sqlx::query("UPDATE periods SET state='settled',settled_at=UTC_TIMESTAMP(6) WHERE id=?")
         .bind(id)
@@ -261,7 +299,16 @@ pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
             .bind(&p.id)
             .fetch_all(&mut *tx)
             .await?;
-    let atoms: Vec<Atom> = rows.into_iter().flat_map(|j| j.0).collect();
+    let mut atoms: Vec<Atom> = rows.into_iter().flat_map(|j| j.0).collect();
+    let outgoing: Vec<Json<Vec<Atom>>> =
+        sqlx::query_scalar("SELECT atoms FROM layoffs WHERE period_id=? AND status='pending'")
+            .bind(&p.id)
+            .fetch_all(&mut *tx)
+            .await?;
+    atoms.extend(outgoing.into_iter().flat_map(|j| j.0).map(|mut a| {
+        a.position = -1;
+        a
+    }));
     sqlx::query("UPDATE periods SET risk_status='computing',risk_started_at=UTC_TIMESTAMP(6),risk_version=? WHERE id=?").bind(p.bet_version).bind(&p.id).execute(&mut *tx).await?;
     let cancel = Arc::new(AtomicBool::new(false));
     state
@@ -299,4 +346,40 @@ pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod hosted_fetch_tests {
+    use super::*;
+    #[tokio::test]
+    async fn shared_failure_cache_prevents_per_customer_retry_storms() {
+        use axum::{Router, http::StatusCode, routing::get};
+        use std::sync::atomic::AtomicUsize;
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let app = Router::new().route(
+            "/draw",
+            get(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_lazy("mysql://unused:unused@127.0.0.1/unused")
+            .unwrap();
+        let mut state = AppState::new(pool).unwrap();
+        state.draw_url = format!("http://{address}/draw");
+        state.client = reqwest::Client::builder().no_proxy().build().unwrap();
+        state.draw_cache = Some(Arc::default());
+        let (a, b) = tokio::join!(fetch(&state), fetch(&state));
+        assert!(a.is_err() && b.is_err());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
 }

@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, dev]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -22,6 +22,7 @@ jobs:
           MYSQL_DATABASE: marksix_test
           MYSQL_USER: marksix
           MYSQL_PASSWORD: disposable-ci-password
+          MYSQL_ROOT_HOST: "%"
         ports: ['3306:3306']
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1"
@@ -29,6 +30,9 @@ jobs:
     env:
       TEST_DATABASE_URL: mysql://marksix:disposable-ci-password@127.0.0.1:3306/marksix_test
       TEST_ADMIN_PASSWORD: disposable-browser-password
+      TEST_PROVISION_DATABASE_URL: mysql://root:disposable-ci-root@127.0.0.1:3306/marksix_test
+      TENANT_DB_HOST: 127.0.0.1
+      TENANT_DB_PORT: "3306"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
@@ -46,9 +50,22 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+          cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
+          cargo test --locked --lib license::tests::online_activation -- --ignored
+          cargo test --locked --test license_cli -- --ignored
+          cargo test --locked --lib hosted::tests -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
+      - name: Customer rules runtime accounting acceptance
+        run: |
+          cargo build --locked --manifest-path backend/Cargo.toml --example runtime_server
+          python3 scripts/runtime_acceptance.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-acceptance
+          path: test-results/runtime-acceptance.json
+          retention-days: 30
       - name: Frontend checks
         working-directory: frontend
         run: |
@@ -72,18 +89,8 @@ jobs:
         with:
           name: browser-report
           path: frontend/playwright-report
-  windows-scripts:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Windows PowerShell 5.1 installer checks
-        shell: powershell
-        run: ./scripts/test_windows.ps1
-      - name: PowerShell 7 installer checks
-        shell: pwsh
-        run: ./scripts/test_windows.ps1
   images:
-    needs: [verify, windows-scripts]
+    needs: [verify]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -128,17 +135,7 @@ jobs:
           docker compose up -d --no-build --wait --wait-timeout 180
           curl -fsS http://127.0.0.1:8088/api/health
           curl -fsS http://127.0.0.1:8088/ >/dev/null
-      - name: Export tested images
-        env:
-          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
-          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
-        run: docker save "$BACKEND_IMAGE" "$FRONTEND_IMAGE" | gzip > marksix-images.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: marksix-images
-          path: marksix-images.tar.gz
-          retention-days: 7
-      - name: Package Windows Docker Desktop deployment
+      - name: Package Ubuntu deployment with all three tested images
         env:
           BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
@@ -146,25 +143,71 @@ jobs:
           DB_ROOT_PASSWORD: disposable-image-root
           ADMIN_PASSWORD: disposable-image-admin
         run: |
-          python3 scripts/package_windows.py --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
-          docker compose -f windows-package/compose.yaml config --quiet
-          docker load --input windows-package/images.tar.gz
-          docker compose -f windows-package/compose.yaml up -d --no-build --pull never --wait --wait-timeout 180
+          python3 scripts/package_ubuntu.py --output ubuntu-package --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
+          bash -n ubuntu-package/install.sh ubuntu-package/start.sh ubuntu-package/stop.sh ubuntu-package/scripts/backup.sh ubuntu-package/scripts/restore.sh
+          docker compose -f ubuntu-package/compose.yaml config --quiet
+          python3 ubuntu-package/verify.py
+          docker load --input ubuntu-package/images.tar.gz
+          docker compose -f ubuntu-package/compose.yaml up -d --no-build --pull never --wait --wait-timeout 180
           curl -fsS http://127.0.0.1:8088/api/health
-        # The package contains no .env or credentials.
-      - uses: actions/upload-artifact@v4
-        id: windows-package
-        with:
-          name: MarkSix-Windows-x64
-          path: windows-package/
-          compression-level: 0
-          retention-days: 14
-          if-no-files-found: error
-      - name: Windows download link
+          # Check the shipped lifecycle scripts with the existing disposable credentials.
+          bash ubuntu-package/stop.sh
+          bash ubuntu-package/stop.sh
+          bash ubuntu-package/start.sh
+          bash ubuntu-package/scripts/backup.sh
+          # Restore the portable SQL dump into the same disposable database.
+          backup_file=$(find ubuntu-package/backups -name '*.sql.gz' -print -quit)
+          CONFIRM_RESTORE=yes bash ubuntu-package/scripts/restore.sh "$backup_file"
+          curl -fsS http://127.0.0.1:8088/api/health
+          rm -rf ubuntu-package/backups
+      - name: Authority deployment and owner tools smoke test
         env:
-          PACKAGE_URL: ${{ steps.windows-package.outputs.artifact-url }}
+          AUTHORITY_DB_PASSWORD: disposable-authority-db
+          AUTHORITY_ROOT_PASSWORD: disposable-authority-root
         run: |
-          printf 'Windows x64 Docker Desktop installer: [Download package](%s)\nExtract the complete ZIP and run Install.cmd.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/owner" "marksix-backend:$GITHUB_SHA" marksix --license-keygen /owner/ubuntu-package/license-authority/signing-key.hex
+          chmod 644 ubuntu-package/license-authority/signing-key.hex
+          docker compose -f ubuntu-package/license-authority/compose.yaml up -d --wait --wait-timeout 180
+          curl -fsS http://127.0.0.1:8090/health
+          code=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-issue 1)
+          [[ "$code" == MSX1.* ]]
+          public_key=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-public-key)
+          [[ "$public_key" =~ ^[0-9a-f]{64}$ ]]
+          docker compose -f ubuntu-package/license-authority/compose.yaml stop --timeout 60
+          rm ubuntu-package/license-authority/signing-key.hex
+          python3 ubuntu-package/verify.py
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Prepare hosted browser acceptance
+        working-directory: frontend
+        run: |
+          bun install --frozen-lockfile
+          bun x playwright install --with-deps chromium
+      - name: Hosted Nginx TLS, accounts and lifecycle acceptance
+        env:
+          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
+          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
+        run: sudo python3 scripts/hosted_acceptance.py --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE" --browser --bun "$(command -v bun)" --browser-cache "$HOME/.cache/ms-playwright"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-acceptance
+          path: test-results/hosted-acceptance.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        id: ubuntu-package
+        with:
+          name: MarkSix-Ubuntu-x64
+          path: ubuntu-package/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error
+      - name: Ubuntu download link
+        env:
+          PACKAGE_URL: ${{ steps.ubuntu-package.outputs.artifact-url }}
+        run: |
+          printf 'Ubuntu x64 deployment: [Download ZIP](%s). For Dev1.0 follow hosted/README.md; root install.sh is legacy local deployment.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Publish tested images
         if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:
@@ -174,3 +217,55 @@ jobs:
           docker push "$BACKEND_IMAGE"
           docker push "$FRONTEND_IMAGE"
           printf 'Backend: `%s`\nFrontend: `%s`\n' "$BACKEND_IMAGE" "$FRONTEND_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+  deploy:
+    name: Deploy Dev1.0 to VPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [verify, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    concurrency:
+      group: marksix-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MarkSix-Ubuntu-x64
+          path: tested-release
+      - name: Transfer and deploy the tested artifact
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_PORT: ${{ vars.VPS_PORT }}
+          VPS_KNOWN_HOSTS: ${{ vars.VPS_KNOWN_HOSTS }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$VPS_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]]
+          (( VPS_PORT >= 1 && VPS_PORT <= 65535 ))
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ -n "$VPS_KNOWN_HOSTS" && -n "$VPS_SSH_KEY" ]]
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/marksix"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/marksix" "$HOME/.ssh/known_hosts"
+          trap 'rm -f "$HOME/.ssh/marksix"' EXIT
+          ssh_options=(-i "$HOME/.ssh/marksix" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "sudo -n install -d -m 755 -o $VPS_USER /opt/marksix/releases/$GITHUB_SHA"
+          tar -cf tested-release.tar -C tested-release .
+          scp "${ssh_options[@]}" -P "$VPS_PORT" tested-release.tar "$VPS_USER@$VPS_HOST:/opt/marksix/releases/$GITHUB_SHA/package.tar"
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "tar -xf /opt/marksix/releases/$GITHUB_SHA/package.tar -C /opt/marksix/releases/$GITHUB_SHA && sudo -n systemd-run --unit=marksix-deploy-$GITHUB_SHA --collect --wait --pipe /bin/bash /opt/marksix/releases/$GITHUB_SHA/hosted/release.sh $GITHUB_SHA $VPS_USER"
+      - name: Verify public domain routing
+        env:
+          PUBLIC_APP_URL: ${{ vars.APP_URL || 'https://3801.win' }}
+          PUBLIC_ADMIN_URL: ${{ vars.ADMIN_URL || 'https://admin.3801.win' }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_APP_URL%/}/api/site" | python3 -c 'import json,sys; assert json.load(sys.stdin)["mode"]=="hosted"'
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_ADMIN_URL%/}/api/site" | python3 -c 'import json,sys; assert json.load(sys.stdin)["mode"]=="authority"'
+          printf 'Dev1.0 production commit: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

@@ -17,7 +17,35 @@ async fn native_frontend_and_api_boundaries() {
     let pool = sqlx::mysql::MySqlPoolOptions::new()
         .connect_lazy("mysql://test:test@localhost/unused")
         .unwrap();
-    let app = api::router_with_frontend(AppState::new(pool).unwrap(), Some(directory.clone()));
+    let mut state = AppState::new(pool).unwrap();
+    state.shutdown_token = Some("a".repeat(48));
+    let signal = state.shutdown.clone();
+    let app = api::router_with_frontend(state, Some(directory.clone()));
+    for (token, expected) in [
+        ("wrong", StatusCode::FORBIDDEN),
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            StatusCode::OK,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/internal/shutdown")
+                    .header("x-marksix", "1")
+                    .header("x-marksix-shutdown", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), signal.notified())
+        .await
+        .unwrap();
     let response = app
         .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())

@@ -6,11 +6,13 @@
     onclose,
     children,
     wide = false,
+    dismissible = true,
   }: {
     title: string;
     onclose: () => void;
     children: Snippet;
     wide?: boolean;
+    dismissible?: boolean;
   } = $props();
   let dialog: HTMLDialogElement;
   $effect(() => {
@@ -24,6 +26,9 @@
   class="modal glass"
   class:wide
   {onclose}
+  oncancel={(event) => {
+    if (!dismissible) event.preventDefault();
+  }}
   aria-label={title}
 >
   <div class="modal-header">
@@ -32,6 +37,7 @@
       type="button"
       class="icon-button"
       aria-label="关闭对话框"
+      disabled={!dismissible}
       onclick={() => dialog.close()}><X size={20} /></button
     >
   </div>

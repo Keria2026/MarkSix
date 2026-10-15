@@ -1,13 +1,13 @@
 FROM rust:1.90-bookworm AS build
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock license-public-key.hex ./
 COPY src ./src
 COPY migrations ./migrations
-RUN --mount=type=secret,id=build_ca if [ -f /run/secrets/build_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/build_ca; fi; cargo build --release --locked --bin marksix
+RUN --mount=type=secret,id=build_ca --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/app/target if [ -f /run/secrets/build_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/build_ca; fi; cargo build --release --locked --bin marksix && cp /app/target/release/marksix /marksix
 
 FROM debian:bookworm-slim
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build /app/target/release/marksix /usr/local/bin/marksix
+COPY --from=build /marksix /usr/local/bin/marksix
 USER 10001:10001
 ENV BIND_ADDR=0.0.0.0:8080 RUST_LOG=marksix=info,tower_http=info
 EXPOSE 8080

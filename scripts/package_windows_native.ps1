@@ -4,9 +4,12 @@ $ErrorActionPreference = 'Stop'
 $destinationPath = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $destinationPath) { throw 'Package destination must not already exist.' }
 New-Item -ItemType Directory -Path $destinationPath | Out-Null
-Copy-Item deploy/windows-native/* $destinationPath -Recurse
+Get-ChildItem deploy/windows-native -File | Where-Object { $_.Extension -in @('.cmd','.ps1','.md') } | Copy-Item -Destination $destinationPath
 Copy-Item backend/target/release/marksix.exe $destinationPath
+Copy-Item docs/legacy/LICENSING.md (Join-Path $destinationPath 'LICENSING.md')
 Copy-Item frontend/dist (Join-Path $destinationPath 'www') -Recurse
+New-Item -ItemType Directory -Path (Join-Path $destinationPath 'fixtures') | Out-Null
+Copy-Item fixtures/customer-plays.json (Join-Path $destinationPath 'fixtures/customer-plays.json')
 $mysqlUrl = 'https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip'
 $download = Join-Path $env:RUNNER_TEMP 'mysql-native.zip'
 Invoke-WebRequest -Uri $mysqlUrl -OutFile $download

@@ -1,9 +1,13 @@
 use crate::{domain::*, risk::RiskResult};
 use anyhow::Context;
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-use chrono::{FixedOffset, NaiveDate, NaiveDateTime, Utc};
+use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, MySqlPool, Row, mysql::MySqlPoolOptions, types::Json};
+use sqlx::{
+    ConnectOptions, FromRow, MySqlPool, Row,
+    mysql::{MySqlConnectOptions, MySqlPoolOptions},
+    types::Json,
+};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, atomic::AtomicBool},
@@ -11,9 +15,14 @@ use std::{
 };
 use tokio::sync::{Mutex, Semaphore};
 
+pub(crate) type DrawCache = Arc<Mutex<Option<(Instant, Result<Vec<serde_json::Value>, String>)>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
+    pub license: Option<crate::license::Client>,
+    pub shutdown: Arc<tokio::sync::Notify>,
+    pub shutdown_token: Option<String>,
     pub clock: Arc<dyn Fn() -> NaiveDateTime + Send + Sync>,
     pub client: reqwest::Client,
     pub draw_url: String,
@@ -22,27 +31,38 @@ pub struct AppState {
     pub auth_gate: Arc<Semaphore>,
     pub cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub login_attempts: Arc<Mutex<VecDeque<Instant>>>,
+    pub(crate) hosted: Option<crate::hosted::Policy>,
+    pub(crate) draw_cache: Option<DrawCache>,
 }
 impl AppState {
     pub fn new(pool: MySqlPool) -> anyhow::Result<Self> {
-        Ok(Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("MarkSix/Dev1.0 (+hosted statistics)")
+            .build()?;
+        Ok(Self::with_client(pool, client))
+    }
+    pub(crate) fn with_client(pool: MySqlPool, client: reqwest::Client) -> Self {
+        Self {
             pool,
+            license: None,
+            shutdown: Arc::default(),
+            shutdown_token: None,
             clock: Arc::new(|| {
                 Utc::now()
                     .with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
                     .naive_local()
             }),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .user_agent("MarkSix/0.1 (+local statistics)")
-                .build()?,
+            client,
             draw_url: "https://macaumarksix.com/api/macaujc2.com".into(),
             secure_cookie: false,
             risk_gate: Arc::new(Semaphore::new(1)),
             auth_gate: Arc::new(Semaphore::new(1)),
             cancellations: Arc::default(),
             login_attempts: Arc::default(),
-        })
+            hosted: None,
+            draw_cache: None,
+        }
     }
     pub fn now(&self) -> NaiveDateTime {
         (self.clock)()
@@ -63,7 +83,10 @@ pub async fn connect(url: &str) -> anyhow::Result<MySqlPool> {
                 Ok(())
             })
         })
-        .connect(url)
+        .connect_with(
+            url.parse::<MySqlConnectOptions>()?
+                .disable_statement_logging(),
+        )
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
@@ -147,6 +170,7 @@ pub struct Period {
     pub id: String,
     pub business_date: NaiveDate,
     pub close_time: String,
+    pub open_time: String,
     pub mapping: Json<Mapping>,
     pub state: String,
     pub bet_version: i64,
@@ -175,6 +199,10 @@ pub struct Totals {
     pub losing_stake: i64,
     pub gross: Option<i64>,
     pub net: Option<i64>,
+    pub refunded: i64,
+    pub flyout_stake: i64,
+    pub flyout_net: Option<i64>,
+    pub retained_net: Option<i64>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct PeriodView {
@@ -186,6 +214,10 @@ pub struct PeriodView {
 }
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct BetSummary {
+    pub bettor: String,
+    pub revision: i64,
+    pub void_stake: i64,
+    pub void_units: i32,
     pub id: String,
     pub period_id: String,
     pub play_id: i64,
@@ -204,7 +236,7 @@ pub struct BetSummary {
     pub cancelled_at: Option<NaiveDateTime>,
     pub natal: i8,
 }
-pub const BET_COLUMNS: &str = "id,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
+pub const BET_COLUMNS: &str = "bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FutureMapping {
     pub effective_date: NaiveDate,
@@ -224,15 +256,14 @@ pub async fn ensure_period(state: &AppState, date: NaiveDate) -> anyhow::Result<
     sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
-    let close:String=sqlx::query_scalar("SELECT close_time FROM closing_configs WHERE effective_date<=? ORDER BY effective_date DESC LIMIT 1").bind(date).fetch_one(&mut *tx).await?;
-    let mapping:Json<Mapping>=sqlx::query_scalar("SELECT mapping FROM mapping_configs WHERE effective_date<=? ORDER BY effective_date DESC LIMIT 1").bind(date).fetch_one(&mut *tx).await?;
-    sqlx::query("INSERT IGNORE INTO periods(id,business_date,close_time,mapping) VALUES(?,?,?,?)")
-        .bind(&id)
-        .bind(date)
-        .bind(close)
-        .bind(mapping)
-        .execute(&mut *tx)
-        .await?;
+    let times = sqlx::query("SELECT open_time,close_time FROM closing_configs WHERE effective_date<=? ORDER BY effective_date DESC LIMIT 1").bind(date).fetch_one(&mut *tx).await?;
+    let open: String = times.try_get("open_time")?;
+    let close: String = times.try_get("close_time")?;
+    let mapping: Option<Json<Mapping>> = sqlx::query_scalar("SELECT mapping FROM mapping_configs WHERE effective_date BETWEEN ? AND ? ORDER BY effective_date DESC LIMIT 1")
+        .bind(NaiveDate::from_ymd_opt(date.year(),1,1).unwrap()).bind(date).fetch_optional(&mut *tx).await?;
+    let mapping = mapping.unwrap_or_else(|| Json(Mapping::for_year(date.year())));
+    sqlx::query("INSERT IGNORE INTO periods(id,business_date,open_time,close_time,mapping) VALUES(?,?,?,?,?)")
+        .bind(&id).bind(date).bind(open).bind(close).bind(mapping).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(sqlx::query_as("SELECT * FROM periods WHERE id=?")
         .bind(id)
@@ -244,7 +275,7 @@ pub async fn totals(
     id: &str,
     settled: bool,
 ) -> anyhow::Result<Totals> {
-    let row=sqlx::query("SELECT COUNT(*) records, CAST(COALESCE(SUM(unit_count),0) AS SIGNED) units, CAST(COALESCE(SUM(stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(rebate),0) AS SIGNED) rebate, CAST(COALESCE(SUM(exposure),0) AS SIGNED) exposure, CAST(COALESCE(SUM(payout),0) AS SIGNED) payout, CAST(COALESCE(SUM(winning_stake),0) AS SIGNED) winning FROM bets WHERE period_id=? AND status<>'cancelled'").bind(id).fetch_one(&mut **tx).await?;
+    let row=sqlx::query("SELECT CAST(COALESCE(SUM(IF(unit_count>void_units,1,0)),0) AS SIGNED) records, CAST(COALESCE(SUM(unit_count-void_units),0) AS SIGNED) units, CAST(COALESCE(SUM(stake-void_stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(rebate),0) AS SIGNED) rebate, CAST(COALESCE(SUM(exposure),0) AS SIGNED) exposure, CAST(COALESCE(SUM(payout-void_stake),0) AS SIGNED) payout, CAST(COALESCE(SUM(winning_stake),0) AS SIGNED) winning, CAST(COALESCE(SUM(void_stake),0) AS SIGNED) refunded FROM bets WHERE period_id=? AND status<>'cancelled'").bind(id).fetch_one(&mut **tx).await?;
     let mut t = Totals {
         records: row.try_get("records")?,
         units: row.try_get("units")?,
@@ -253,12 +284,21 @@ pub async fn totals(
         exposure: row.try_get("exposure")?,
         payout: row.try_get("payout")?,
         winning_stake: row.try_get("winning")?,
+        refunded: row.try_get("refunded")?,
         ..Default::default()
     };
     if settled {
         t.losing_stake = t.stake - t.winning_stake;
         t.gross = Some(t.stake - t.payout);
         t.net = Some(t.stake - t.payout - t.rebate);
+    }
+    let fly = sqlx::query("SELECT CAST(COALESCE(SUM(stake-void_stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(payout+rebate-stake),0) AS SIGNED) net FROM layoffs WHERE period_id=? AND status<>'cancelled'")
+        .bind(id).fetch_one(&mut **tx).await?;
+    t.flyout_stake = fly.try_get("stake")?;
+    if settled {
+        t.flyout_net = Some(fly.try_get("net")?);
+        t.retained_net =
+            Some(checked_sum([t.net.unwrap(), t.flyout_net.unwrap()]).map_err(anyhow::Error::msg)?);
     }
     Ok(t)
 }
@@ -273,10 +313,16 @@ pub async fn view(state: &AppState, period: Period) -> anyhow::Result<PeriodView
         period.state.clone()
     } else if now.date() < period.business_date
         || (now.date() == period.business_date
-            && now.time() < chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap())
+            && chrono::NaiveTime::parse_from_str(&period.open_time, "%H:%M")
+                .is_ok_and(|open| now.time() < open))
     {
         "scheduled".into()
-    } else if is_open(now, period.business_date, &period.close_time) {
+    } else if is_open_between(
+        now,
+        period.business_date,
+        &period.open_time,
+        &period.close_time,
+    ) {
         "open".into()
     } else if now >= period.business_date.and_hms_opt(21, 34, 0).unwrap() {
         "fetching".into()

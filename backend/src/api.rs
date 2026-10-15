@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Debug)]
 pub struct ApiError(pub StatusCode, pub String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -27,7 +28,15 @@ impl IntoResponse for ApiError {
 }
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
-        tracing::error!(error=%e,"database operation failed");
+        if e.as_database_error()
+            .is_some_and(|d| d.is_unique_violation())
+        {
+            return Self(
+                StatusCode::CONFLICT,
+                "账号或记录已经存在，请刷新后检查，避免重复提交".into(),
+            );
+        }
+        tracing::error!(code=?e.as_database_error().and_then(|d|d.code()),"database operation failed");
         Self(
             StatusCode::INTERNAL_SERVER_ERROR,
             "数据库操作失败，请重试；如持续出现请检查服务日志".into(),
@@ -48,14 +57,14 @@ impl From<String> for ApiError {
         Self(StatusCode::UNPROCESSABLE_ENTITY, e)
     }
 }
-type ApiResult<T> = Result<T, ApiError>;
-fn conflict(s: &str) -> ApiError {
+pub(crate) type ApiResult<T> = Result<T, ApiError>;
+pub(crate) fn conflict(s: &str) -> ApiError {
     ApiError(StatusCode::CONFLICT, s.into())
 }
-fn missing() -> ApiError {
+pub(crate) fn missing() -> ApiError {
     ApiError(StatusCode::NOT_FOUND, "记录不存在".into())
 }
-fn digest(s: &str) -> String {
+pub(crate) fn digest(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
 fn token(headers: &HeaderMap) -> Option<&str> {
@@ -74,7 +83,7 @@ fn cookie(state: &AppState, value: &str, max_age: u32) -> String {
 }
 
 #[derive(Clone, Copy)]
-struct ReceivedAt(chrono::NaiveDateTime);
+pub(crate) struct ReceivedAt(pub chrono::NaiveDateTime);
 
 pub fn router(state: AppState) -> Router {
     router_with_frontend(state, None)
@@ -82,16 +91,29 @@ pub fn router(state: AppState) -> Router {
 pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf>) -> Router {
     let private = Router::new()
         .route("/session", get(session))
+        .route("/license", get(crate::license::status))
+        .route("/license/activate", post(crate::license::activate))
+        .route("/license/migrate", post(crate::license::migrate))
         .route("/logout", post(logout))
         .route("/bootstrap", get(bootstrap))
         .route("/periods", get(periods))
         .route("/periods/{id}", get(period))
         .route("/bets", get(bets).post(create_bet))
+        .route("/bets/{id}/amount", put(crate::ledger::change_amount))
+        .route("/bets/{id}/layoffs", post(crate::ledger::fly_out))
+        .route("/layoffs/{id}/cancel", post(crate::ledger::cancel_layoff))
+        .route("/periods/{id}/statistics", get(crate::ledger::statistics))
+        .route("/parties", get(crate::ledger::parties))
         .route("/bets/{id}", get(bet_detail))
         .route("/bets/{id}/cancel", post(cancel_bet))
         .route("/quote", post(quote))
         .route("/plays", post(create_play))
-        .route("/plays/{id}", put(update_play))
+        .route(
+            "/plays/{id}",
+            put(update_play).delete(crate::configuration::delete),
+        )
+        .route("/plays/export", get(crate::configuration::export))
+        .route("/plays/import", post(crate::configuration::import))
         .route("/settings", get(settings))
         .route("/settings/closing", put(update_closing))
         .route("/settings/mapping", put(update_mapping))
@@ -105,19 +127,23 @@ pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf
         private
             .route("/login", post(login))
             .route("/health", get(health))
+            .route("/site", get(|| async { Json(json!({"mode":"legacy"})) }))
+            .route("/internal/shutdown", post(shutdown))
             .fallback(|| async { (StatusCode::NOT_FOUND, "Unknown API endpoint") }),
     )
-    .layer(DefaultBodyLimit::max(64 * 1024))
+    .layer(DefaultBodyLimit::max(1024 * 1024))
     .layer(middleware::from_fn(security_headers))
     .layer(middleware::from_fn_with_state(state.clone(), receive_time))
     .layer(tower_http::trace::TraceLayer::new_for_http())
     .with_state(state)
 }
 async fn receive_time(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
-    req.extensions_mut().insert(ReceivedAt(state.now()));
+    if req.extensions().get::<ReceivedAt>().is_none() {
+        req.extensions_mut().insert(ReceivedAt(state.now()));
+    }
     next.run(req).await
 }
-async fn security_headers(req: Request, next: Next) -> Response {
+pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     if !matches!(
         *req.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
@@ -141,7 +167,7 @@ async fn security_headers(req: Request, next: Next) -> Response {
         ("referrer-policy", "same-origin"),
         (
             "content-security-policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src https://macaujc.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         ),
     ] {
         response.headers_mut().insert(name, value.parse().unwrap());
@@ -161,7 +187,16 @@ async fn authenticate(State(state): State<AppState>, req: Request, next: Next) -
         Ok(false)
     };
     match valid {
-        Ok(true) => next.run(req).await,
+        Ok(true) => {
+            if !matches!(
+                req.uri().path(),
+                "/session" | "/logout" | "/license" | "/license/activate" | "/license/migrate"
+            ) && let Err(e) = crate::license::require(&state).await
+            {
+                return e.into_response();
+            }
+            next.run(req).await
+        }
         Ok(false) => ApiError(StatusCode::UNAUTHORIZED, "请先登录".into()).into_response(),
         Err(e) => ApiError::from(e).into_response(),
     }
@@ -171,7 +206,7 @@ struct Login {
     username: String,
     password: String,
 }
-async fn login(State(state): State<AppState>, Json(input): Json<Login>) -> ApiResult<Response> {
+async fn verify_admin(state: &AppState, input: Login) -> ApiResult<()> {
     if input.password.len() > 256 || input.username.len() > 240 {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "账号或密码错误".into()));
     }
@@ -216,6 +251,10 @@ async fn login(State(state): State<AppState>, Json(input): Json<Login>) -> ApiRe
     if !matches {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "账号或密码错误".into()));
     }
+    Ok(())
+}
+async fn login(State(state): State<AppState>, Json(input): Json<Login>) -> ApiResult<Response> {
+    verify_admin(&state, input).await?;
     let mut bytes = [0; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let value = hex::encode(bytes);
@@ -256,9 +295,11 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 }
 async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let today = ensure_period(&state, state.now().date()).await?;
-    let plays: Vec<Play> = sqlx::query_as("SELECT id,version,rule,enabled FROM plays ORDER BY id")
-        .fetch_all(&state.pool)
-        .await?;
+    let plays: Vec<Play> = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY id",
+    )
+    .fetch_all(&state.pool)
+    .await?;
     Ok(Json(
         json!({"today":view(&state,today).await?,"plays":plays,"zodiacs":ZODIACS}),
     ))
@@ -269,6 +310,10 @@ struct Page {
     search: Option<String>,
     period: Option<String>,
     play_id: Option<i64>,
+    bettor: Option<String>,
+    unassigned: Option<bool>,
+    min_amount: Option<String>,
+    max_amount: Option<String>,
 }
 async fn periods(State(state): State<AppState>, Query(q): Query<Page>) -> ApiResult<Json<Value>> {
     let page = q.page.unwrap_or(1).clamp(1, 100000);
@@ -311,15 +356,31 @@ async fn bets(State(state): State<AppState>, Query(q): Query<Page>) -> ApiResult
     let id = q.period.unwrap_or_else(|| period_id(state.now().date()));
     let page = q.page.unwrap_or(1).clamp(1, 100000);
     let play = q.play_id;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM bets WHERE period_id=? AND (? IS NULL OR play_id=?)",
-    )
-    .bind(&id)
-    .bind(play)
-    .bind(play)
-    .fetch_one(&state.pool)
-    .await?;
-    let items:Vec<BetSummary>=sqlx::query_as(&format!("SELECT {BET_COLUMNS} FROM bets WHERE period_id=? AND (? IS NULL OR play_id=?) ORDER BY created_at DESC,id DESC LIMIT 25 OFFSET ?")).bind(id).bind(play).bind(play).bind((page-1)*25).fetch_all(&state.pool).await?;
+    let bettor = if q.unassigned == Some(true) {
+        Some(String::new())
+    } else {
+        q.bettor.filter(|v| !v.is_empty())
+    };
+    let min = q.min_amount.as_deref().map(|v| scaled(v, 2)).transpose()?;
+    let max = q.max_amount.as_deref().map(|v| scaled(v, 2)).transpose()?;
+    if min.zip(max).is_some_and(|(a, b)| a > b) {
+        return Err(conflict("金额下限不能超过上限"));
+    }
+    let predicate = "period_id=? AND (? IS NULL OR play_id=?) AND (? IS NULL OR bettor=?) AND (? IS NULL OR stake>=?) AND (? IS NULL OR stake<=?)";
+    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM bets WHERE {predicate}"))
+        .bind(&id)
+        .bind(play)
+        .bind(play)
+        .bind(&bettor)
+        .bind(&bettor)
+        .bind(min)
+        .bind(min)
+        .bind(max)
+        .bind(max)
+        .fetch_one(&state.pool)
+        .await?;
+    let items: Vec<BetSummary> = sqlx::query_as(&format!("SELECT {BET_COLUMNS} FROM bets WHERE {predicate} ORDER BY created_at DESC,id DESC LIMIT 25 OFFSET ?"))
+        .bind(&id).bind(play).bind(play).bind(&bettor).bind(&bettor).bind(min).bind(min).bind(max).bind(max).bind((page-1)*25).fetch_all(&state.pool).await?;
     Ok(Json(
         json!({"items":items,"total":count,"page":page,"page_size":25}),
     ))
@@ -342,9 +403,18 @@ async fn bet_detail(
         .await?;
     let atoms: DbJson<Vec<Atom>> = row.try_get("atoms")?;
     let results: Option<DbJson<Vec<AtomResult>>> = row.try_get("results")?;
+    let layoffs: Vec<crate::ledger::Layoff> = sqlx::query_as(&format!(
+        "SELECT {} FROM layoffs WHERE bet_id=? ORDER BY created_at DESC,id DESC",
+        crate::ledger::LAYOFF_COLUMNS
+    ))
+    .bind(&id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let audit_rows = sqlx::query("SELECT event,detail,created_at FROM audit_events WHERE period_id=? AND JSON_UNQUOTE(JSON_EXTRACT(detail,'$.id'))=? ORDER BY id DESC LIMIT 100").bind(&summary.period_id).bind(&id).fetch_all(&mut *tx).await?;
+    let events: Vec<Value> = audit_rows.into_iter().map(|r| Ok(json!({"event":r.try_get::<String,_>("event")?,"detail":r.try_get::<DbJson<Value>,_>("detail")?,"created_at":r.try_get::<chrono::NaiveDateTime,_>("created_at")?}))).collect::<Result<_,sqlx::Error>>()?;
     tx.commit().await?;
     Ok(Json(
-        json!({"record":summary,"atoms":atoms,"results":results}),
+        json!({"record":summary,"atoms":atoms,"results":results,"layoffs":layoffs,"events":events}),
     ))
 }
 async fn current_plan(state: &AppState, input: &BetInput) -> ApiResult<(Period, Play, BetPlan)> {
@@ -352,11 +422,13 @@ async fn current_plan(state: &AppState, input: &BetInput) -> ApiResult<(Period, 
     if input.period != p.id {
         return Err(conflict("期次已切换，请刷新后重新录入"));
     }
-    let play: Play = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=?")
-        .bind(input.play_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(missing)?;
+    let play: Play = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL",
+    )
+    .bind(input.play_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(missing)?;
     if play.version != input.play_version || !play.enabled {
         return Err(conflict("玩法配置已变更或停用，请刷新并确认最新规则"));
     }
@@ -374,7 +446,7 @@ async fn create_bet(
             "提交标识不合法，请刷新页面".into(),
         )
     })?;
-    input.selections.sort_unstable();
+    input.bettor = crate::ledger::party(&input.bettor)?;
     let hash = digest(&serde_json::to_string(&input).map_err(anyhow::Error::from)?);
     if let Some(row) = sqlx::query("SELECT id,request_hash FROM bets WHERE request_id=?")
         .bind(&input.request_id)
@@ -410,14 +482,23 @@ async fn create_bet(
         tx.commit().await?;
         return Ok(Json(json!({"id":id,"replayed":true})));
     }
-    if locked.state != "pending" || !is_open(received, locked.business_date, &locked.close_time) {
+    if locked.state != "pending"
+        || !is_open_between(
+            received,
+            locked.business_date,
+            &locked.open_time,
+            &locked.close_time,
+        )
+    {
         return Err(conflict("当前不在投注时间内，或本期已经封盘／接受开奖"));
     }
-    let play: Play =
-        sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? FOR UPDATE")
-            .bind(input.play_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let play: Play = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(input.play_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| conflict("玩法已删除，请刷新后重新选择"))?;
     if !play.enabled || play.version != input.play_version {
         return Err(conflict("玩法配置已变更，请刷新后确认"));
     }
@@ -431,10 +512,17 @@ async fn create_bet(
         ));
     }
     checked_sum([totals.try_get("stake")?, p.stake])?;
-    checked_sum([totals.try_get("exposure")?, p.exposure])?;
+    let outgoing_budget: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(stake+exposure),0) AS SIGNED) FROM layoffs WHERE period_id=? AND status<>'cancelled'").bind(&locked.id).fetch_one(&mut *tx).await?;
+    checked_sum([
+        totals.try_get("stake")?,
+        totals.try_get("exposure")?,
+        outgoing_budget,
+        p.stake,
+        p.exposure,
+    ])?;
     let id = uuid::Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(&id).bind(&input.request_id).bind(hash).bind(&locked.id).bind(play.id).bind(play.version).bind(play.rule).bind(DbJson(&input.selections)).bind(input.compound).bind(p.atoms[0].stake).bind(p.atoms.len() as i32).bind(p.stake).bind(p.rebate).bind(p.exposure).bind(locked.mapping.natal as i8).bind(DbJson(&p.atoms)).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&id).bind(&input.request_id).bind(hash).bind(&locked.id).bind(play.id).bind(play.version).bind(play.rule).bind(DbJson(&input.selections)).bind(input.compound).bind(p.atoms[0].stake).bind(p.atoms.len() as i32).bind(p.stake).bind(p.rebate).bind(p.exposure).bind(locked.mapping.natal as i8).bind(DbJson(&p.atoms)).bind(&input.bettor).execute(&mut *tx).await?;
     sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(&locked.id).execute(&mut *tx).await?;
     audit(
         &mut tx,
@@ -472,10 +560,20 @@ async fn cancel_bet(
         tx.commit().await?;
         return Ok(Json(json!({"ok":true})));
     }
-    if p.state != "pending" || !is_open(received, p.business_date, &p.close_time) {
+    if p.state != "pending"
+        || !is_open_between(received, p.business_date, &p.open_time, &p.close_time)
+    {
         return Err(conflict("封盘后不能撤销投注"));
     }
-    sqlx::query("UPDATE bets SET status='cancelled',cancelled_at=UTC_TIMESTAMP(6) WHERE id=?")
+    let outgoing: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM layoffs WHERE bet_id=? AND status<>'cancelled'")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if outgoing > 0 {
+        return Err(conflict("请先撤销该投注关联的飞出记录，再作废原投注"));
+    }
+    sqlx::query("UPDATE bets SET status='cancelled',revision=revision+1,cancelled_at=UTC_TIMESTAMP(6) WHERE id=?")
         .bind(&id)
         .execute(&mut *tx)
         .await?;
@@ -503,18 +601,35 @@ async fn quote(
     let mapping = period.mapping.0;
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        risk::solve(
+        let result = risk::solve(
             &atoms,
             &mapping,
             Duration::from_secs(60).saturating_sub(started.elapsed()),
             &AtomicBool::new(false),
-        )
+        )?;
+        let max_return = if atoms.iter().any(|a| a.void_on_49) {
+            let mut payout_only = atoms.clone();
+            for a in &mut payout_only {
+                a.rebate = 0;
+            }
+            risk::solve(
+                &payout_only,
+                &mapping,
+                Duration::from_secs(60).saturating_sub(started.elapsed()),
+                &AtomicBool::new(false),
+            )?
+            .max_payout
+        } else {
+            result.max_payout
+        };
+        Ok::<_, risk::RiskError>((result, max_return))
     })
     .await
     .map_err(anyhow::Error::from)?;
-    let result = result.map_err(|e| ApiError(StatusCode::REQUEST_TIMEOUT, e.to_string()))?;
+    let (result, max_return) =
+        result.map_err(|e| ApiError(StatusCode::REQUEST_TIMEOUT, e.to_string()))?;
     Ok(Json(
-        json!({"units":plan.atoms.len(),"stake":plan.stake,"rebate":plan.rebate,"max_return":result.max_payout,"max_profit":result.max_payout+plan.rebate-plan.stake,"result":result}),
+        json!({"units":plan.atoms.len(),"stake":plan.stake,"rebate":plan.rebate,"max_return":max_return,"max_profit":-result.min_net.unwrap_or(0),"result":result}),
     ))
 }
 async fn create_play(
@@ -523,6 +638,18 @@ async fn create_play(
 ) -> ApiResult<Json<Value>> {
     rule.validate()?;
     let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plays WHERE deleted_at IS NULL")
+        .fetch_one(&mut *tx)
+        .await?;
+    if count >= 1000 {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "玩法总数不能超过 1000 条".into(),
+        ));
+    }
     let result = sqlx::query("INSERT INTO plays(version,rule) VALUES(1,?)")
         .bind(DbJson(&rule))
         .execute(&mut *tx)
@@ -550,12 +677,13 @@ async fn update_play(
 ) -> ApiResult<Json<Value>> {
     input.rule.validate()?;
     let mut tx = state.pool.begin().await?;
-    let play: Play =
-        sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(missing)?;
+    let play: Play = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(missing)?;
     if play.version != input.version {
         return Err(conflict("配置已被更新，请刷新后再保存"));
     }
@@ -586,8 +714,8 @@ async fn update_play(
     Ok(Json(json!({"id":id,"version":version})))
 }
 async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    let rows=sqlx::query("SELECT effective_date,close_time FROM closing_configs ORDER BY effective_date DESC LIMIT 50").fetch_all(&state.pool).await?;
-    let closing:Vec<Value>=rows.into_iter().map(|r|Ok(json!({"effective_date":r.try_get::<NaiveDate,_>("effective_date")?,"close_time":r.try_get::<String,_>("close_time")?}))).collect::<Result<_,sqlx::Error>>()?;
+    let rows=sqlx::query("SELECT effective_date,open_time,close_time FROM closing_configs ORDER BY effective_date DESC LIMIT 50").fetch_all(&state.pool).await?;
+    let closing:Vec<Value>=rows.into_iter().map(|r|Ok(json!({"effective_date":r.try_get::<NaiveDate,_>("effective_date")?,"close_time":r.try_get::<String,_>("close_time")?,"open_time":r.try_get::<String,_>("open_time")?}))).collect::<Result<_,sqlx::Error>>()?;
     let rows = sqlx::query(
         "SELECT effective_date,mapping FROM mapping_configs ORDER BY effective_date DESC LIMIT 50",
     )
@@ -600,35 +728,51 @@ async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 }
 #[derive(Deserialize)]
 struct CloseInput {
+    open_time: String,
     close_time: String,
+    username: String,
+    password: String,
 }
 async fn update_closing(
     State(state): State<AppState>,
     Json(input): Json<CloseInput>,
 ) -> ApiResult<Json<Value>> {
-    let time = NaiveTime::parse_from_str(&input.close_time, "%H:%M").map_err(|_| {
-        ApiError(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "封盘时间格式应为 HH:MM".into(),
-        )
+    verify_admin(
+        &state,
+        Login {
+            username: input.username,
+            password: input.password,
+        },
+    )
+    .await
+    .map_err(|e| {
+        if e.0 == StatusCode::UNAUTHORIZED {
+            ApiError(
+                StatusCode::FORBIDDEN,
+                "账号或密码错误，时间配置未修改".into(),
+            )
+        } else {
+            e
+        }
     })?;
-    if input.close_time.len() != 5 || time <= NaiveTime::from_hms_opt(8, 0, 0).unwrap() {
-        return Err(ApiError(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "封盘时间须晚于开盘时间 08:00".into(),
-        ));
+    let open = NaiveTime::parse_from_str(&input.open_time, "%H:%M")
+        .map_err(|_| conflict("开始时间格式应为 HH:MM"))?;
+    let close = NaiveTime::parse_from_str(&input.close_time, "%H:%M")
+        .map_err(|_| conflict("封盘时间格式应为 HH:MM"))?;
+    if input.open_time.len() != 5 || input.close_time.len() != 5 || close <= open {
+        return Err(conflict("封盘时间须晚于开始时间，不能跨日"));
     }
     let date = state.now().date().succ_opt().unwrap();
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO closing_configs(effective_date,close_time) VALUES(?,?) ON DUPLICATE KEY UPDATE close_time=VALUES(close_time),created_at=UTC_TIMESTAMP(6)").bind(date).bind(&input.close_time).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO closing_configs(effective_date,open_time,close_time) VALUES(?,?,?) ON DUPLICATE KEY UPDATE open_time=VALUES(open_time),close_time=VALUES(close_time),created_at=UTC_TIMESTAMP(6)").bind(date).bind(&input.open_time).bind(&input.close_time).execute(&mut *tx).await?;
     audit(
         &mut tx,
         None,
         "closing_scheduled",
-        json!({"date":date,"close_time":input.close_time}),
+        json!({"date":date,"open_time":input.open_time,"close_time":input.close_time}),
     )
     .await?;
     tx.commit().await?;
@@ -659,4 +803,22 @@ async fn update_mapping(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"effective_date":input.effective_date})))
+}
+
+async fn shutdown(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let supplied = headers
+        .get("x-marksix-shutdown")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let allowed = state.shutdown_token.as_deref().is_some_and(|expected| {
+        // Compare digests without prefix-dependent early returns.
+        let a = digest(expected);
+        let b = digest(supplied);
+        a.bytes().zip(b.bytes()).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0
+    });
+    if !allowed {
+        return Err(ApiError(StatusCode::FORBIDDEN, "停止请求未获授权".into()));
+    }
+    state.shutdown.notify_one();
+    Ok(Json(json!({"ok":true})))
 }
