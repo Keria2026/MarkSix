@@ -61,6 +61,17 @@ bun run test:e2e
 
 测试后端使用固定北京时间 2026-10-14 12:00，仅作为测试工具，不会进入生产镜像。每次重跑完整浏览器测试前重启测试后端以重置数据库。
 
+## 赔率表真实运行验收
+
+在依次完成数据库测试后，从仓库根目录运行（同样会清空 `marksix_test`，需要空闲的 localhost:8082）：
+
+```bash
+cargo build --locked --manifest-path backend/Cargo.toml --example runtime_server
+python3 scripts/runtime_acceptance.py
+```
+
+保留 `TEST_DATABASE_URL` 和 `TEST_ADMIN_PASSWORD`。脚本自动启动及停止测试服务、导入赔率表、生成投注、推进测试时钟及开奖、核对逐注结算和分类汇总，并生成 `test-results/runtime-acceptance.json`。固定种子 20261015，独立 Python Decimal 实现不调用后端计算函数作为预期值。夹具控制接口只编译到 example，随机令牌保护，仅绑定回环地址，不进入生产包。授权门禁由单独的真实协议与原生安装测试覆盖。测试结果与边界见 [运行验收](RUNTIME_ACCEPTANCE.md)。
+
 ## 风险算法边界
 
 按等价条件合并基础注；仅号码单选的可分离组合使用精确线性路径，其他使用号码等价类与保守上下界分支搜索。只有完整证明最优时才发布结果。任务绑定投注版本，被替代任务不能覆盖新结果；取消、失败和 60 秒超时不返回估算。
@@ -78,6 +89,8 @@ bun run test:e2e
 前端的组合数预览只用于交互反馈，后端再次执行完整规则和容量校验。官方频道 iframe 仅允许 macaujc.com，CSP 保留 `frame-ancestors 'none'`。
 
 `0003_configuration_and_license.sql` 只新增玩法删除时间和授权表，不修改旧规则、旧基础注或迁移文件。删除玩法仅隐藏新投注入口，不删除版本、投注或统计。玩法导入为 schema 1，包含 rule/enabled，整批校验、事务新增，不携带业务 ID／账号／设备信息，同名不覆盖。每文件及活动玩法总量最多 1,000 条。
+
+新增 JSON 字段 `zodiac_count`、`special_hit_odds`、基础注 `special_hit_payout` 均有 serde 默认值，不改历史快照或已发布迁移。生肖种数从生肖并集推导，风险上下界按未来各生肖号码容量计算；含特码赔率展开为以特码号码为门控的差额项，金额修改及飞出重算两档返还。
 
 新增 `selection_limit` 默认为 null，兼容旧快照；它同时约束普通／复式候选池，数量关系仍控制基础注。前后端均校验，最多 1,000 基础注限制不变。
 

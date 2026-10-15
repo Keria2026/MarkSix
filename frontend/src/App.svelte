@@ -184,12 +184,32 @@
       boot?.plays.find((p) => p.enabled),
   );
   const nav = [
-    { id: "overview" as Tab, label: "本期概览", icon: LayoutDashboard },
-    { id: "bet" as Tab, label: "录入投注", icon: Plus },
-    { id: "statistics" as Tab, label: "本期统计", icon: Activity },
-    { id: "history" as Tab, label: "历史统计", icon: History },
-    { id: "settings" as Tab, label: "玩法与配置", icon: Settings2 },
-    { id: "official" as Tab, label: "官方频道", icon: ArrowUpRight },
+    {
+      id: "overview" as Tab,
+      label: "本期概览",
+      short: "概览",
+      icon: LayoutDashboard,
+    },
+    { id: "bet" as Tab, label: "录入投注", short: "投注", icon: Plus },
+    {
+      id: "statistics" as Tab,
+      label: "本期统计",
+      short: "统计",
+      icon: Activity,
+    },
+    { id: "history" as Tab, label: "历史统计", short: "历史", icon: History },
+    {
+      id: "settings" as Tab,
+      label: "玩法与配置",
+      short: "配置",
+      icon: Settings2,
+    },
+    {
+      id: "official" as Tab,
+      label: "官方频道",
+      short: "频道",
+      icon: ArrowUpRight,
+    },
   ];
   const selectedCount = $derived(
     currentPlay ? basicCount(currentPlay.rule, selections, compound) : 0,
@@ -269,6 +289,8 @@
       combination_size: 1,
       compound_enabled: false,
       selection_limit: null,
+      zodiac_count: null,
+      special_hit_odds: null,
       minimum_hits: 1,
       odds: "43",
       rebate_percent: "2",
@@ -442,7 +464,11 @@
   }
   function selectPlay(value: number) {
     playId = value;
-    selections = [];
+    const selectedRule = boot?.plays.find((play) => play.id === value)?.rule;
+    selections =
+      selectedRule?.kind === "zodiac_count" && selectedRule.zodiac_count != null
+        ? [selectedRule.zodiac_count]
+        : [];
     compound = false;
     selectionError = "";
   }
@@ -692,17 +718,32 @@
   function openEditor(play?: Play) {
     editId = play?.id ?? null;
     editVersion = play?.version ?? 0;
-    rule = structuredClone($state.snapshot(play?.rule ?? newRule()));
+    rule = {
+      zodiac_count: null,
+      special_hit_odds: null,
+      ...structuredClone($state.snapshot(play?.rule ?? newRule())),
+    };
     enabled = play?.enabled ?? true;
     editError = "";
     editor = true;
   }
   function changeKind(value: Kind) {
     rule.kind = value;
+    rule.zodiac_count = null;
+    rule.special_hit_odds = null;
+    rule.selection_limit = null;
     rule.quantity = 1;
     rule.combination_size = 1;
     if (value === "wave") rule.scope = "special";
-    if (value === "wave") {
+    if (value === "zodiac_count") {
+      rule.zodiac_count = 4;
+      rule.scope = "all";
+      rule.condition = "all";
+      rule.relation = "eq";
+      rule.compound_enabled = false;
+      rule.selection_limit = 1;
+    }
+    if (value === "wave" || value === "zodiac_count") {
       rule.special_odds = null;
       rule.special_rebate_percent = null;
     }
@@ -714,6 +755,17 @@
     busy = true;
     editError = "";
     if (!rule.compound_enabled) rule.combination_size = rule.quantity;
+    if (
+      !(
+        rule.kind === "number" &&
+        rule.scope === "all" &&
+        rule.condition === "all" &&
+        rule.relation === "eq" &&
+        rule.quantity === 2 &&
+        rule.combination_size === 2
+      )
+    )
+      rule.special_hit_odds = null;
     try {
       await api(editId ? `/plays/${editId}` : "/plays", {
         method: editId ? "PUT" : "POST",
@@ -943,7 +995,9 @@
             aria-label={item.label}
             aria-current={tab === item.id ? "page" : undefined}
             onclick={() => navigate(item.id)}
-            ><item.icon size={19} strokeWidth={1.7} /><span>{item.label}</span
+            ><item.icon size={19} strokeWidth={1.7} /><span class="nav-label"
+              >{item.label}</span
+            ><span class="nav-label-short" aria-hidden="true">{item.short}</span
             >{#if item.id === "bet"}<span class="nav-plus">＋</span
               >{/if}</button
           >
@@ -1365,6 +1419,15 @@
                     >
                   </div>{/if}
               </div>
+              {#if currentPlay.rule.kind === "zodiac_count"}<p
+                  class="field-help"
+                >
+                  全部 7 个开奖号码恰好出现 {currentPlay.rule.zodiac_count} 种不同生肖时中奖；同一生肖出现多次只计一种。
+                </p>{/if}
+              {#if currentPlay.rule.special_hit_odds}<p class="field-help">
+                  两平码按 {currentPlay.rule.odds} 倍；一特一平按 {currentPlay
+                    .rule.special_hit_odds} 倍返还。
+                </p>{/if}
               {#if currentPlay.rule.condition === "hard_pair"}<p
                   class="field-help"
                 >
@@ -1402,7 +1465,7 @@
                 class:number-grid={currentPlay.rule.kind === "number"}
                 class:zodiac-grid={currentPlay.rule.kind === "zodiac"}
               >
-                {#each options(currentPlay.rule.kind) as value}<button
+                {#each options(currentPlay.rule.kind).filter((value) => currentPlay.rule.kind !== "zodiac_count" || value === currentPlay.rule.zodiac_count) as value}<button
                     class="option"
                     class:selected={selections.includes(value)}
                     aria-pressed={selections.includes(value)}
@@ -2141,7 +2204,11 @@
                   >{atom.options
                     .map((v) => label(detail!.record.rule.kind, v))
                     .join(" · ")}</td
-                ><td>{atom.odds}×</td><td
+                ><td
+                  >{atom.odds}×{#if atom.special_hit_odds}<small>
+                      / 含特 {atom.special_hit_odds}×</small
+                    >{/if}</td
+                ><td
                   >{result
                     ? result.voided
                       ? "和局退本"
@@ -2383,7 +2450,7 @@
           ><label
             >开奖对比范围<select
               bind:value={rule.scope}
-              disabled={rule.kind === "wave"}
+              disabled={rule.kind === "wave" || rule.kind === "zodiac_count"}
               >{#each Object.entries(scopes) as [key, value]}<option value={key}
                   >{value}</option
                 >{/each}</select
@@ -2393,6 +2460,7 @@
         <label
           >命中条件<select
             value={rule.condition}
+            disabled={rule.kind === "zodiac_count"}
             onchange={(e) =>
               changeCondition(e.currentTarget.value as Rule["condition"])}
             >{#each Object.entries(conditions) as [key, value]}<option
@@ -2400,6 +2468,18 @@
               >{/each}</select
           ></label
         >
+        {#if rule.kind === "zodiac_count"}<label
+            >目标生肖种数<input
+              type="number"
+              min="1"
+              max="7"
+              bind:value={rule.zodiac_count}
+              required
+            /></label
+          >
+          <p class="field-help">
+            判断全部 7 球恰好开出几种不同生肖，投注时无需逐个选择生肖。
+          </p>{/if}
         {#if rule.condition === "at_least"}<label
             >最少命中数量<input
               type="number"
@@ -2425,13 +2505,16 @@
           ><input
             type="checkbox"
             bind:checked={rule.compound_enabled}
-            disabled={rule.condition === "hard_pair" ||
+            disabled={rule.kind === "zodiac_count" ||
+              rule.condition === "hard_pair" ||
               rule.condition === "soft_pair"}
           /> 启用复式投注</label
         >
         <div class="form-three">
           <label
-            >数量关系<select bind:value={rule.relation}
+            >数量关系<select
+              bind:value={rule.relation}
+              disabled={rule.kind === "zodiac_count"}
               >{#each Object.entries(relations) as [key, value]}<option
                   value={key}>{value}</option
                 >{/each}</select
@@ -2442,6 +2525,7 @@
               min="1"
               max="49"
               bind:value={rule.quantity}
+              disabled={rule.kind === "zodiac_count"}
               required
             /></label
           ><label
@@ -2477,7 +2561,26 @@
             /></label
           >
         </div>
-        {#if rule.kind !== "wave"}<label class="checkbox-label"
+        {#if rule.kind === "number" && rule.scope === "all" && rule.condition === "all" && rule.relation === "eq" && rule.quantity === 2}<label
+            class="checkbox-label"
+            ><input
+              type="checkbox"
+              checked={rule.special_hit_odds != null}
+              onchange={(e) =>
+                (rule.special_hit_odds = e.currentTarget.checked ? "25" : null)}
+            />启用一特一平赔率</label
+          >{#if rule.special_hit_odds != null}<label
+              >一特一平含本赔率<input
+                inputmode="decimal"
+                bind:value={rule.special_hit_odds}
+                required
+              /></label
+            >
+            <p class="field-help">
+              两平码中奖沿用上方普通含本赔率；一号为特码、另一号为平码时使用此赔率，逐条基础注分别结算。
+            </p>{/if}{/if}
+        {#if rule.kind !== "wave" && rule.kind !== "zodiac_count"}<label
+            class="checkbox-label"
             ><input
               type="checkbox"
               checked={rule.special_odds !== null}

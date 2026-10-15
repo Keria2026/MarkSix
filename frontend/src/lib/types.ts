@@ -1,4 +1,11 @@
-export type Kind = "number" | "zodiac" | "wave" | "tail" | "parity" | "size";
+export type Kind =
+  | "number"
+  | "zodiac"
+  | "wave"
+  | "tail"
+  | "parity"
+  | "size"
+  | "zodiac_count";
 export type Scope = "regular" | "special" | "all";
 export type Condition =
   | "all"
@@ -18,6 +25,8 @@ export interface Rule {
   combination_size: number;
   compound_enabled: boolean;
   selection_limit?: number | null;
+  zodiac_count?: number | null;
+  special_hit_odds?: string | null;
   minimum_hits: number;
   odds: string;
   rebate_percent: string;
@@ -119,6 +128,8 @@ export interface Bet {
   natal: number;
 }
 export interface Atom {
+  special_hit_odds?: string | null;
+  special_hit_payout?: number | null;
   options: number[];
   stake: number;
   payout: number;
@@ -203,6 +214,7 @@ export const kinds: Record<Kind, string> = {
   tail: "尾数",
   parity: "单双",
   size: "大小",
+  zodiac_count: "生肖种数",
 };
 export const scopes: Record<Scope, string> = {
   regular: "平码 · 前 6 个",
@@ -267,6 +279,7 @@ export function wave(n: number): number {
       : 2;
 }
 export function label(kind: Kind, value: number): string {
+  if (kind === "zodiac_count") return `${value} 种生肖`;
   return kind === "number"
     ? String(value).padStart(2, "0")
     : kind === "zodiac"
@@ -287,9 +300,10 @@ export function options(kind: Kind): number[] {
     tail: 10,
     parity: 2,
     size: 2,
+    zodiac_count: 7,
   }[kind];
   return Array.from({ length: size }, (_, i) =>
-    kind === "number" ? i + 1 : i,
+    kind === "number" || kind === "zodiac_count" ? i + 1 : i,
   );
 }
 export function count(n: number, k: number): number {
@@ -357,6 +371,11 @@ export function basicCount(
   selections: number[],
   compound: boolean,
 ): number {
+  if (
+    rule.kind === "zodiac_count" &&
+    (selections.length !== 1 || selections[0] !== rule.zodiac_count)
+  )
+    return 0;
   const n = selections.length;
   if (
     !n ||

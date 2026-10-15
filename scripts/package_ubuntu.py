@@ -58,6 +58,8 @@ def main():
         shutil.copyfile(ROOT / 'scripts' / name, output / 'scripts' / name)
     shutil.copyfile(ROOT / 'docs/RUNNING.md', output / 'README.md')
     shutil.copyfile(ROOT / 'docs/LICENSING.md', output / 'LICENSING.md')
+    (output / 'fixtures').mkdir()
+    shutil.copyfile(ROOT / 'fixtures/customer-plays.json', output / 'fixtures/customer-plays.json')
     (output / 'license-authority').mkdir()
     # Explicit allowlist: never copy owner .env, private keys, or local data.
     for name in ['compose.yaml', 'setup.py']:

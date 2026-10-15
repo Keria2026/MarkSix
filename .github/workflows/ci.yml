@@ -51,6 +51,15 @@ jobs:
           cargo test --locked --lib license::tests::online_activation -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
+      - name: Customer rules runtime accounting acceptance
+        run: |
+          cargo build --locked --manifest-path backend/Cargo.toml --example runtime_server
+          python3 scripts/runtime_acceptance.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-acceptance
+          path: test-results/runtime-acceptance.json
+          retention-days: 30
       - name: Frontend checks
         working-directory: frontend
         run: |

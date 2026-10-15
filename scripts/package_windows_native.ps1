@@ -8,6 +8,8 @@ Get-ChildItem deploy/windows-native -File | Where-Object { $_.Extension -in @('.
 Copy-Item backend/target/release/marksix.exe $destinationPath
 Copy-Item docs/LICENSING.md (Join-Path $destinationPath 'LICENSING.md')
 Copy-Item frontend/dist (Join-Path $destinationPath 'www') -Recurse
+New-Item -ItemType Directory -Path (Join-Path $destinationPath 'fixtures') | Out-Null
+Copy-Item fixtures/customer-plays.json (Join-Path $destinationPath 'fixtures/customer-plays.json')
 $mysqlUrl = 'https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip'
 $download = Join-Path $env:RUNNER_TEMP 'mysql-native.zip'
 Invoke-WebRequest -Uri $mysqlUrl -OutFile $download

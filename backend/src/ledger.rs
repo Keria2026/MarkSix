@@ -57,6 +57,11 @@ fn reprice(atoms: &[Atom], amount: i64, rule: &Rule) -> RuleResult<BetPlan> {
             let mut a = a.clone();
             a.stake = amount;
             a.payout = rounded_product(amount, scaled(&a.odds, 4)?)?;
+            a.special_hit_payout = a
+                .special_hit_odds
+                .as_ref()
+                .map(|v| scaled(v, 4).and_then(|v| rounded_product(amount, v)))
+                .transpose()?;
             if a.rebate_percent.is_empty() {
                 a.rebate_percent = rule.rebate_percent.clone();
             }
@@ -67,7 +72,7 @@ fn reprice(atoms: &[Atom], amount: i64, rule: &Rule) -> RuleResult<BetPlan> {
     Ok(BetPlan {
         stake: checked_sum(atoms.iter().map(|a| a.stake))?,
         rebate: checked_sum(atoms.iter().map(|a| a.rebate))?,
-        exposure: checked_sum(atoms.iter().map(|a| a.payout))?,
+        exposure: checked_sum(atoms.iter().map(Atom::max_payout))?,
         atoms,
     })
 }

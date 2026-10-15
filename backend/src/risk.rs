@@ -137,8 +137,17 @@ fn solve_universe(
     let start = Instant::now();
     if mapping.validate().is_err()
         || universe.len() < 7
-        || checked_sum(atoms.iter().map(|a| a.payout.max(a.stake))).is_err()
-        || atoms.iter().any(|a| !matches!(a.position, -1 | 1))
+        || checked_sum(atoms.iter().map(|a| a.max_payout().max(a.stake))).is_err()
+        || atoms.iter().any(|a| {
+            !matches!(a.position, -1 | 1)
+                || (a.kind == Kind::ZodiacCount && a.scope != Scope::All)
+                || (a.special_hit_payout.is_some()
+                    && (a.kind != Kind::Number
+                        || a.scope != Scope::All
+                        || a.condition != Condition::All
+                        || a.mask.count_ones() != 2
+                        || a.options.len() != 2))
+        })
     {
         return Err(RiskError::Invalid);
     }
@@ -248,6 +257,23 @@ fn solve_universe(
                     a.minimum_hits,
                 ))
                 .or_default() += pay;
+            if let Some(special_payout) = a.special_hit_payout {
+                let delta = (special_payout - a.payout) * i64::from(a.position);
+                for &n in &a.options {
+                    let special = 1_u64 << (n - 1);
+                    *aggregated
+                        .entry((
+                            Kind::Number,
+                            Scope::Regular,
+                            Condition::All,
+                            a.mask & !special,
+                            special,
+                            false,
+                            1,
+                        ))
+                        .or_default() += delta;
+                }
+            }
             if a.void_on_49 {
                 *aggregated
                     .entry((
@@ -392,6 +418,49 @@ impl Search<'_> {
             if t.special_gate & (1 << (self.special - 1)) == 0 {
                 continue;
             }
+            if t.kind == Kind::ZodiacCount {
+                let selected = masks[1] | self.special_masks[1];
+                let have = selected.count_ones() as usize;
+                let same_capacity = (0..12)
+                    .filter(|i| selected & (1 << i) != 0)
+                    .map(|i| (future[0] & self.feature_numbers[1][i]).count_ones() as usize)
+                    .sum::<usize>();
+                let mut missing = remaining.saturating_sub(same_capacity);
+                let mut capacities = (0..12)
+                    .filter(|i| selected & (1 << i) == 0)
+                    .map(|i| (future[0] & self.feature_numbers[1][i]).count_ones() as usize)
+                    .filter(|n| *n > 0)
+                    .collect::<Vec<_>>();
+                capacities.sort_unstable_by(|a, b| b.cmp(a));
+                let max = have + remaining.min(capacities.len());
+                let mut min = have;
+                for capacity in capacities {
+                    if missing == 0 {
+                        break;
+                    }
+                    min += 1;
+                    missing = missing.saturating_sub(capacity);
+                }
+                let feasible = (min..=max).fold(0_u64, |mask, n| mask | (1 << n));
+                let certain = feasible & t.mask == feasible;
+                let possible = feasible & t.mask != 0;
+                if t.pay >= 0 {
+                    if certain {
+                        low += t.pay;
+                    }
+                    if possible {
+                        high += t.pay;
+                    }
+                } else {
+                    if possible {
+                        low += t.pay;
+                    }
+                    if certain {
+                        high += t.pay;
+                    }
+                }
+                continue;
+            }
             let selected = if t.scope == Scope::All {
                 masks[t.kind.index()] | self.special_masks[t.kind.index()]
             } else {
@@ -528,6 +597,8 @@ mod tests {
             rebate_percent: "0".into(),
             void_on_49: false,
             position: 1,
+            special_hit_odds: None,
+            special_hit_payout: None,
         }
     }
     #[test]
@@ -643,6 +714,33 @@ mod tests {
             );
             a.minimum_hits = 2;
             atoms.push(a);
+            for count in 2..=7 {
+                let mut a = atom(
+                    Kind::ZodiacCount,
+                    Scope::All,
+                    Condition::All,
+                    1 << count,
+                    173 + count * 31,
+                );
+                a.position = if (scenario + count as usize).is_multiple_of(2) {
+                    -1
+                } else {
+                    1
+                };
+                atoms.push(a);
+            }
+            let mut pair = atom(
+                Kind::Number,
+                Scope::All,
+                Condition::All,
+                (1 << 5) | (1 << 44),
+                550,
+            );
+            pair.options = vec![6, 45];
+            pair.special_hit_payout = Some(if scenario % 2 == 0 { 250 } else { 750 });
+            pair.special_hit_odds = Some("2.5".into());
+            pair.position = if scenario % 3 == 0 { -1 } else { 1 };
+            atoms.push(pair);
             let result = solve_universe(
                 &atoms,
                 &m,
@@ -698,6 +796,32 @@ mod tests {
         assert_eq!(
             solve(&[], &m, Duration::from_secs(1), &AtomicBool::new(true)).unwrap_err(),
             RiskError::Cancelled
+        );
+    }
+    #[test]
+    fn full_universe_exact_zodiac_count_extrema() {
+        let m = Mapping::default();
+        let atoms = [(4, 1500), (5, 300), (6, 200), (7, 500)].map(|(count, payout)| {
+            let mut a = atom(
+                Kind::ZodiacCount,
+                Scope::All,
+                Condition::All,
+                1 << count,
+                payout,
+            );
+            a.rebate = 10;
+            a
+        });
+        let result = solve(&atoms, &m, Duration::from_secs(5), &AtomicBool::new(false)).unwrap();
+        assert_eq!((result.min_net, result.max_net), (Some(-1140), Some(360)));
+        assert_eq!(
+            Draw::predicted(result.worst_draw, &m)
+                .zodiac
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
         );
     }
     #[test]

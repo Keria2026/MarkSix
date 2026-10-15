@@ -164,6 +164,41 @@ test("administrator records compound bets, cancels atomically, configures rules,
   await page.getByLabel("最少命中数量").fill("2");
   await page.getByRole("button", { name: "保存玩法" }).click();
   await expect(page.getByRole("heading", { name: "三中二验收" })).toBeVisible();
+  await page.getByRole("button", { name: "新建玩法" }).click();
+  await page.getByLabel("玩法名称").fill("四肖亮验收");
+  await page
+    .getByLabel("投注对象", { exact: true })
+    .selectOption("zodiac_count");
+  await expect(page.getByLabel("开奖对比范围")).toBeDisabled();
+  await page.getByLabel("目标生肖种数").fill("4");
+  await page.getByLabel("含本赔率", { exact: true }).fill("15");
+  await page.getByLabel("反水比例（%）").fill("10");
+  await page.getByRole("button", { name: "保存玩法" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await nav.getByRole("button", { name: "录入投注" }).click();
+  await page.getByLabel("搜索玩法名称").fill("四肖亮验收");
+  await expect(page.locator(".option-grid button")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "4 种生肖", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByLabel("每注金额").fill("1");
+  await page.getByRole("button", { name: "确认录入投注" }).click();
+  await expect(page.getByRole("status")).toContainText("投注已记录");
+  await nav.getByRole("button", { name: "玩法与配置" }).click();
+  await page.getByRole("button", { name: "新建玩法" }).click();
+  await page.getByLabel("玩法名称").fill("二中二含特验收");
+  await page.getByLabel("开奖对比范围").selectOption("all");
+  await page.getByLabel("数量阈值", { exact: true }).fill("2");
+  await page.getByLabel("含本赔率", { exact: true }).fill("55");
+  await page.getByLabel("启用一特一平赔率").check();
+  await page.getByLabel("一特一平含本赔率").fill("25");
+  await page.getByRole("button", { name: "保存玩法" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await nav.getByRole("button", { name: "录入投注" }).click();
+  await page.getByLabel("搜索玩法名称").fill("二中二含特验收");
+  await expect(
+    page.getByText("两平码按 55 倍；一特一平按 25 倍返还。"),
+  ).toBeVisible();
   await nav.getByRole("button", { name: "历史统计" }).click();
   await expect(page.locator("tbody")).toContainText("2026287");
   await page
@@ -277,4 +312,40 @@ test("activation and expiry keep business screens inaccessible until renewed", a
   active = false;
   await page.getByRole("button", { name: "刷新数据", exact: true }).click();
   await expect(page.getByRole("heading", { name: "激活工作台" })).toBeVisible();
+});
+
+test("narrow mobile navigation retains readable labels and touch targets", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.goto("/");
+  await page.getByLabel("管理员账号").fill("test-admin");
+  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
+  await page.getByRole("button", { name: "进入工作台" }).click();
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  await expect(nav).toBeVisible();
+  const buttons = nav.locator(":scope > button");
+  await expect(buttons).toHaveCount(6);
+  for (const button of await buttons.all()) {
+    const rect = await button.boundingBox();
+    expect(rect!.width).toBeGreaterThanOrEqual(44);
+    expect(rect!.height).toBeGreaterThanOrEqual(44);
+  }
+  await expect(nav.getByText("概览", { exact: true })).toBeVisible();
+  await expect(nav.locator(".nav-label").first()).toBeHidden();
+  const overflow = await page.evaluate(() => ({
+    width: window.innerWidth,
+    scroll: document.documentElement.scrollWidth,
+    elements: Array.from(document.querySelectorAll("body *"))
+      .map((element) => ({
+        name: element.tagName + "." + element.className,
+        right: Math.round(element.getBoundingClientRect().right),
+      }))
+      .filter((element) => element.right > window.innerWidth)
+      .slice(0, 12),
+  }));
+  await page.screenshot({ path: "test-results/navigation-narrow.png" });
+  expect(overflow.scroll, JSON.stringify(overflow)).toBeLessThanOrEqual(
+    overflow.width,
+  );
 });

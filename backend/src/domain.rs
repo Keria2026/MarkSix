@@ -18,6 +18,7 @@ pub enum Kind {
     Tail,
     Parity,
     Size,
+    ZodiacCount,
 }
 impl Kind {
     pub fn index(self) -> usize {
@@ -28,6 +29,8 @@ impl Kind {
             Self::Tail => 3,
             Self::Parity => 4,
             Self::Size => 5,
+            // Count predicates are derived from the zodiac-union feature slot.
+            Self::ZodiacCount => 1,
         }
     }
     pub fn size(self) -> u8 {
@@ -37,6 +40,7 @@ impl Kind {
             Self::Wave => 3,
             Self::Tail => 10,
             Self::Parity | Self::Size => 2,
+            Self::ZodiacCount => 7,
         }
     }
 }
@@ -95,6 +99,10 @@ pub struct Rule {
     pub special_odds: Option<String>,
     #[serde(default)]
     pub special_rebate_percent: Option<String>,
+    #[serde(default)]
+    pub zodiac_count: Option<u8>,
+    #[serde(default)]
+    pub special_hit_odds: Option<String>,
 }
 impl Rule {
     pub fn validate(&self) -> RuleResult<()> {
@@ -103,6 +111,39 @@ impl Rule {
             || self.name.chars().any(char::is_control)
         {
             return Err("玩法名称须为 1–40 个字符".into());
+        }
+        if self.kind == Kind::ZodiacCount {
+            if !self.zodiac_count.is_some_and(|n| (1..=7).contains(&n))
+                || self.scope != Scope::All
+                || self.condition != Condition::All
+                || self.relation != Relation::Eq
+                || self.quantity != 1
+                || self.combination_size != 1
+                || self.compound_enabled
+                || self.special_odds.is_some()
+                || self.special_rebate_percent.is_some()
+            {
+                return Err(
+                    "生肖种数须配置 1–7 种、全部范围、等于 1 项、全部命中、关闭复式及本命费率"
+                        .into(),
+                );
+            }
+        } else if self.zodiac_count.is_some() {
+            return Err("只有生肖种数玩法可以设置目标种数".into());
+        }
+        if let Some(odds) = &self.special_hit_odds {
+            let value = scaled(odds, 4)?;
+            if self.kind != Kind::Number
+                || self.scope != Scope::All
+                || self.condition != Condition::All
+                || self.relation != Relation::Eq
+                || self.quantity != 2
+                || self.combination_size != 2
+                || value == 0
+                || value > 100_000_000_000
+            {
+                return Err("含特码赔率仅用于号码、全部范围、等于 2、全部命中；赔率须大于 0 且不超过 10000000".into());
+            }
         }
         if self.selection_limit.is_some_and(|n| {
             n == 0
@@ -237,6 +278,9 @@ impl Mapping {
         }
     }
     pub fn natal_options(&self, kind: Kind) -> u64 {
+        if kind == Kind::ZodiacCount {
+            return 0;
+        }
         (1..=49)
             .filter(|n| self.zodiac[(*n - 1) as usize] == self.natal)
             .fold(0, |mask, n| mask | self.features(n)[kind.index()])
@@ -305,6 +349,15 @@ pub struct Atom {
     pub void_on_49: bool,
     #[serde(default = "long_position")]
     pub position: i8,
+    #[serde(default)]
+    pub special_hit_odds: Option<String>,
+    #[serde(default)]
+    pub special_hit_payout: Option<i64>,
+}
+impl Atom {
+    pub fn max_payout(&self) -> i64 {
+        self.payout.max(self.special_hit_payout.unwrap_or(0))
+    }
 }
 fn long_position() -> i8 {
     1
@@ -347,6 +400,8 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
         || options.iter().any(|n| {
             if rule.kind == Kind::Number {
                 !(1..=49).contains(n)
+            } else if rule.kind == Kind::ZodiacCount {
+                !(1..=7).contains(n)
             } else {
                 *n >= rule.kind.size()
             }
@@ -362,6 +417,9 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
             "此玩法最多选择 {} 项",
             rule.selection_limit.unwrap()
         ));
+    }
+    if rule.kind == Kind::ZodiacCount && options.as_slice() != [rule.zodiac_count.unwrap()] {
+        return Err("请选择该玩法配置的目标生肖种数".into());
     }
     let k = if input.compound {
         rule.combination_size as usize
@@ -427,12 +485,18 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
             rebate_percent: rebate_percent.clone(),
             void_on_49: matches!(rule.kind, Kind::Parity | Kind::Size),
             position: 1,
+            special_hit_odds: rule.special_hit_odds.clone(),
+            special_hit_payout: rule
+                .special_hit_odds
+                .as_ref()
+                .map(|v| scaled(v, 4).and_then(|v| rounded_product(amount, v)))
+                .transpose()?,
         });
     }
     Ok(BetPlan {
         stake: checked_sum(atoms.iter().map(|a| a.stake))?,
         rebate: checked_sum(atoms.iter().map(|a| a.rebate))?,
-        exposure: checked_sum(atoms.iter().map(|a| a.payout))?,
+        exposure: checked_sum(atoms.iter().map(Atom::max_payout))?,
         atoms,
     })
 }
@@ -525,6 +589,14 @@ pub fn wins(atom: &Atom, draw: &Draw) -> bool {
     if is_void(atom, draw) {
         return false;
     }
+    if atom.kind == Kind::ZodiacCount {
+        let count = draw
+            .zodiac
+            .iter()
+            .fold(0u16, |mask, z| mask | (1 << z))
+            .count_ones();
+        return atom.mask & (1 << count) != 0;
+    }
     if matches!(atom.condition, Condition::HardPair | Condition::SoftPair) {
         if atom.options.len() != 2 {
             return false;
@@ -574,7 +646,11 @@ pub fn settle(atoms: &[Atom], draw: &Draw) -> Vec<AtomResult> {
             let payout = if voided {
                 a.stake
             } else if won {
-                a.payout
+                if a.options.contains(&draw.numbers[6]) {
+                    a.special_hit_payout.unwrap_or(a.payout)
+                } else {
+                    a.payout
+                }
             } else {
                 0
             };
@@ -679,6 +755,8 @@ pub fn defaults() -> Vec<Rule> {
             rebate_percent: "2".into(),
             special_odds: None,
             special_rebate_percent: None,
+            zodiac_count: None,
+            special_hit_odds: None,
         },
         Rule {
             name: "平特一肖中".into(),
@@ -695,6 +773,8 @@ pub fn defaults() -> Vec<Rule> {
             rebate_percent: "5".into(),
             special_odds: None,
             special_rebate_percent: None,
+            zodiac_count: None,
+            special_hit_odds: None,
         },
         Rule {
             name: "五有".into(),
@@ -711,6 +791,8 @@ pub fn defaults() -> Vec<Rule> {
             rebate_percent: "2".into(),
             special_odds: Some("8".into()),
             special_rebate_percent: None,
+            zodiac_count: None,
+            special_hit_odds: None,
         },
     ]
 }
@@ -729,6 +811,52 @@ mod tests {
             request_id: "test".into(),
             bettor: "测试投注人".into(),
         }
+    }
+    #[test]
+    fn distinct_zodiac_counts_and_result_dependent_pair_odds() {
+        let m = Mapping::default();
+        let mut r = defaults()[0].clone();
+        r.kind = Kind::ZodiacCount;
+        r.scope = Scope::All;
+        r.zodiac_count = Some(4);
+        r.rebate_percent = "10".into();
+        r.odds = "15".into();
+        let p = plan(&r, &input(vec![4], false), &m).unwrap();
+        let draw = Draw::predicted([1, 13, 25, 2, 14, 3, 4], &m);
+        assert_eq!(settle(&p.atoms, &draw)[0].payout, 150000);
+        assert_eq!(settle(&p.atoms, &draw)[0].rebate, 1000);
+        assert!(!wins(
+            &p.atoms[0],
+            &Draw::predicted([1, 2, 3, 4, 5, 6, 7], &m)
+        ));
+        assert!(plan(&r, &input(vec![5], false), &m).is_err());
+        r.compound_enabled = true;
+        assert!(r.validate().is_err());
+        r = defaults()[0].clone();
+        r.scope = Scope::All;
+        r.quantity = 2;
+        r.combination_size = 2;
+        r.odds = "55".into();
+        r.special_hit_odds = Some("25".into());
+        let p = plan(&r, &input(vec![6, 45], false), &m).unwrap();
+        assert_eq!(
+            settle(&p.atoms, &Draw::predicted([6, 45, 1, 2, 3, 4, 5], &m))[0].payout,
+            550000
+        );
+        assert_eq!(
+            settle(&p.atoms, &Draw::predicted([45, 1, 2, 3, 4, 5, 6], &m))[0].payout,
+            250000
+        );
+        assert_eq!(
+            settle(&p.atoms, &Draw::predicted([6, 1, 2, 3, 4, 5, 45], &m))[0].payout,
+            250000
+        );
+        assert_eq!(
+            settle(&p.atoms, &Draw::predicted([6, 1, 2, 3, 4, 5, 7], &m))[0].payout,
+            0
+        );
+        r.scope = Scope::Regular;
+        assert!(r.validate().is_err());
     }
     #[test]
     fn combinations_and_special_payout() {
