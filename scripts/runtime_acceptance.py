@@ -75,7 +75,11 @@ def atom_rates(rule, opts, year):
     )
     special = bool(set(opts) & natal_opts)
     return (
-        rule.get("special_odds")
+        rule["zero_tail_odds"]
+        if rule["kind"] == "tail"
+        and 0 in opts
+        and rule.get("zero_tail_odds") is not None
+        else rule.get("special_odds")
         if special and rule.get("special_odds") is not None
         else rule["odds"],
         rule.get("special_rebate_percent")
@@ -281,7 +285,9 @@ class Acceptance:
             self.equal(replay, result, "mutation idempotency")
             if receiver:
                 detail = self.request("GET", "/api/bets/" + model["id"])
-                fly = next(row for row in detail["layoffs"] if row["id"] == result["id"])
+                fly = next(
+                    row for row in detail["layoffs"] if row["id"] == result["id"]
+                )
                 model["layoffs"].append(
                     dict(
                         id=fly["id"],
@@ -368,7 +374,9 @@ class Acceptance:
             ledger(incoming, results, m["amount"])
             ledger(bettors.setdefault(m["bettor"], empty()), results, m["amount"])
             for fly in m["layoffs"]:
-                row = next(item for item in detail["layoffs"] if item["id"] == fly["id"])
+                row = next(
+                    item for item in detail["layoffs"] if item["id"] == fly["id"]
+                )
                 if fly.get("cancelled"):
                     self.equal(row["status"], "cancelled", "fly cancellation")
                     continue
@@ -466,6 +474,36 @@ class Acceptance:
                     odds="100",
                     special_odds="90",
                 )
+            ]
+            self.extra += [
+                self.create_play(
+                    "0尾单选",
+                    kind="tail",
+                    scope="all",
+                    odds="1.8",
+                    zero_tail_odds="2.1234",
+                    special_odds="1.7",
+                    special_rebate_percent="9.25",
+                ),
+                self.create_play(
+                    "0尾复式",
+                    kind="tail",
+                    scope="all",
+                    quantity=2,
+                    combination_size=2,
+                    compound_enabled=True,
+                    odds="3",
+                    zero_tail_odds="3.3333",
+                    special_odds="2.5",
+                ),
+                self.create_play(
+                    "0尾不中",
+                    kind="tail",
+                    scope="all",
+                    condition="none",
+                    odds="1.8",
+                    zero_tail_odds="1.5123",
+                ),
             ]
             for kind in ("size", "parity"):
                 for scope in ("regular", "special", "all"):

@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [master, main, dev]
+    branches: [master, dev]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -52,8 +52,6 @@ jobs:
           cargo test --locked
           cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
-          cargo test --locked --lib license::tests::online_activation -- --ignored
-          cargo test --locked --test license_cli -- --ignored
           cargo test --locked --lib hosted::tests -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
@@ -72,6 +70,7 @@ jobs:
           bun install --frozen-lockfile
           bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/*.ts' '*.ts'
           bun run check
+          bun x playwright test --list
           bun run build
           bun x playwright install --with-deps chromium
       - name: Browser workflow and accessibility
@@ -83,6 +82,8 @@ jobs:
             if curl -fsS http://127.0.0.1:8081/api/health && curl -fsS http://127.0.0.1:5174/ >/dev/null; then break; fi
             sleep 1
           done
+          curl -fsS http://127.0.0.1:8081/api/site
+          curl -fsS http://127.0.0.1:5174/ >/dev/null
           bun run test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -124,58 +125,6 @@ jobs:
           tags: ${{ steps.names.outputs.frontend }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
-      - name: Compose health smoke test
-        env:
-          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
-          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
-          DB_PASSWORD: disposable-image-db
-          DB_ROOT_PASSWORD: disposable-image-root
-          ADMIN_PASSWORD: disposable-image-admin
-        run: |
-          docker compose up -d --no-build --wait --wait-timeout 180
-          curl -fsS http://127.0.0.1:8088/api/health
-          curl -fsS http://127.0.0.1:8088/ >/dev/null
-      - name: Package Ubuntu deployment with all three tested images
-        env:
-          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
-          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
-          DB_PASSWORD: disposable-image-db
-          DB_ROOT_PASSWORD: disposable-image-root
-          ADMIN_PASSWORD: disposable-image-admin
-        run: |
-          python3 scripts/package_ubuntu.py --output ubuntu-package --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
-          bash -n ubuntu-package/install.sh ubuntu-package/start.sh ubuntu-package/stop.sh ubuntu-package/scripts/backup.sh ubuntu-package/scripts/restore.sh
-          docker compose -f ubuntu-package/compose.yaml config --quiet
-          python3 ubuntu-package/verify.py
-          docker load --input ubuntu-package/images.tar.gz
-          docker compose -f ubuntu-package/compose.yaml up -d --no-build --pull never --wait --wait-timeout 180
-          curl -fsS http://127.0.0.1:8088/api/health
-          # Check the shipped lifecycle scripts with the existing disposable credentials.
-          bash ubuntu-package/stop.sh
-          bash ubuntu-package/stop.sh
-          bash ubuntu-package/start.sh
-          bash ubuntu-package/scripts/backup.sh
-          # Restore the portable SQL dump into the same disposable database.
-          backup_file=$(find ubuntu-package/backups -name '*.sql.gz' -print -quit)
-          CONFIRM_RESTORE=yes bash ubuntu-package/scripts/restore.sh "$backup_file"
-          curl -fsS http://127.0.0.1:8088/api/health
-          rm -rf ubuntu-package/backups
-      - name: Authority deployment and owner tools smoke test
-        env:
-          AUTHORITY_DB_PASSWORD: disposable-authority-db
-          AUTHORITY_ROOT_PASSWORD: disposable-authority-root
-        run: |
-          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/owner" "marksix-backend:$GITHUB_SHA" marksix --license-keygen /owner/ubuntu-package/license-authority/signing-key.hex
-          chmod 644 ubuntu-package/license-authority/signing-key.hex
-          docker compose -f ubuntu-package/license-authority/compose.yaml up -d --wait --wait-timeout 180
-          curl -fsS http://127.0.0.1:8090/health
-          code=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-issue 1)
-          [[ "$code" == MSX1.* ]]
-          public_key=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-public-key)
-          [[ "$public_key" =~ ^[0-9a-f]{64}$ ]]
-          docker compose -f ubuntu-package/license-authority/compose.yaml stop --timeout 60
-          rm ubuntu-package/license-authority/signing-key.hex
-          python3 ubuntu-package/verify.py
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -184,6 +133,8 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun x playwright install --with-deps chromium
+      - name: Load MySQL runtime for isolated hosted acceptance
+        run: docker pull mysql:8.4
       - name: Hosted Nginx TLS, accounts and lifecycle acceptance
         env:
           BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
@@ -195,6 +146,14 @@ jobs:
           name: hosted-acceptance
           path: test-results/hosted-acceptance.json
           if-no-files-found: error
+      - name: Package the tested hosted Ubuntu images
+        env:
+          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
+          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
+        run: |
+          python3 scripts/package_ubuntu.py --output ubuntu-package --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
+          python3 ubuntu-package/verify.py
+          bash -n ubuntu-package/hosted/*.sh
       - uses: actions/upload-artifact@v4
         id: ubuntu-package
         with:
@@ -207,7 +166,7 @@ jobs:
         env:
           PACKAGE_URL: ${{ steps.ubuntu-package.outputs.artifact-url }}
         run: |
-          printf 'Ubuntu x64 deployment: [Download ZIP](%s). For Dev1.0 follow hosted/README.md; root install.sh is legacy local deployment.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Ubuntu x64 deployment: [Download ZIP](%s). Follow hosted/README.md for Ubuntu hosted deployment.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Publish tested images
         if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:

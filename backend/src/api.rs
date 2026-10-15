@@ -86,23 +86,19 @@ fn cookie(state: &AppState, value: &str, max_age: u32) -> String {
 pub(crate) struct ReceivedAt(pub chrono::NaiveDateTime);
 
 pub fn router(state: AppState) -> Router {
-    router_with_frontend(state, None)
-}
-pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf>) -> Router {
     let private = Router::new()
         .route("/session", get(session))
-        .route("/license", get(crate::license::status))
-        .route("/license/activate", post(crate::license::activate))
-        .route("/license/migrate", post(crate::license::migrate))
         .route("/logout", post(logout))
         .route("/bootstrap", get(bootstrap))
         .route("/periods", get(periods))
         .route("/periods/{id}", get(period))
         .route("/bets", get(bets).post(create_bet))
+        .route("/bets/search", post(search_bets))
         .route("/bets/{id}/amount", put(crate::ledger::change_amount))
         .route("/bets/{id}/layoffs", post(crate::ledger::fly_out))
         .route("/layoffs/{id}/cancel", post(crate::ledger::cancel_layoff))
         .route("/periods/{id}/statistics", get(crate::ledger::statistics))
+        .route("/periods/{id}/bet-filters", get(bet_filters))
         .route("/parties", get(crate::ledger::parties))
         .route("/bets/{id}", get(bet_detail))
         .route("/bets/{id}/cancel", post(cancel_bet))
@@ -118,24 +114,20 @@ pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf
         .route("/settings/closing", put(update_closing))
         .route("/settings/mapping", put(update_mapping))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
-    let mut app = Router::new();
-    if let Some(directory) = frontend {
-        app = app.fallback_service(tower_http::services::ServeDir::new(directory));
-    }
-    app.nest(
-        "/api",
-        private
-            .route("/login", post(login))
-            .route("/health", get(health))
-            .route("/site", get(|| async { Json(json!({"mode":"legacy"})) }))
-            .route("/internal/shutdown", post(shutdown))
-            .fallback(|| async { (StatusCode::NOT_FOUND, "Unknown API endpoint") }),
-    )
-    .layer(DefaultBodyLimit::max(1024 * 1024))
-    .layer(middleware::from_fn(security_headers))
-    .layer(middleware::from_fn_with_state(state.clone(), receive_time))
-    .layer(tower_http::trace::TraceLayer::new_for_http())
-    .with_state(state)
+    Router::new()
+        .nest(
+            "/api",
+            private
+                .route("/login", post(login))
+                .route("/health", get(health))
+                .route("/site", get(|| async { Json(json!({"mode":"hosted"})) }))
+                .fallback(|| async { (StatusCode::NOT_FOUND, "Unknown API endpoint") }),
+        )
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(state.clone(), receive_time))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .with_state(state)
 }
 async fn receive_time(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     if req.extensions().get::<ReceivedAt>().is_none() {
@@ -188,10 +180,8 @@ async fn authenticate(State(state): State<AppState>, req: Request, next: Next) -
     };
     match valid {
         Ok(true) => {
-            if !matches!(
-                req.uri().path(),
-                "/session" | "/logout" | "/license" | "/license/activate" | "/license/migrate"
-            ) && let Err(e) = crate::license::require(&state).await
+            if !matches!(req.uri().path(), "/session" | "/logout")
+                && let Err(e) = crate::hosted::require(&state).await
             {
                 return e.into_response();
             }
@@ -314,6 +304,9 @@ struct Page {
     unassigned: Option<bool>,
     min_amount: Option<String>,
     max_amount: Option<String>,
+    bettors: Option<String>,
+    play_ids: Option<String>,
+    order: Option<String>,
 }
 async fn periods(State(state): State<AppState>, Query(q): Query<Page>) -> ApiResult<Json<Value>> {
     let page = q.page.unwrap_or(1).clamp(1, 100000);
@@ -366,7 +359,37 @@ async fn bets(State(state): State<AppState>, Query(q): Query<Page>) -> ApiResult
     if min.zip(max).is_some_and(|(a, b)| a > b) {
         return Err(conflict("金额下限不能超过上限"));
     }
-    let predicate = "period_id=? AND (? IS NULL OR play_id=?) AND (? IS NULL OR bettor=?) AND (? IS NULL OR stake>=?) AND (? IS NULL OR stake<=?)";
+    let bettors: Vec<String> = q
+        .bettors
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| conflict("投注人筛选格式错误"))?
+        .unwrap_or_default();
+    let plays: Vec<i64> = q
+        .play_ids
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| conflict("玩法筛选格式错误"))?
+        .unwrap_or_default();
+    if bettors.len() > 1000
+        || plays.len() > 1000
+        || bettors.iter().any(|s| s.chars().count() > 80)
+        || plays.iter().any(|n| *n <= 0)
+    {
+        return Err(conflict("筛选条件超出范围"));
+    }
+    let order = match q.order.as_deref().unwrap_or("newest") {
+        "newest" => "created_at DESC,id DESC",
+        "amount_asc" => "stake ASC,created_at DESC,id DESC",
+        "amount_desc" => "stake DESC,created_at DESC,id DESC",
+        _ => return Err(conflict("排序方式不合法")),
+    };
+    // JSON_CONTAINS is parameterized: names and IDs never become SQL text.
+    let bettors_json = serde_json::to_string(&bettors).map_err(anyhow::Error::from)?;
+    let plays_json = serde_json::to_string(&plays).map_err(anyhow::Error::from)?;
+    let predicate = "period_id=? AND (? IS NULL OR play_id=?) AND (? IS NULL OR bettor=?) AND (? IS NULL OR stake>=?) AND (? IS NULL OR stake<=?) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,JSON_QUOTE(bettor))) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,CAST(play_id AS JSON)))";
     let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM bets WHERE {predicate}"))
         .bind(&id)
         .bind(play)
@@ -377,13 +400,57 @@ async fn bets(State(state): State<AppState>, Query(q): Query<Page>) -> ApiResult
         .bind(min)
         .bind(max)
         .bind(max)
+        .bind(&bettors_json)
+        .bind(&bettors_json)
+        .bind(&plays_json)
+        .bind(&plays_json)
         .fetch_one(&state.pool)
         .await?;
-    let items: Vec<BetSummary> = sqlx::query_as(&format!("SELECT {BET_COLUMNS} FROM bets WHERE {predicate} ORDER BY created_at DESC,id DESC LIMIT 25 OFFSET ?"))
-        .bind(&id).bind(play).bind(play).bind(&bettor).bind(&bettor).bind(min).bind(min).bind(max).bind(max).bind((page-1)*25).fetch_all(&state.pool).await?;
+    let items: Vec<BetSummary> = sqlx::query_as(&format!(
+        "SELECT {BET_COLUMNS} FROM bets WHERE {predicate} ORDER BY {order} LIMIT 25 OFFSET ?"
+    ))
+    .bind(&id)
+    .bind(play)
+    .bind(play)
+    .bind(&bettor)
+    .bind(&bettor)
+    .bind(min)
+    .bind(min)
+    .bind(max)
+    .bind(max)
+    .bind(&bettors_json)
+    .bind(&bettors_json)
+    .bind(&plays_json)
+    .bind(&plays_json)
+    .bind((page - 1) * 25)
+    .fetch_all(&state.pool)
+    .await?;
     Ok(Json(
         json!({"items":items,"total":count,"page":page,"page_size":25}),
     ))
+}
+async fn search_bets(State(state): State<AppState>, Json(q): Json<Page>) -> ApiResult<Json<Value>> {
+    // Large multi-selections use a bounded JSON body rather than exceeding
+    // Nginx/Cloudflare request-line limits with hundreds of encoded names.
+    bets(State(state), Query(q)).await
+}
+async fn bet_filters(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let bettors: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT bettor FROM bets WHERE period_id=? ORDER BY bettor")
+            .bind(&id)
+            .fetch_all(&state.pool)
+            .await?;
+    // Snapshot names remain discoverable after a play is renamed or deleted.
+    let rows = sqlx::query("SELECT play_id,CAST(MAX(JSON_UNQUOTE(JSON_EXTRACT(rule,'$.name'))) AS CHAR CHARACTER SET utf8mb4) name FROM bets WHERE period_id=? GROUP BY play_id ORDER BY name,play_id")
+        .bind(&id).fetch_all(&state.pool).await?;
+    let plays: Vec<Value> = rows
+        .iter()
+        .map(|row| Ok(json!({"id":row.try_get::<i64,_>("play_id")?,"name":row.try_get::<String,_>("name")?})))
+        .collect::<Result<_, sqlx::Error>>()?;
+    Ok(Json(json!({"period":id,"bettors":bettors,"plays":plays})))
 }
 async fn bet_detail(
     State(state): State<AppState>,
@@ -803,22 +870,4 @@ async fn update_mapping(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"effective_date":input.effective_date})))
-}
-
-async fn shutdown(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
-    let supplied = headers
-        .get("x-marksix-shutdown")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let allowed = state.shutdown_token.as_deref().is_some_and(|expected| {
-        // Compare digests without prefix-dependent early returns.
-        let a = digest(expected);
-        let b = digest(supplied);
-        a.bytes().zip(b.bytes()).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0
-    });
-    if !allowed {
-        return Err(ApiError(StatusCode::FORBIDDEN, "停止请求未获授权".into()));
-    }
-    state.shutdown.notify_one();
-    Ok(Json(json!({"ok":true})))
 }

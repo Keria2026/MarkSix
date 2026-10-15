@@ -426,6 +426,68 @@ def main():
                 "password": config["AUTHORITY_ADMIN_PASSWORD"],
             },
         )[1]
+        # Real customer -> portal -> authority erasure, with the production UID
+        # deleting its own backups while leaving other tenant backups intact.
+        clear_cookie = ok(
+            app,
+            "/login",
+            "POST",
+            {"username": accounts[0]["username"], "password": password},
+        )[1]
+        body = {
+            "password": password,
+            "confirmation": "永久清空历史记录",
+            "request_id": str(uuid.uuid4()),
+        }
+        status, result, _, _ = call(
+            app,
+            "/history/clear",
+            "POST",
+            dict(body, confirmation="wrong"),
+            clear_cookie,
+        )
+        assert status == 422, (
+            f"History confirmation check: HTTP {status}, {result.get('error')}"
+        )
+        assert (shared / "backups/tenants" / accounts[0]["id"]).exists()
+        ok(app, "/history/clear", "POST", body, clear_cookie)
+        ok(app, "/history/clear", "POST", body, clear_cookie)
+        assert not (shared / "backups/tenants" / accounts[0]["id"]).exists()
+        assert (shared / "backups/tenants" / accounts[1]["id"]).exists()
+        assert ok(app, "/bootstrap", cookie=clear_cookie)[0]["plays"]
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "marksix_test_ops", release / "ops.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        def forbid_sql(*args, **kwargs):
+            raise AssertionError(
+                "Erased generation must be rejected before any database operation"
+            )
+
+        module.mysql = forbid_sql
+        try:
+            module.restore_data(shared, Path(manifest))
+        except RuntimeError as error:
+            assert "predates customer history erasure" in str(error)
+        else:
+            raise AssertionError("Erased backup generation was accepted")
+        checks.append(
+            "customer_history_clear_proxy_backup_erasure_idempotency_and_restore_guard"
+        )
+        import re
+
+        for service in ["backend", "authority"]:
+            logs = command(
+                "logs", "--no-color", service, stdout=subprocess.PIPE, text=True
+            ).stdout
+            assert not re.search(r"\b(?:INFO|WARN|DEBUG|TRACE)\b", logs), (
+                "Unexpected non-error application logs"
+            )
+        checks.append("application_error_only_logs")
         if args.browser:
             if not args.bun:
                 raise RuntimeError("Bun executable is required for browser acceptance")

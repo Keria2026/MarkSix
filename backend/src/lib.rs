@@ -10,8 +10,8 @@ pub mod ledger;
 pub mod configuration;
 
 pub mod hosted;
-pub mod license;
-/// SIGTERM is how Docker stops the server; Windows also uses a local authenticated shutdown request.
+pub mod logging;
+/// Docker stops the Ubuntu services with SIGTERM.
 pub async fn shutdown_signal() {
     #[cfg(unix)]
     {

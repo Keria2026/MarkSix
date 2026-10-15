@@ -46,6 +46,7 @@ pub(super) fn router(r: Registry) -> Router {
         .route("/api/session", get(session))
         .route("/api/license", get(status))
         .route("/api/license/activate", post(activate))
+        .route("/api/history/clear", post(clear_history))
         .fallback(dispatch)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn(crate::api::security_headers))
@@ -143,6 +144,38 @@ async fn logout(State(r): State<Registry>, headers: HeaderMap) -> ApiResult<Resp
 async fn session(State(r): State<Registry>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     let a = customer(&r.control, &headers).await?;
     Ok(Json(json!({"username":a.username})))
+}
+async fn clear_history(
+    State(r): State<Registry>,
+    headers: HeaderMap,
+    Json(input): Json<super::history::ClearHistory>,
+) -> ApiResult<Response> {
+    customer(&r.control, &headers).await?;
+    // Fixed internal destination. Customer input can never choose a server URL.
+    let url =
+        std::env::var("INTERNAL_AUTHORITY_URL").unwrap_or_else(|_| "http://authority:8090".into());
+    // Internal customer credentials must never go through an outbound proxy.
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(anyhow::Error::from)?
+        .post(format!(
+            "{}/api/customer/history/clear",
+            url.trim_end_matches('/')
+        ))
+        .header(
+            header::COOKIE,
+            headers.get(header::COOKIE).ok_or_else(unauthorized)?,
+        )
+        .header("X-MarkSix", "1")
+        .json(&input)
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(anyhow::Error::from)?;
+    let status = response.status();
+    let value: Value = response.json().await.map_err(anyhow::Error::from)?;
+    Ok((status, Json(value)).into_response())
 }
 async fn status(State(r): State<Registry>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     let a = customer(&r.control, &headers).await?;

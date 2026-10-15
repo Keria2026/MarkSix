@@ -10,12 +10,7 @@ test-results/
 backups/
 .DS_Store
 
-/windows-native-package/
-/windows native package/
 
 /ubuntu-package/
 
 __pycache__/
-
-signing-key*
-/license-authority-data/

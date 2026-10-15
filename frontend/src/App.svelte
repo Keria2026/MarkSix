@@ -84,7 +84,6 @@
     | "settings"
     | "statistics"
     | "official";
-  const hosted = document.documentElement.dataset.mode === "hosted";
   const amountPattern = /^\d+$/;
   let tab = $state<Tab>("overview");
   let boot = $state<Bootstrap | null>(null);
@@ -92,11 +91,46 @@
     loading = $state(true),
     busy = $state(false),
     refreshing = $state(false);
-  let username = $state(hosted ? "" : "admin"),
+  let username = $state(""),
     password = $state(""),
     loginError = $state(""),
     globalError = $state("");
   let licenseStatus = $state<LicenseStatus | null>(null);
+  let clearHistoryOpen = $state(false);
+  let clearHistoryPassword = $state("");
+  let clearHistoryConfirmation = $state("");
+  let clearHistoryError = $state("");
+  let clearHistoryRequest: string | null = null;
+  async function clearHistory(event: SubmitEvent) {
+    event.preventDefault();
+    busy = true;
+    clearHistoryError = "";
+    clearHistoryRequest ??= crypto.randomUUID();
+    try {
+      await api("/history/clear", {
+        method: "POST",
+        body: JSON.stringify({
+          password: clearHistoryPassword,
+          confirmation: clearHistoryConfirmation,
+          request_id: clearHistoryRequest,
+        }),
+      });
+      clearHistoryPassword = "";
+      clearHistoryConfirmation = "";
+      clearHistoryOpen = false;
+      clearHistoryRequest = null;
+      selectedPeriod = null;
+      detail = null;
+      report = null;
+      parties = { bettors: [], receivers: [] };
+      await refresh();
+      notify("历史记录已永久清空，本期数据和玩法配置已保留");
+    } catch (e) {
+      clearHistoryError = fail(e);
+    } finally {
+      busy = false;
+    }
+  }
   let toast = $state("");
   let toastTimer: ReturnType<typeof setTimeout>;
   let records = $state<Page<Bet>>({
@@ -105,14 +139,22 @@
     page: 1,
     page_size: 25,
   });
-  let recordFilter = $state<number | "">("");
   let bettor = $state("");
-  let bettorFilter = $state("");
   let minAmount = $state("");
   let maxAmount = $state("");
   let report = $state<Statistics | null>(null);
   let historyCategory = $state<"all" | "bettors" | "receivers">("all");
-  let statisticsCategory = $state<"all" | "bettors" | "receivers">("all");
+  let statisticsCategory = $state<"all" | "bettors" | "receivers" | "records">(
+    "all",
+  );
+  let selectedBettors = $state<string[]>([]);
+  let selectedPlays = $state<number[]>([]);
+  let recordOrder = $state("newest");
+  let recordChoices = $state<{
+    period: string;
+    bettors: string[];
+    plays: { id: number; name: string }[];
+  }>({ period: "", bettors: [], plays: [] });
   let parties = $state<{ bettors: string[]; receivers: string[] }>({
     bettors: [],
     receivers: [],
@@ -297,6 +339,7 @@
       odds: "43",
       rebate_percent: "2",
       special_odds: null,
+      zero_tail_odds: null,
       special_rebate_percent: null,
     };
   }
@@ -324,20 +367,26 @@
     if (!active) return;
     const id = active.id;
     const request = ++recordsRequest;
-    const query = new URLSearchParams();
-    if (recordFilter) query.set("play_id", String(recordFilter));
-    if (bettorFilter)
-      query.set(
-        bettorFilter === "未登记（旧记录）" ? "unassigned" : "bettor",
-        bettorFilter === "未登记（旧记录）" ? "true" : bettorFilter,
-      );
-    if (minAmount) query.set("min_amount", minAmount);
-    if (maxAmount) query.set("max_amount", maxAmount);
-    const filter = `&${query.toString()}`;
-    const next = await api<Page<Bet>>(
-      `/bets?period=${id}&page=${page}${filter}`,
+    const query = {
+      period: id,
+      page,
+      order: recordOrder,
+      min_amount: minAmount || null,
+      max_amount: maxAmount || null,
+      bettors: JSON.stringify(selectedBettors),
+      play_ids: JSON.stringify(selectedPlays),
+    };
+    const next = await api<Page<Bet>>("/bets/search", {
+      method: "POST",
+      body: JSON.stringify(query),
+    });
+    const choices = await api<typeof recordChoices>(
+      `/periods/${id}/bet-filters`,
     );
-    if (request === recordsRequest && active?.id === id) records = next;
+    if (request === recordsRequest && active?.id === id) {
+      records = next;
+      recordChoices = choices;
+    }
   }
   async function refresh(silent = false) {
     if (refreshing) return;
@@ -346,6 +395,11 @@
       licenseStatus = await api<LicenseStatus>("/license");
       if (!licenseStatus.active) return;
       const data = await api<Bootstrap>("/bootstrap");
+      if (!selectedPeriod && boot && data.today.id !== boot.today.id) {
+        selectedBettors = [];
+        selectedPlays = [];
+        records.page = 1;
+      }
       boot = data;
       serverOffset = new Date(data.today.server_time).getTime() - Date.now();
       if (selectedPeriod) {
@@ -356,6 +410,7 @@
       if (
         tab === "overview" ||
         tab === "bet" ||
+        (tab === "statistics" && statisticsCategory === "records") ||
         (tab === "history" && selectedPeriod)
       )
         await loadRecords(records.page);
@@ -403,8 +458,9 @@
   async function navigate(next: Tab) {
     tab = next;
     selectedPeriod = null;
-    recordFilter = "";
-    bettorFilter = "";
+    selectedBettors = [];
+    selectedPlays = [];
+    recordOrder = "newest";
     minAmount = "";
     maxAmount = "";
     globalError = "";
@@ -421,12 +477,13 @@
   }
   async function openPeriod(period: Period) {
     selectedPeriod = period;
+    selectedBettors = [];
+    selectedPlays = [];
+    recordOrder = "newest";
     tab = "history";
     report = null;
-    bettorFilter = "";
     minAmount = "";
     maxAmount = "";
-    recordFilter = "";
     try {
       await loadRecords();
       await loadStatistics();
@@ -703,11 +760,13 @@
     }
   }
   async function filterBettor(name: string) {
-    bettorFilter = name;
+    selectedBettors = [name === "未登记（旧记录）" ? "" : name];
     await loadRecords();
   }
   function changeCondition(value: Rule["condition"]) {
     rule.condition = value;
+    if (value === "hard_pair" || value === "soft_pair")
+      rule.zero_tail_odds = null;
     if (rule.condition === "hard_pair" || rule.condition === "soft_pair") {
       rule.kind = "number";
       rule.scope = "all";
@@ -723,6 +782,7 @@
     rule = {
       zodiac_count: null,
       special_hit_odds: null,
+      zero_tail_odds: null,
       ...structuredClone($state.snapshot(play?.rule ?? newRule())),
     };
     enabled = play?.enabled ?? true;
@@ -731,6 +791,7 @@
   }
   function changeKind(value: Kind) {
     rule.kind = value;
+    if (value !== "tail") rule.zero_tail_odds = null;
     rule.zodiac_count = null;
     rule.special_hit_odds = null;
     rule.selection_limit = null;
@@ -919,11 +980,9 @@
         <h1>每一期，<br />都清晰在握<span class="blue">。</span></h1>
         <p>从一笔投注，到整个盘口。<br />让记录有序，让每一个数字有据可循。</p>
         <div class="login-tags">
-          <span
-            ><ShieldCheck size={15} /> {hosted ? "独立账本" : "本机私享"}</span
-          ><span><Layers3 size={15} /> 精确结算</span><span
-            ><Activity size={15} /> 风险洞察</span
-          >
+          <span><ShieldCheck size={15} /> 独立账本</span><span
+            ><Layers3 size={15} /> 精确结算</span
+          ><span><Activity size={15} /> 风险洞察</span>
         </div>
       </div>
       <div class="login-art" aria-hidden="true">
@@ -941,19 +1000,15 @@
     <section class="login-panel glass">
       <div class="login-icon"><LockKeyhole size={25} /></div>
       <h2>欢迎回来</h2>
-      <p>
-        {hosted
-          ? "登录客户账号，继续今天的工作。"
-          : "登录管理员账号，继续今天的工作。"}
-      </p>
+      <p>登录客户账号，继续今天的工作。</p>
       <form onsubmit={signIn}>
         <label
-          >{hosted ? "客户账号" : "管理员账号"}<input
+          >客户账号<input
             autocomplete="username"
             bind:value={username}
             required
             maxlength="80"
-            placeholder={hosted ? "输入客户账号" : "输入管理员账号"}
+            placeholder="输入客户账号"
           /></label
         ><label
           >登录密码<input
@@ -974,7 +1029,7 @@
         >
       </form>
       <div class="login-note">
-        <ShieldCheck size={14} /> 仅管理员可访问，数据存储于你的服务器
+        <ShieldCheck size={14} /> 仅授权账号可访问，客户账本相互隔离
       </div>
     </section>
   </main>
@@ -1012,13 +1067,13 @@
           {#if item.id === "statistics" && tab === "statistics"}<div
               class="nav-submenu"
             >
-              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }] as sub}<button
+              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }] as sub}<button
                   class:active={statisticsCategory === sub.id}
-                  onclick={() =>
-                    (statisticsCategory = sub.id as
-                      | "all"
-                      | "receivers"
-                      | "bettors")}>{sub.label}</button
+                  onclick={() => {
+                    statisticsCategory = sub.id as typeof statisticsCategory;
+                    if (sub.id === "records")
+                      void loadRecords(1).catch((e) => notify(fail(e)));
+                  }}>{sub.label}</button
                 >{/each}
             </div>{/if}
           {#if item.id === "history" && tab === "history" && selectedPeriod}<div
@@ -1039,9 +1094,7 @@
         <div class="private-card">
           <span class="private-icon"><ShieldCheck size={19} /></span>
           <div>
-            <strong>{hosted ? "独立账本空间" : "本机私享空间"}</strong><small
-              >数据由你掌控</small
-            >
+            <strong>独立账本空间</strong><small>数据由你掌控</small>
           </div>
         </div>
         <div class="account">
@@ -1054,7 +1107,7 @@
             onclick={signOut}><LogOut size={17} /></button
           >
         </div>
-        <span class="version">MARKSIX <span>V 0.2</span></span>
+        <span class="version">MARKSIX <span>Dev1.0</span></span>
       </div>
     </aside>
     <main class="main-content" id="main">
@@ -1500,6 +1553,11 @@
                   {selectionError}
                 </p>{/if}
               <div class="selection-meta">
+                {#if currentPlay.rule.zero_tail_odds != null}<span
+                    >含 0 尾基础注赔率 <strong
+                      >{currentPlay.rule.zero_tail_odds}</strong
+                    > 倍</span
+                  >{/if}
                 <span>已选 <strong>{selections.length}</strong> 项</span
                 >{#if currentPlay.rule.special_odds}<span
                     >含本命生肖基础注赔率 <strong
@@ -1666,7 +1724,7 @@
                 ><tr
                   ><th>期号 / 日期</th><th>状态</th><th>有效本金</th><th
                     >中奖返还</th
-                  ><th>反水</th><th>盘口净盈利</th><th></th></tr
+                  ><th>反水</th><th>盘口净盈利</th><th>操作</th></tr
                 ></thead
               ><tbody
                 >{#each history.items as p}<tr
@@ -1731,11 +1789,15 @@
                 ? "飞出受注统计"
                 : statisticsCategory === "bettors"
                   ? "投注人分类统计"
-                  : "全部受注统计"}
+                  : statisticsCategory === "records"
+                    ? "投注记录"
+                    : "全部受注统计"}
             </p>
           </div>
         </section>
-        {#if report && report.period === today.id}<StatisticsPanel
+        {#if statisticsCategory === "records"}
+          {@render recordTable()}
+        {:else if report && report.period === today.id}<StatisticsPanel
             {report}
             category={statisticsCategory}
             onpage={loadStatistics}
@@ -1799,9 +1861,7 @@
             class="glass license-summary"
           >
             <h2>
-              <ShieldCheck size={18} />{licenseStatus.hosted
-                ? "账号授权"
-                : "客户端授权"}
+              <ShieldCheck size={18} />{"账号授权"}
             </h2>
             <p>
               {licenseStatus.permanent ? "永久授权" : "有效至"}
@@ -1822,17 +1882,8 @@
                 />{/if}
             </p>
             <p class="field-help">
-              {licenseStatus.hosted
-                ? "授权截止日当期可用，到期后使用新激活码续期；已有投注继续结算。"
-                : "到期后使用新授权码续期；时间来自授权服务器，运行期间每分钟联网复核。"}
+              授权截止日当期可用，到期后使用新激活码续期；已有投注继续结算。
             </p>
-            {#if licenseStatus.license_id}<label
-                >授权编号<input
-                  readonly
-                  value={licenseStatus.license_id}
-                  onclick={(e) => e.currentTarget.select()}
-                /></label
-              >{/if}
           </section>{/if}
         <section class="glass plays-panel">
           <div class="section-head">
@@ -2007,6 +2058,23 @@
               </div>{/if}
           </section>
         </div>
+        <section class="glass history-erasure-panel">
+          <div>
+            <h2>清空历史记录</h2>
+            <p class="field-help">
+              永久删除本账号本期之前的投注、飞出、结算和对应操作记录，并删除服务器托管的本账号历史备份。本期数据、玩法配置、账号及授权保留。此操作不可恢复。
+            </p>
+          </div>
+          <button
+            class="button danger"
+            onclick={() => {
+              clearHistoryPassword = "";
+              clearHistoryConfirmation = "";
+              clearHistoryError = "";
+              clearHistoryOpen = true;
+            }}>清空我的历史记录</button
+          >
+        </section>
       {/if}
       <footer class="page-footer">
         <span>MarkSix · 清晰记录，从容掌控</span><span
@@ -2024,17 +2092,7 @@
         <h2>投注记录</h2>
         <span class="count-badge">{records.total}</span>
       </div>
-      <div class="table-tools">
-        <SlidersHorizontal size={15} /><select
-          aria-label="按玩法筛选记录"
-          bind:value={recordFilter}
-          onchange={() => loadRecords(1)}
-          ><option value="">全部玩法</option
-          >{#each boot?.plays ?? [] as play}<option value={play.id}
-              >{play.rule.name}</option
-            >{/each}</select
-        >
-      </div>
+      <span class="muted small">自动刷新 · 金额为整条投注本金</span>
     </div>
     <form
       class="record-filters"
@@ -2043,13 +2101,6 @@
         void loadRecords(1).catch((e) => notify(fail(e)));
       }}
     >
-      <label
-        >投注人筛选<input
-          bind:value={bettorFilter}
-          list="bettor-suggestions"
-          placeholder="全部投注人"
-        /></label
-      >
       <label
         >投注总额下限（元）<input
           bind:value={minAmount}
@@ -2068,13 +2119,75 @@
         class="text-button"
         type="button"
         onclick={() => {
-          bettorFilter = "";
+          selectedBettors = [];
+          selectedPlays = [];
+          recordOrder = "newest";
           minAmount = "";
           maxAmount = "";
           void loadRecords(1);
         }}>重置</button
       >
     </form>
+    <div class="record-multifilters">
+      <details class="record-picker">
+        <summary
+          >投注人多选{selectedBettors.length
+            ? ` · ${selectedBettors.length} 位`
+            : " · 全部"}</summary
+        >
+        <div class="record-picker-options">
+          {#each recordChoices.bettors as name (name)}<label
+              class="checkbox-label"
+              ><input
+                type="checkbox"
+                value={name}
+                bind:group={selectedBettors}
+                onchange={() =>
+                  queueMicrotask(
+                    () => void loadRecords(1).catch((e) => notify(fail(e))),
+                  )}
+              />{name || "未登记"}</label
+            >{/each}{#if !recordChoices.bettors.length}<p class="field-help">
+              本期暂无投注人
+            </p>{/if}
+        </div>
+      </details>
+      <details class="record-picker">
+        <summary
+          >玩法多选{selectedPlays.length
+            ? ` · ${selectedPlays.length} 项`
+            : " · 全部"}</summary
+        >
+        <div class="record-picker-options">
+          {#each recordChoices.plays as play (play.id)}<label
+              class="checkbox-label"
+              ><input
+                type="checkbox"
+                value={play.id}
+                bind:group={selectedPlays}
+                onchange={() =>
+                  queueMicrotask(
+                    () => void loadRecords(1).catch((e) => notify(fail(e))),
+                  )}
+              />{play.name}</label
+            >{/each}{#if !recordChoices.plays.length}<p class="field-help">
+              本期暂无投注玩法
+            </p>{/if}
+        </div>
+      </details>
+      <label
+        >记录排序<select
+          bind:value={recordOrder}
+          onchange={() =>
+            queueMicrotask(
+              () => void loadRecords(1).catch((e) => notify(fail(e))),
+            )}
+          ><option value="newest">最新录入优先</option><option
+            value="amount_asc">投注总额从小到大</option
+          ><option value="amount_desc">投注总额从大到小</option></select
+        ></label
+      >
+    </div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
     <div
       class="table-scroll"
@@ -2087,7 +2200,7 @@
           ><tr
             ><th>玩法 / 投注人 / 投注项</th><th>基础注</th><th>投注本金</th><th
               >反水</th
-            ><th>盘口净盈利</th><th>状态</th><th></th></tr
+            ><th>盘口净盈利</th><th>状态</th><th>操作</th></tr
           ></thead
         ><tbody
           >{#each records.items as bet}<tr
@@ -2139,8 +2252,11 @@
           <span class="empty-icon"><ReceiptText size={28} /></span>
           <h3>清晰的记录，从第一笔开始</h3>
           <p>
-            {recordFilter
-              ? "该玩法暂无投注记录。"
+            {selectedBettors.length ||
+            selectedPlays.length ||
+            minAmount ||
+            maxAmount
+              ? "暂无符合筛选条件的记录，可调整条件或重置筛选。"
               : "本期还没有投注记录，录入后会自动汇总到这里。"}
           </p>
           {#if !selectedPeriod}<button
@@ -2172,6 +2288,56 @@
 {/snippet}
 
 {#if loggedIn && licenseStatus?.active}
+  {#if clearHistoryOpen}<Modal
+      title="永久清空历史记录"
+      dismissible={!busy}
+      onclose={() => {
+        clearHistoryOpen = false;
+        clearHistoryPassword = "";
+      }}
+    >
+      <form onsubmit={clearHistory} class="rule-form">
+        <p class="inline-error">
+          不可恢复：将永久删除本账号本期之前的历史数据及服务器托管备份，无法通过恢复旧备份找回。本期投注与玩法配置保留。
+        </p>
+        <label
+          >当前账号登录密码<input
+            type="password"
+            bind:value={clearHistoryPassword}
+            autocomplete="current-password"
+            maxlength="256"
+            required
+            disabled={busy}
+          /></label
+        >
+        <label
+          >输入“永久清空历史记录”确认<input
+            bind:value={clearHistoryConfirmation}
+            autocomplete="off"
+            required
+            disabled={busy}
+          /></label
+        >
+        {#if clearHistoryError}<p class="inline-error" role="alert">
+            {clearHistoryError}
+          </p>{/if}
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="button secondary"
+            disabled={busy}
+            onclick={() => {
+              clearHistoryOpen = false;
+              clearHistoryPassword = "";
+            }}>取消</button
+          ><button
+            class="button danger"
+            disabled={busy || clearHistoryConfirmation !== "永久清空历史记录"}
+            >{busy ? "正在永久清空…" : "确认永久清空"}</button
+          >
+        </div>
+      </form>
+    </Modal>{/if}
   {#if detail}<Modal title="投注记录详情" wide onclose={() => (detail = null)}
       ><div class="detail-heading">
         <div>
@@ -2290,7 +2456,7 @@
                 ><tr
                   ><th>受注方</th><th>每注金额</th><th>飞出总额</th><th
                     >状态 / 本方盈亏</th
-                  ><th></th></tr
+                  ><th>操作</th></tr
                 ></thead
               ><tbody
                 >{#each detail.layoffs as row}<tr
@@ -2606,6 +2772,31 @@
             <p class="field-help">
               两平码中奖沿用上方普通含本赔率；一号为特码、另一号为平码时使用此赔率，逐条基础注分别结算。
             </p>{/if}{/if}
+        {#if rule.kind === "tail"}
+          <label class="checkbox-label"
+            ><input
+              type="checkbox"
+              checked={rule.zero_tail_odds != null}
+              onchange={(e) =>
+                (rule.zero_tail_odds = e.currentTarget.checked
+                  ? rule.odds
+                  : null)}
+            />启用 0 尾特殊赔率</label
+          >
+          {#if rule.zero_tail_odds != null}<label
+              >0 尾含本赔率<input
+                inputmode="decimal"
+                bind:value={rule.zero_tail_odds}
+                required
+                placeholder="最多四位小数"
+              /></label
+            >
+            <p class="field-help">
+              0 尾只有 10、20、30、40 四个号码。拆分后含 0
+              尾的基础注使用此赔率；与本命肖特殊赔率重叠时优先使用 0
+              尾赔率，反水仍按原规则。
+            </p>{/if}
+        {/if}
         {#if rule.kind !== "wave" && rule.kind !== "zodiac_count"}<label
             class="checkbox-label"
             ><input

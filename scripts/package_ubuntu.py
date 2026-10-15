@@ -34,22 +34,6 @@ def main():
             "Output directory must be empty; existing files will not be overwritten"
         )
     output.mkdir(parents=True, exist_ok=True)
-    compose = json.loads(
-        run(
-            "docker",
-            "compose",
-            "-f",
-            str(ROOT / "compose.yaml"),
-            "config",
-            "--no-interpolate",
-            "--format",
-            "json",
-        )
-    )
-    # Let the explicit Compose project name control resource names.
-    for section in ("volumes", "networks"):
-        for resource in compose.get(section, {}).values():
-            resource.pop("name", None)
     tags = []
     for service, source, label in [
         ("backend", args.backend, "backend"),
@@ -68,43 +52,12 @@ def main():
             raise RuntimeError(f"{source}: expected linux/amd64, got {platform}")
         tag = f"marksix-{label}:{args.version}"
         subprocess.run(["docker", "tag", source, tag], check=True)
-        compose["services"][service].pop("build", None)
-        compose["services"][service]["image"] = tag
-        compose["services"][service]["pull_policy"] = "never"
         tags.append(tag)
-    # JSON is valid YAML, avoiding an additional packaging dependency.
-    (output / "compose.yaml").write_text(
-        json.dumps(compose, indent=2).replace(
-            "Run scripts/configure.py first", "Run install.sh first"
-        )
-        + "\n",
+    shutil.copyfile(ROOT / "scripts/verify_package.py", output / "verify.py")
+    (output / "README.md").write_text(
+        "# MarkSix Ubuntu 托管部署\n\n请按 [部署指南](hosted/README.md) 配置、部署和维护。此工件仅支持 Ubuntu Docker 托管版。\n",
         encoding="utf-8",
     )
-    shutil.copytree(ROOT / "deploy/ubuntu", output, dirs_exist_ok=True)
-    (output / "scripts").mkdir(exist_ok=True)
-    for name in ["configure.py", "backup.sh", "restore.sh"]:
-        shutil.copyfile(ROOT / "scripts" / name, output / "scripts" / name)
-    shutil.copyfile(ROOT / "docs/RUNNING.md", output / "README.md")
-    shutil.copyfile(ROOT / "docs/LICENSING.md", output / "LICENSING.md")
-    shutil.copyfile(ROOT / "docs/legacy/RUNNING.md", output / "LEGACY_LOCAL_README.md")
-    shutil.copyfile(ROOT / "docs/legacy/LICENSING.md", output / "LEGACY_LICENSING.md")
-    # Repository-relative links must point at their shipped artifact locations.
-    for name, replacements in {
-        "README.md": {
-            "../deploy/vps/README.md": "hosted/README.md",
-            "legacy/RUNNING.md": "LEGACY_LOCAL_README.md",
-        },
-        "LICENSING.md": {
-            "../deploy/vps/README.md": "hosted/README.md",
-            "legacy/LICENSING.md": "LEGACY_LICENSING.md",
-        },
-        "LEGACY_LOCAL_README.md": {"(LICENSING.md)": "(LEGACY_LICENSING.md)"},
-    }.items():
-        path = output / name
-        text = path.read_text(encoding="utf-8")
-        for source, target in replacements.items():
-            text = text.replace(source, target)
-        path.write_text(text, encoding="utf-8")
     # Allowlist only: never package shared .env, TLS keys or database backups.
     (output / "hosted").mkdir()
     for name in [
@@ -130,18 +83,6 @@ def main():
     shutil.copyfile(
         ROOT / "fixtures/customer-plays.json", output / "fixtures/customer-plays.json"
     )
-    (output / "license-authority").mkdir()
-    # Explicit allowlist: never copy owner .env, private keys, or local data.
-    for name in ["compose.yaml", "setup.py"]:
-        shutil.copyfile(
-            ROOT / "deploy/license-authority" / name,
-            output / "license-authority" / name,
-        )
-    authority_compose = (output / "license-authority/compose.yaml").read_text()
-    authority_compose = authority_compose.replace(
-        "${BACKEND_IMAGE:-marksix-backend:local}", tags[0]
-    ).replace("mysql:8.4", tags[2])
-    (output / "license-authority/compose.yaml").write_text(authority_compose)
     archive = output / "images.tar.gz"
     with subprocess.Popen(["docker", "save", *tags], stdout=subprocess.PIPE) as process:
         try:

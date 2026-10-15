@@ -82,6 +82,34 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
     let url = std::env::var("TEST_DATABASE_URL").unwrap();
     assert!(url.ends_with("/marksix_test"));
     let pool = crate::store::connect(&url).await.unwrap();
+    let provision = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .connect(&std::env::var("TEST_PROVISION_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    // Reap only tenant principals listed by this disposable test control DB.
+    // This also makes a retry after a failed assertion leave no orphan schemas.
+    for account in sqlx::query_as::<_, Account>("SELECT * FROM hosted_accounts")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    {
+        management::identifiers(&account).unwrap();
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS `{}`",
+            account.database_name
+        ))
+        .execute(&provision)
+        .await
+        .unwrap();
+        sqlx::query(&format!(
+            "DROP USER IF EXISTS '{}'@'%'",
+            account.database_user
+        ))
+        .execute(&provision)
+        .await
+        .unwrap();
+    }
     for table in [
         "hosted_sessions",
         "hosted_codes",
@@ -96,11 +124,6 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
             .await
             .unwrap();
     }
-    let provision = sqlx::mysql::MySqlPoolOptions::new()
-        .max_connections(1)
-        .connect(&std::env::var("TEST_PROVISION_DATABASE_URL").unwrap())
-        .await
-        .unwrap();
     let root = std::env::temp_dir().join(format!("marksix-hosted-test-{}", uuid::Uuid::new_v4()));
     let c = Control::new(pool.clone(), Some(provision), false, root.clone())
         .await
@@ -262,6 +285,192 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         .unwrap();
     let bet=ok(&app,"POST","/api/bets",json!({"period":period,"play_id":play["id"],"play_version":play["version"],"selections":[6],"compound":false,"bettor":"账本隔离验收","amount":"100","request_id":uuid::Uuid::new_v4()}),&ca).await;
     let bet_id = bet["id"].as_str().unwrap();
+    // Erasure can only address the authenticated customer's old periods.
+    let yesterday = date.pred_opt().unwrap();
+    let old = crate::store::ensure_period(&sa, yesterday).await.unwrap();
+    crate::store::ensure_period(&sb, yesterday).await.unwrap();
+    let old_bet = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor) SELECT ?,?,?,?,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor FROM bets WHERE id=?")
+        .bind(&old_bet).bind(uuid::Uuid::new_v4().to_string()).bind("e".repeat(64)).bind(&old.id).bind(bet_id).execute(&sa.pool).await.unwrap();
+    sqlx::query("INSERT INTO layoffs(id,bet_id,period_id,receiver,amount,unit_count,stake,rebate,exposure,atoms) SELECT ?,id,period_id,'历史受注者',amount,unit_count,stake,rebate,exposure,atoms FROM bets WHERE id=?")
+        .bind(uuid::Uuid::new_v4().to_string()).bind(&old_bet).execute(&sa.pool).await.unwrap();
+    sqlx::query("INSERT INTO bet_mutations(request_id,bet_id,request_hash,response) VALUES(?,?,?,JSON_OBJECT())")
+        .bind(uuid::Uuid::new_v4().to_string()).bind(&old_bet).bind("e".repeat(64)).execute(&sa.pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO audit_events(period_id,event,detail) VALUES(?,'bet_created',JSON_OBJECT())",
+    )
+    .bind(&old.id)
+    .execute(&sa.pool)
+    .await
+    .unwrap();
+    for (account, value) in [(aid, "old-history"), (bid, "other-customer")] {
+        let folder = root.join("tenants").join(account);
+        tokio::fs::create_dir_all(&folder).await.unwrap();
+        tokio::fs::write(folder.join("history.sql.gz"), value)
+            .await
+            .unwrap();
+    }
+    let clear = json!({"password":password,"confirmation":"永久清空历史记录","request_id":uuid::Uuid::new_v4()});
+    assert_eq!(
+        request(
+            &management,
+            "POST",
+            "/api/customer/history/clear",
+            clear.clone(),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(request(&management,"POST","/api/customer/history/clear",json!({"account_id":bid,"password":password,"confirmation":"永久清空历史记录","request_id":uuid::Uuid::new_v4()}),&ca).await.0,StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(request(&management,"POST","/api/customer/history/clear",json!({"password":"wrong","confirmation":"永久清空历史记录","request_id":uuid::Uuid::new_v4()}),&ca).await.0,StatusCode::FORBIDDEN);
+    assert!(root.join("tenants").join(aid).exists());
+    assert_eq!(
+        request(
+            &management,
+            "POST",
+            "/api/customer/history/clear",
+            json!({"password":password,"confirmation":"wrong","request_id":uuid::Uuid::new_v4()}),
+            &ca
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    ok(
+        &management,
+        "POST",
+        "/api/customer/history/clear",
+        clear.clone(),
+        &ca,
+    )
+    .await;
+    ok(
+        &management,
+        "POST",
+        "/api/customer/history/clear",
+        clear,
+        &ca,
+    )
+    .await;
+    for table in ["layoffs", "bet_mutations"] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&sa.pool)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM audit_events WHERE period_id=?")
+            .bind(&old.id)
+            .fetch_one(&sa.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM periods WHERE id=?")
+            .bind(&old.id)
+            .fetch_one(&sa.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets WHERE id=?")
+            .bind(bet_id)
+            .fetch_one(&sa.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM periods WHERE id=?")
+            .bind(&old.id)
+            .fetch_one(&sb.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(!root.join("tenants").join(aid).exists());
+    assert!(
+        root.join("tenants")
+            .join(bid)
+            .join("history.sql.gz")
+            .exists()
+    );
+    assert_eq!(std::fs::read_dir(root.join("erasures")).unwrap().count(), 1);
+    // The current account/session/rules/authorization survive erasure.
+    ok(&app, "GET", "/api/bootstrap", json!({}), &ca).await;
+    // Multi-choice filters and amount sorting include only this period/tenant.
+    for (name, amount) in [("筛选甲", "30"), ("筛选乙", "10"), ("筛选甲", "20")] {
+        ok(&app,"POST","/api/bets",json!({"period":period,"play_id":play["id"],"play_version":play["version"],"selections":[8],"compound":false,"bettor":name,"amount":amount,"request_id":uuid::Uuid::new_v4()}),&ca).await;
+    }
+    let choices = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{period}/bet-filters"),
+        json!({}),
+        &ca,
+    )
+    .await;
+    assert_eq!(choices["bettors"].as_array().unwrap().len(), 3);
+    for (order, amounts) in [
+        ("amount_asc", vec![1000, 2000, 3000]),
+        ("amount_desc", vec![3000, 2000, 1000]),
+    ] {
+        let path = reqwest::Url::parse_with_params(
+            "http://fixture/api/bets",
+            [
+                ("period", period.to_owned()),
+                ("bettors", json!(["筛选甲", "筛选乙"]).to_string()),
+                ("play_ids", json!([play["id"]]).to_string()),
+                ("order", order.to_owned()),
+            ],
+        )
+        .unwrap();
+        let records = ok(
+            &app,
+            "GET",
+            &format!("{}?{}", path.path(), path.query().unwrap()),
+            json!({}),
+            &ca,
+        )
+        .await;
+        assert_eq!(records["total"], 3);
+        assert_eq!(
+            records["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["stake"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            amounts
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/bets?order=stake%20DESC%3BDROP%20TABLE%20bets",
+            json!({}),
+            &ca
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let mut large_filter: Vec<String> = (0..500)
+        .map(|i| format!("{}-{i}", "长名称".repeat(20)))
+        .collect();
+    large_filter.extend(["筛选甲".into(), "筛选乙".into()]);
+    let filter = json!({"period":period,"bettors":serde_json::to_string(&large_filter).unwrap(),"order":"amount_asc"});
+    assert!(filter.to_string().len() > 8000);
+    let records = ok(&app, "POST", "/api/bets/search", filter, &ca).await;
+    assert_eq!(records["total"], 3);
     // Arrival time must be captured before waiting for the shared work gate.
     *clock.write().unwrap() = date.and_hms_opt(21, 27, 59).unwrap();
     let blocked = registry.work_gate.acquire_many(8).await.unwrap();

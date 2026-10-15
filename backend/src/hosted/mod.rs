@@ -1,5 +1,6 @@
 //! Server-hosted accounts. Business state is selected only from a validated session.
 mod accounts;
+mod history;
 mod management;
 mod portal;
 mod tenancy;
@@ -14,6 +15,15 @@ mod tests;
 pub(crate) struct Policy {
     pub pool: sqlx::MySqlPool,
     pub account_id: String,
+}
+pub(crate) async fn require(state: &crate::store::AppState) -> crate::api::ApiResult<()> {
+    // Only test examples construct an unbound state. Production always leases
+    // a tenant from a centrally validated customer session.
+    if let Some(policy) = &state.hosted {
+        allowed(policy).await
+    } else {
+        Ok(())
+    }
 }
 pub(crate) async fn allowed(p: &Policy) -> crate::api::ApiResult<()> {
     let a = sqlx::query_as::<_, accounts::Account>("SELECT * FROM hosted_accounts WHERE id=?")

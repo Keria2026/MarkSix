@@ -29,7 +29,7 @@ pub async fn run(state: AppState) {
     }
 }
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
-    let active = crate::license::require(state).await.is_ok();
+    let active = crate::hosted::require(state).await.is_ok();
     if !active {
         for flag in state.cancellations.lock().await.values() {
             flag.store(true, Ordering::Relaxed);
@@ -194,10 +194,13 @@ async fn mark_missing(state: &AppState, id: &str, reason: &str) -> anyhow::Resul
 }
 pub async fn accept_draw(state: &AppState, draw: &Draw, raw: &Value) -> anyhow::Result<()> {
     let mut tx = state.pool.begin().await?;
-    let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
+    let Some(p): Option<Period> = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
         .bind(&draw.expect)
-        .fetch_one(&mut *tx)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        return Ok(());
+    };
     if draw.open_time.date() != p.business_date {
         anyhow::bail!("目标期次日期不匹配");
     }
@@ -230,10 +233,13 @@ pub async fn accept_draw(state: &AppState, draw: &Draw, raw: &Value) -> anyhow::
 }
 pub async fn settle_period(state: &AppState, id: &str) -> anyhow::Result<()> {
     let mut tx = state.pool.begin().await?;
-    let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
+    let Some(p): Option<Period> = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
         .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        return Ok(());
+    };
     if p.state != "settling" {
         tx.commit().await?;
         return Ok(());

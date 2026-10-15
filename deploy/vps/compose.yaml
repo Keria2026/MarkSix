@@ -17,7 +17,7 @@ services:
       MALLOC_ARENA_MAX: "2"
       MALLOC_MMAP_THRESHOLD_: "131072"
       MALLOC_TRIM_THRESHOLD_: "131072"
-    command: [--innodb-buffer-pool-size=96M, --max-connections=64, --performance-schema=OFF, --table-open-cache=128, --table-definition-cache=400, --thread-cache-size=8, --temptable-max-ram=16M, --temptable-max-mmap=0, --mysqlx=0, --skip-log-bin]
+    command: [--innodb-buffer-pool-size=96M, --max-connections=64, --performance-schema=OFF, --table-open-cache=128, --table-definition-cache=400, --thread-cache-size=8, --temptable-max-ram=16M, --temptable-max-mmap=0, --mysqlx=0, --skip-log-bin, --log-error-verbosity=1, --general-log=OFF, --slow-query-log=OFF]
     volumes:
       - hosted-data:/var/lib/mysql
       - ./init-portal.sh:/docker-entrypoint-initdb.d/20-portal.sh:ro
@@ -97,6 +97,7 @@ services:
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?Configure shared .env}
       ADMIN_DOMAIN: ${ADMIN_DOMAIN:?Configure shared .env}
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
     volumes:
       - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./nginx-main.conf:/etc/nginx/nginx.conf:ro

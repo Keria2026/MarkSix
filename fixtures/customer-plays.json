@@ -19,7 +19,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -40,7 +41,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -61,7 +63,8 @@
         "special_odds": "3.5",
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -82,7 +85,8 @@
         "special_odds": "9",
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -103,7 +107,8 @@
         "special_odds": "28",
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -124,7 +129,8 @@
         "special_odds": "90",
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -145,7 +151,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -166,7 +173,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": "25"
+        "special_hit_odds": "25",
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -187,7 +195,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -208,7 +217,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -229,7 +239,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -250,7 +261,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -271,7 +283,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": 4,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -292,7 +305,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": 5,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -313,7 +327,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": 6,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -334,7 +349,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": 7,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -355,7 +371,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -376,7 +393,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -397,7 +415,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -418,7 +437,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -439,7 +459,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -460,7 +481,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -481,7 +503,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -502,7 +525,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -523,7 +547,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -544,7 +569,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -565,7 +591,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -586,7 +613,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -607,7 +635,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -628,7 +657,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -649,7 +679,8 @@
         "special_odds": "1.8",
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -670,7 +701,8 @@
         "special_odds": null,
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     },
@@ -691,7 +723,8 @@
         "special_odds": "2",
         "special_rebate_percent": null,
         "zodiac_count": null,
-        "special_hit_odds": null
+        "special_hit_odds": null,
+        "zero_tail_odds": null
       },
       "enabled": true
     }

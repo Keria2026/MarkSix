@@ -158,7 +158,7 @@ def backup_data(shared, preserve=None):
             "Complete or delete provisioning/failed/deleting accounts before full backup"
         )
     stamp = (
-        dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         + "-"
         + secrets.token_hex(4)
     )
@@ -230,6 +230,22 @@ def restore_data(shared, manifest):
     data = json.loads(manifest.read_text())
     if data.get("schema") != 1 or not isinstance(data.get("files"), dict):
         raise RuntimeError("Invalid backup manifest")
+    # Erasure receipts are outside SQL dumps and must never be rolled back.
+    # Older complete generations can contain deliberately erased tenant history.
+    stamp_time = data.get("created_at", "").split("-", 1)[0]
+    stamp_format = "%Y%m%dT%H%M%SZ" if len(stamp_time) == 16 else "%Y%m%dT%H%M%S%fZ"
+    created = dt.datetime.strptime(stamp_time, stamp_format)
+    created = created.replace(tzinfo=dt.timezone.utc)
+    accounts = {a["id"] for a in data.get("accounts", [])}
+    for path in (root / "erasures").glob("*.json"):
+        receipt = json.loads(path.read_text())
+        if (
+            receipt["account_id"] in accounts
+            and dt.datetime.fromisoformat(receipt["cleared_at_utc"]) >= created
+        ):
+            raise RuntimeError(
+                "Backup predates customer history erasure; use a new complete generation"
+            )
     for relative, expected in data["files"].items():
         path = (root / relative).resolve()
         if not path.is_relative_to(root.resolve()) or not path.is_file():

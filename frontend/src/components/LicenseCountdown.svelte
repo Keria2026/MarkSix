@@ -5,7 +5,7 @@
   let tick = $state(0);
   $effect(() => {
     // performance.now is used only for display; all permissions are enforced by
-    // the backend's signed authority time and suspend-aware monotonic clock.
+    // the hosted backend's current authorization and server time.
     void seconds;
     anchor = performance.now();
     tick = anchor;
