@@ -56,8 +56,8 @@ try {
     & $scriptPath -Action Install -DataDirectory $testData -NoBrowser
     $again = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/session' -WebSession $session
     Assert ($again.username -eq 'native-test') 'Database/session did not persist across restart.'
-    # Restore a portable .sql.gz dump and prove it restores the pre-logout session.
-    Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/logout' -Method Post -Headers @{'X-Marksix'='1';'Cookie'=$session.Cookies.GetCookieHeader([uri]'http://127.0.0.1:8088')} -ContentType 'application/json' -Body '{}' | Out-Null
+    # Restore a portable .sql.gz dump: preserve the old session, remove a newer one.
+    $newerSession = Login
     $compressed = Join-Path $testRoot 'portable backup.sql.gz'
     $inputStream=[IO.File]::OpenRead($backup[0].FullName)
     $outputStream=[IO.File]::Create($compressed)
@@ -66,6 +66,8 @@ try {
     & $scriptPath -Action Restore -DataDirectory $testData -BackupFile $compressed -ConfirmRestore -NoBrowser
     $restored = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/session' -WebSession $session
     Assert ($restored.username -eq 'native-test') 'Restored SQL did not recover the original session.'
+    try { Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/session' -WebSession $newerSession | Out-Null; throw 'Restore retained a session created after the backup.' }
+    catch { if ($null -eq $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 401) { throw } }
     Assert ((Get-Content -LiteralPath (Join-Path $testData 'config.json') -Raw) -ceq $before) 'Reinstall overwrote credentials.'
     Write-Host 'Native Windows installation, activation gate, stale PID shutdown, idempotent stop, persistence, backup and restore passed.'
 } catch {
