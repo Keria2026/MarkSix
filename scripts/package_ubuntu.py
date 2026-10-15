@@ -88,6 +88,23 @@ def main():
     shutil.copyfile(ROOT / "docs/LICENSING.md", output / "LICENSING.md")
     shutil.copyfile(ROOT / "docs/legacy/RUNNING.md", output / "LEGACY_LOCAL_README.md")
     shutil.copyfile(ROOT / "docs/legacy/LICENSING.md", output / "LEGACY_LICENSING.md")
+    # Repository-relative links must point at their shipped artifact locations.
+    for name, replacements in {
+        "README.md": {
+            "../deploy/vps/README.md": "hosted/README.md",
+            "legacy/RUNNING.md": "LEGACY_LOCAL_README.md",
+        },
+        "LICENSING.md": {
+            "../deploy/vps/README.md": "hosted/README.md",
+            "legacy/LICENSING.md": "LEGACY_LICENSING.md",
+        },
+        "LEGACY_LOCAL_README.md": {"(LICENSING.md)": "(LEGACY_LICENSING.md)"},
+    }.items():
+        path = output / name
+        text = path.read_text(encoding="utf-8")
+        for source, target in replacements.items():
+            text = text.replace(source, target)
+        path.write_text(text, encoding="utf-8")
     # Allowlist only: never package shared .env, TLS keys or database backups.
     (output / "hosted").mkdir()
     for name in [
