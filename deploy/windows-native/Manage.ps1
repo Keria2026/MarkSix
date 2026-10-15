@@ -77,7 +77,9 @@ function Get-OwnedProcess([string]$Name) {
     try { $record = Get-Content -Encoding UTF8 -LiteralPath $recordPath -Raw | ConvertFrom-Json }
     catch { Write-Warning "Unreadable process record ($Name); authenticated shutdown will be used."; return $null }
     if ($null -eq $record.PSObject.Properties['id'] -or $null -eq $record.PSObject.Properties['path'] -or $null -eq $record.PSObject.Properties['started']) { Write-Warning "Incomplete process record ($Name)."; return $null }
-    $process = Get-Process -Id $record.id -ErrorAction SilentlyContinue
+    $recordProcessId = 0
+    if (-not [int]::TryParse([string]$record.id,[ref]$recordProcessId) -or $recordProcessId -le 0) { Write-Warning "Invalid process ID ($Name)."; return $null }
+    $process = Get-Process -Id $recordProcessId -ErrorAction SilentlyContinue
     if ($null -eq $process) { Remove-Item -LiteralPath $recordPath -Force; return $null }
     if ($process.Path -ne $record.path -or $process.StartTime.ToUniversalTime().Ticks.ToString() -ne $record.started) {
         Write-Warning "Stale process record ($Name). The unrelated process will not be stopped."
@@ -155,9 +157,10 @@ function Stop-Native {
         $mysqlDirectory = Join-Path $DataDirectory 'mysql'
         if (Test-Path -LiteralPath $mysqlDirectory) {
             foreach ($pidFile in @(Get-ChildItem -LiteralPath $mysqlDirectory -Filter '*.pid' -File)) {
-                $dbProcessId = [IO.File]::ReadAllText($pidFile.FullName).Trim()
-                if ($dbProcessId -match '^[0-9]+$') {
-                    $candidate = Get-Process -Id ([int]$dbProcessId) -ErrorAction SilentlyContinue
+                try { $dbProcessText = [IO.File]::ReadAllText($pidFile.FullName).Trim() } catch { continue }
+                $dbProcessId = 0
+                if ([int]::TryParse($dbProcessText,[ref]$dbProcessId) -and $dbProcessId -gt 0) {
+                    $candidate = Get-Process -Id $dbProcessId -ErrorAction SilentlyContinue
                     if ($null -ne $candidate -and $candidate.ProcessName -eq 'mysqld') { $db = $candidate; break }
                 }
             }

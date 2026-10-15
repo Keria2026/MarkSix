@@ -587,6 +587,32 @@ mod tests {
             default_url: None,
         });
         assert!(require(&state).await.is_err());
+        // Exercise the real nested router: Axum strips /api before route middleware.
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+        let session = random_hex();
+        let session = format!("{session}{}", &random_hex()[..16]);
+        sqlx::query("INSERT INTO sessions(token_hash,expires_at) VALUES(?,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 HOUR))").bind(digest(&session)).execute(&pool).await.unwrap();
+        let router = crate::api::router(state.clone());
+        let cookie = format!("marksix_session={session}");
+        for (path, expected) in [
+            ("/api/license", StatusCode::OK),
+            ("/api/session", StatusCode::OK),
+            ("/api/bootstrap", StatusCode::PAYMENT_REQUIRED),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("cookie", &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{path}");
+        }
         let code = issue(&pool, 1).await.unwrap();
         let binding = binding(&state, state.license.as_ref().unwrap())
             .await
@@ -606,15 +632,27 @@ mod tests {
         assert_ne!(a.is_ok(), b.is_ok());
         // Use another fresh code to activate the real client irrespective of race winner.
         let code = issue(&pool, 1).await.unwrap();
-        let _ = activate(
-            State(state.clone()),
-            Json(Activate {
-                code: code.clone(),
-                server_url: address.clone(),
-            }),
-        )
-        .await
-        .unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/license/activate")
+                    .header("cookie", &cookie)
+                    .header("x-marksix", "1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"code":code,"server_url":address}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Activation must remain reachable before activation"
+        );
         let before = check(&state, true).await.unwrap();
         // A retry recovers the same license without extending its expiry.
         let _ = activate(

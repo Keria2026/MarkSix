@@ -178,7 +178,7 @@ async fn authenticate(State(state): State<AppState>, req: Request, next: Next) -
         Ok(true) => {
             if !matches!(
                 req.uri().path(),
-                "/api/session" | "/api/logout" | "/api/license" | "/api/license/activate"
+                "/session" | "/logout" | "/license" | "/license/activate"
             ) && let Err(e) = crate::license::require(&state).await
             {
                 return e.into_response();
