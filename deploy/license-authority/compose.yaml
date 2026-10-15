@@ -1,0 +1,41 @@
+name: marksix-license
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: marksix_authority
+      MYSQL_USER: authority
+      MYSQL_PASSWORD: ${AUTHORITY_DB_PASSWORD:?Set AUTHORITY_DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${AUTHORITY_ROOT_PASSWORD:?Set AUTHORITY_ROOT_PASSWORD}
+    volumes:
+      - authority-db:/var/lib/mysql
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -u authority marksix_authority -e "SELECT 1" >/dev/null 2>&1']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  authority:
+    image: ${BACKEND_IMAGE:-marksix-backend:local}
+    restart: unless-stopped
+    init: true
+    command: [marksix, --license-authority]
+    environment:
+      AUTHORITY_DATABASE_URL: mysql://authority:${AUTHORITY_DB_PASSWORD}@db:3306/marksix_authority
+      AUTHORITY_BIND_ADDR: 0.0.0.0:8090
+      LICENSE_SIGNING_KEY_FILE: /run/signing-key.hex
+    volumes:
+      - ./signing-key.hex:/run/signing-key.hex:ro
+    ports:
+      - "127.0.0.1:${AUTHORITY_PORT:-8090}:8090"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, marksix, --authority-healthcheck]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    stop_grace_period: 30s
+volumes:
+  authority-db:

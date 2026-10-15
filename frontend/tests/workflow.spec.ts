@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 
 test("administrator records compound bets, cancels atomically, configures rules, and navigates mobile", async ({
@@ -94,10 +95,60 @@ test("administrator records compound bets, cancels atomically, configures rules,
   await page.getByLabel("开奖对比范围").selectOption("all");
   await page.getByLabel("命中条件").selectOption("any");
   await page.getByLabel("含本赔率", { exact: true }).fill("3.1234");
+  await page.getByLabel("最多可选数量（留空允许普通多选）").fill("1");
   await page.getByRole("button", { name: "保存玩法" }).click();
   await expect(
     page.getByRole("heading", { name: "尾数验收玩法" }),
   ).toBeVisible();
+  await nav.getByRole("button", { name: "录入投注" }).click();
+  await page.getByLabel("搜索玩法名称").fill("尾数验收玩法");
+  await expect(page.locator(".play-picker button.selected")).toContainText(
+    "尾数验收玩法",
+  );
+  await page.getByRole("button", { name: "1尾", exact: true }).click();
+  await page.getByRole("button", { name: "2尾", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "2尾", exact: true }),
+  ).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("alert")).toContainText("最多选择 1 项");
+  await page.getByLabel("搜索玩法名称").fill("");
+  await nav.getByRole("button", { name: "玩法与配置" }).click();
+  await page
+    .getByRole("button")
+    .filter({
+      has: page.getByRole("heading", { name: "尾数验收玩法", exact: true }),
+    })
+    .click();
+  const downloaded = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出此玩法" }).click();
+  const file = await downloaded;
+  const portable = JSON.parse(await readFile((await file.path())!, "utf8"));
+  expect(portable.plays).toHaveLength(1);
+  expect(portable.plays[0].rule.selection_limit).toBe(1);
+  expect(portable.plays[0]).not.toHaveProperty("id");
+  portable.plays[0].rule.name = "共享导入验收";
+  await page.keyboard.press("Escape");
+  await page.getByLabel("选择玩法文件").setInputFiles({
+    name: "shared.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(portable)),
+  });
+  await expect(
+    page.getByRole("dialog", { name: "导入玩法规则" }),
+  ).toContainText("共享导入验收");
+  await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  await page
+    .getByRole("button")
+    .filter({
+      has: page.getByRole("heading", { name: "共享导入验收", exact: true }),
+    })
+    .click();
+  await page.getByRole("button", { name: "删除玩法", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除玩法", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "共享导入验收", exact: true }),
+  ).toHaveCount(0);
+
   await page
     .getByRole("button")
     .filter({ has: page.getByRole("heading", { name: "五有", exact: true }) })
@@ -181,4 +232,49 @@ test("administrator records compound bets, cancels atomically, configures rules,
     })),
   ).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+test("activation and expiry keep business screens inaccessible until renewed", async ({
+  page,
+}) => {
+  let active = false;
+  await page.route("**/api/license", (route) =>
+    route.fulfill({
+      json: {
+        active,
+        server_url: "https://license.example.com",
+        binding: "a".repeat(64),
+        message: "请激活此设备",
+      },
+    }),
+  );
+  await page.route("**/api/license/activate", async (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      server_url: "https://license.example.com",
+      code: "b".repeat(48),
+    });
+    active = true;
+    await route.fulfill({ json: { active: true } });
+  });
+  await page.goto("/");
+  await page.getByLabel("管理员账号").fill("test-admin");
+  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
+  await page.getByRole("button", { name: "进入工作台" }).click();
+  await expect(page.getByRole("heading", { name: "激活工作台" })).toBeVisible();
+  await expect(page.getByRole("navigation")).toHaveCount(0);
+  await expect(page.getByLabel("授权服务地址")).toHaveValue(
+    "https://license.example.com",
+  );
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
+  expect(accessibility.violations.map((v) => v.id)).toEqual([]);
+  await page.getByLabel("一次性授权码").fill("b".repeat(48));
+  await page.getByRole("button", { name: "激活并进入" }).click();
+  await expect(
+    page.getByRole("heading", { name: "本期概览", exact: true }),
+  ).toBeVisible();
+  active = false;
+  await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "激活工作台" })).toBeVisible();
 });

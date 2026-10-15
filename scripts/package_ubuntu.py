@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package tested Linux/amd64 images for Windows Docker Desktop; no credentials."""
+"""Package tested Ubuntu x64 images and lifecycle scripts; no credentials."""
 import argparse
 import datetime
 import gzip
@@ -23,8 +23,7 @@ def main():
     parser.add_argument('--backend', required=True)
     parser.add_argument('--frontend', required=True)
     parser.add_argument('--mysql', default='mysql:8.4')
-    parser.add_argument('--target', choices=['windows-docker','ubuntu'], default='windows-docker')
-    parser.add_argument('--output', type=Path, default=ROOT / 'windows-package')
+    parser.add_argument('--output', type=Path, default=ROOT / 'ubuntu-package')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', args.version):
         parser.error('Version must be a valid Docker image tag')
@@ -52,18 +51,20 @@ def main():
         compose['services'][service]['pull_policy'] = 'never'
         tags.append(tag)
     # JSON is valid YAML, avoiding an additional packaging dependency.
-    (output / 'compose.yaml').write_text(json.dumps(compose, indent=2).replace('Run scripts/configure.py first', 'Run install.sh first' if args.target == 'ubuntu' else 'Run Install.cmd first') + '\n', encoding='utf-8')
-    if args.target == 'ubuntu':
-        shutil.copytree(ROOT / 'deploy/ubuntu', output, dirs_exist_ok=True)
-        (output / 'scripts').mkdir(exist_ok=True)
-        for name in ['configure.py', 'backup.sh', 'restore.sh']:
-            shutil.copyfile(ROOT / 'scripts' / name, output / 'scripts' / name)
-        shutil.copyfile(ROOT / 'docs/RUNNING.md', output / 'README.md')
-    else:
-        for path in (ROOT / 'deploy/windows').iterdir():
-            if path.suffix in ('.ps1', '.cmd'):
-                shutil.copyfile(path, output / path.name)
-        shutil.copyfile(ROOT / 'docs/WINDOWS.md', output / 'README.txt')
+    (output / 'compose.yaml').write_text(json.dumps(compose, indent=2).replace('Run scripts/configure.py first', 'Run install.sh first') + '\n', encoding='utf-8')
+    shutil.copytree(ROOT / 'deploy/ubuntu', output, dirs_exist_ok=True)
+    (output / 'scripts').mkdir(exist_ok=True)
+    for name in ['configure.py', 'backup.sh', 'restore.sh']:
+        shutil.copyfile(ROOT / 'scripts' / name, output / 'scripts' / name)
+    shutil.copyfile(ROOT / 'docs/RUNNING.md', output / 'README.md')
+    shutil.copyfile(ROOT / 'docs/LICENSING.md', output / 'LICENSING.md')
+    (output / 'license-authority').mkdir()
+    # Explicit allowlist: never copy owner .env, private keys, or local data.
+    for name in ['compose.yaml', 'setup.py']:
+        shutil.copyfile(ROOT / 'deploy/license-authority' / name, output / 'license-authority' / name)
+    authority_compose=(output / 'license-authority/compose.yaml').read_text()
+    authority_compose=authority_compose.replace('${BACKEND_IMAGE:-marksix-backend:local}', tags[0]).replace('mysql:8.4', tags[2])
+    (output / 'license-authority/compose.yaml').write_text(authority_compose)
     archive = output / 'images.tar.gz'
     with subprocess.Popen(['docker', 'save', *tags], stdout=subprocess.PIPE) as process:
         try:
@@ -82,7 +83,7 @@ def main():
             continue
         with path.open('rb') as stream:
             hashes[str(path.relative_to(output))] = hashlib.file_digest(stream, 'sha256').hexdigest()
-    manifest = {'schema': 1, 'version': args.version, 'platform': 'linux/amd64', 'target': args.target,
+    manifest = {'schema': 1, 'version': args.version, 'platform': 'linux/amd64', 'target': 'ubuntu',
                 'built_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 'files': hashes}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')

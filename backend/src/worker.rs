@@ -29,6 +29,9 @@ pub async fn run(state: AppState) {
     }
 }
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
+    if crate::license::require(state).await.is_err() {
+        return Ok(());
+    }
     ensure_period(state, state.now().date()).await?;
     let settling: Vec<String> = sqlx::query_scalar("SELECT id FROM periods WHERE state='settling'")
         .fetch_all(&state.pool)

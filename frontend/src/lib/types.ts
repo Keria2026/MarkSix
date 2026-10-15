@@ -17,6 +17,7 @@ export interface Rule {
   quantity: number;
   combination_size: number;
   compound_enabled: boolean;
+  selection_limit?: number | null;
   minimum_hits: number;
   odds: string;
   rebate_percent: string;
@@ -357,7 +358,12 @@ export function basicCount(
   compound: boolean,
 ): number {
   const n = selections.length;
-  if (!n || (compound && !rule.compound_enabled)) return 0;
+  if (
+    !n ||
+    (compound && !rule.compound_enabled) ||
+    (rule.selection_limit != null && n > rule.selection_limit)
+  )
+    return 0;
   const accepts = (v: number) =>
     rule.relation === "eq"
       ? v === rule.quantity
@@ -377,4 +383,27 @@ export function annualMapping(year: number): Mapping {
     natal,
     zodiac: Array.from({ length: 49 }, (_, i) => (natal - (i % 12) + 12) % 12),
   };
+}
+
+// Reject only boundaries that cannot be repaired by adding further options.
+export function selectionBoundary(
+  rule: Rule,
+  selections: number[],
+  compound: boolean,
+): string | null {
+  const n = selections.length;
+  if (rule.selection_limit != null && n > rule.selection_limit)
+    return `此玩法最多选择 ${rule.selection_limit} 项`;
+  if (
+    !compound &&
+    rule.quantity !== 1 &&
+    rule.relation !== "ge" &&
+    n > rule.quantity
+  )
+    return `此玩法最多选择 ${rule.quantity} 项，请先取消已选项`;
+  if (["hard_pair", "soft_pair"].includes(rule.condition) && n > 2)
+    return "碰号玩法只能选择两个号码";
+  if (basicCount(rule, selections, compound) > 1000)
+    return "单次最多 1,000 条基础注，请减少候选项";
+  return null;
 }

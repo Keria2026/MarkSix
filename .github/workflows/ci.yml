@@ -48,6 +48,7 @@ jobs:
           cargo test --locked
           cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
+          cargo test --locked --lib license::tests::online_activation -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
       - name: Frontend checks
@@ -73,18 +74,8 @@ jobs:
         with:
           name: browser-report
           path: frontend/playwright-report
-  windows-scripts:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Windows PowerShell 5.1 installer checks
-        shell: powershell
-        run: ./scripts/test_windows.ps1
-      - name: PowerShell 7 installer checks
-        shell: pwsh
-        run: ./scripts/test_windows.ps1
   images:
-    needs: [verify, windows-scripts]
+    needs: [verify]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -137,8 +128,8 @@ jobs:
           DB_ROOT_PASSWORD: disposable-image-root
           ADMIN_PASSWORD: disposable-image-admin
         run: |
-          python3 scripts/package_windows.py --target ubuntu --output ubuntu-package --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
-          bash -n ubuntu-package/install.sh ubuntu-package/start.sh ubuntu-package/stop.sh ubuntu-package/scripts/backup.sh
+          python3 scripts/package_ubuntu.py --output ubuntu-package --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
+          bash -n ubuntu-package/install.sh ubuntu-package/start.sh ubuntu-package/stop.sh ubuntu-package/scripts/backup.sh ubuntu-package/scripts/restore.sh
           docker compose -f ubuntu-package/compose.yaml config --quiet
           python3 ubuntu-package/verify.py
           docker load --input ubuntu-package/images.tar.gz
@@ -146,9 +137,29 @@ jobs:
           curl -fsS http://127.0.0.1:8088/api/health
           # Check the shipped lifecycle scripts with the existing disposable credentials.
           bash ubuntu-package/stop.sh
+          bash ubuntu-package/stop.sh
           bash ubuntu-package/start.sh
           bash ubuntu-package/scripts/backup.sh
+          # Restore the portable SQL dump into the same disposable database.
+          backup_file=$(find ubuntu-package/backups -name '*.sql.gz' -print -quit)
+          CONFIRM_RESTORE=yes bash ubuntu-package/scripts/restore.sh "$backup_file"
+          curl -fsS http://127.0.0.1:8088/api/health
           rm -rf ubuntu-package/backups
+      - name: Authority deployment and owner tools smoke test
+        env:
+          AUTHORITY_DB_PASSWORD: disposable-authority-db
+          AUTHORITY_ROOT_PASSWORD: disposable-authority-root
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/owner" "marksix-backend:$GITHUB_SHA" marksix --license-keygen /owner/ubuntu-package/license-authority/signing-key.hex
+          chmod 644 ubuntu-package/license-authority/signing-key.hex
+          docker compose -f ubuntu-package/license-authority/compose.yaml up -d --wait --wait-timeout 180
+          curl -fsS http://127.0.0.1:8090/health
+          code=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-issue 1)
+          test "${#code}" -eq 48
+          docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-public-key | rg '^[0-9a-f]{64}$'
+          docker compose -f ubuntu-package/license-authority/compose.yaml stop --timeout 60
+          rm ubuntu-package/license-authority/signing-key.hex
+          python3 ubuntu-package/verify.py
       - uses: actions/upload-artifact@v4
         id: ubuntu-package
         with:

@@ -757,6 +757,105 @@ async fn transactional_workflow_and_recovery() {
             .await
             .unwrap();
     assert_eq!(units, 10000);
+    // Portable configuration import is all-or-nothing and never overwrites original IDs.
+    let exported = request(&app, Method::GET, "/api/plays/export", Value::Null, &cookie).await;
+    assert_eq!(exported.0, StatusCode::OK);
+    let mut invalid = exported.1.clone();
+    invalid["plays"][1]["rule"]["odds"] = json!("bad");
+    let old_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plays")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, Method::POST, "/api/plays/import", invalid, &cookie)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM plays")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        old_count
+    );
+    let imported = request(
+        &app,
+        Method::POST,
+        "/api/plays/import",
+        exported.1.clone(),
+        &cookie,
+    )
+    .await;
+    assert_eq!(imported.0, StatusCode::OK, "{}", imported.1);
+    let imported_id = imported.1["ids"][0].as_i64().unwrap();
+    let deletion = request(
+        &app,
+        Method::DELETE,
+        &format!("/api/plays/{imported_id}"),
+        json!({"version":999}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(deletion.0, StatusCode::CONFLICT);
+    assert_eq!(
+        request(
+            &app,
+            Method::DELETE,
+            &format!("/api/plays/{imported_id}"),
+            json!({"version":1}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &app,
+            Method::PUT,
+            &format!("/api/plays/{imported_id}"),
+            json!({"version":1,"enabled":true,"rule":exported.1["plays"][0]["rule"]}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    // Deleting a referenced original play preserves settled bets and their details.
+    let version: i64 = sqlx::query_scalar("SELECT version FROM plays WHERE id=?")
+        .bind(play_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            Method::DELETE,
+            &format!("/api/plays/{play_id}"),
+            json!({"version":version}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets WHERE play_id=?")
+            .bind(play_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            > 0
+    );
+    let current = request(&app, Method::GET, "/api/bootstrap", Value::Null, &cookie).await;
+    assert!(
+        !current.1["plays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == play_id)
+    );
     let (status, _, _) = request(&app, Method::POST, "/api/logout", json!({}), &cookie).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(

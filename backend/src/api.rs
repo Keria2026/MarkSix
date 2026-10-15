@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Debug)]
 pub struct ApiError(pub StatusCode, pub String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -82,6 +83,8 @@ pub fn router(state: AppState) -> Router {
 pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf>) -> Router {
     let private = Router::new()
         .route("/session", get(session))
+        .route("/license", get(crate::license::status))
+        .route("/license/activate", post(crate::license::activate))
         .route("/logout", post(logout))
         .route("/bootstrap", get(bootstrap))
         .route("/periods", get(periods))
@@ -96,7 +99,12 @@ pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf
         .route("/bets/{id}/cancel", post(cancel_bet))
         .route("/quote", post(quote))
         .route("/plays", post(create_play))
-        .route("/plays/{id}", put(update_play))
+        .route(
+            "/plays/{id}",
+            put(update_play).delete(crate::configuration::delete),
+        )
+        .route("/plays/export", get(crate::configuration::export))
+        .route("/plays/import", post(crate::configuration::import))
         .route("/settings", get(settings))
         .route("/settings/closing", put(update_closing))
         .route("/settings/mapping", put(update_mapping))
@@ -110,9 +118,10 @@ pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf
         private
             .route("/login", post(login))
             .route("/health", get(health))
+            .route("/internal/shutdown", post(shutdown))
             .fallback(|| async { (StatusCode::NOT_FOUND, "Unknown API endpoint") }),
     )
-    .layer(DefaultBodyLimit::max(64 * 1024))
+    .layer(DefaultBodyLimit::max(1024 * 1024))
     .layer(middleware::from_fn(security_headers))
     .layer(middleware::from_fn_with_state(state.clone(), receive_time))
     .layer(tower_http::trace::TraceLayer::new_for_http())
@@ -166,7 +175,16 @@ async fn authenticate(State(state): State<AppState>, req: Request, next: Next) -
         Ok(false)
     };
     match valid {
-        Ok(true) => next.run(req).await,
+        Ok(true) => {
+            if !matches!(
+                req.uri().path(),
+                "/api/session" | "/api/logout" | "/api/license" | "/api/license/activate"
+            ) && let Err(e) = crate::license::require(&state).await
+            {
+                return e.into_response();
+            }
+            next.run(req).await
+        }
         Ok(false) => ApiError(StatusCode::UNAUTHORIZED, "请先登录".into()).into_response(),
         Err(e) => ApiError::from(e).into_response(),
     }
@@ -265,9 +283,11 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 }
 async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let today = ensure_period(&state, state.now().date()).await?;
-    let plays: Vec<Play> = sqlx::query_as("SELECT id,version,rule,enabled FROM plays ORDER BY id")
-        .fetch_all(&state.pool)
-        .await?;
+    let plays: Vec<Play> = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY id",
+    )
+    .fetch_all(&state.pool)
+    .await?;
     Ok(Json(
         json!({"today":view(&state,today).await?,"plays":plays,"zodiacs":ZODIACS}),
     ))
@@ -390,11 +410,13 @@ async fn current_plan(state: &AppState, input: &BetInput) -> ApiResult<(Period, 
     if input.period != p.id {
         return Err(conflict("期次已切换，请刷新后重新录入"));
     }
-    let play: Play = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=?")
-        .bind(input.play_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(missing)?;
+    let play: Play = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL",
+    )
+    .bind(input.play_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(missing)?;
     if play.version != input.play_version || !play.enabled {
         return Err(conflict("玩法配置已变更或停用，请刷新并确认最新规则"));
     }
@@ -458,11 +480,13 @@ async fn create_bet(
     {
         return Err(conflict("当前不在投注时间内，或本期已经封盘／接受开奖"));
     }
-    let play: Play =
-        sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? FOR UPDATE")
-            .bind(input.play_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let play: Play = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(input.play_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| conflict("玩法已删除，请刷新后重新选择"))?;
     if !play.enabled || play.version != input.play_version {
         return Err(conflict("玩法配置已变更，请刷新后确认"));
     }
@@ -602,6 +626,18 @@ async fn create_play(
 ) -> ApiResult<Json<Value>> {
     rule.validate()?;
     let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plays WHERE deleted_at IS NULL")
+        .fetch_one(&mut *tx)
+        .await?;
+    if count >= 1000 {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "玩法总数不能超过 1000 条".into(),
+        ));
+    }
     let result = sqlx::query("INSERT INTO plays(version,rule) VALUES(1,?)")
         .bind(DbJson(&rule))
         .execute(&mut *tx)
@@ -629,12 +665,13 @@ async fn update_play(
 ) -> ApiResult<Json<Value>> {
     input.rule.validate()?;
     let mut tx = state.pool.begin().await?;
-    let play: Play =
-        sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(missing)?;
+    let play: Play = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(missing)?;
     if play.version != input.version {
         return Err(conflict("配置已被更新，请刷新后再保存"));
     }
@@ -754,4 +791,22 @@ async fn update_mapping(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"effective_date":input.effective_date})))
+}
+
+async fn shutdown(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let supplied = headers
+        .get("x-marksix-shutdown")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let allowed = state.shutdown_token.as_deref().is_some_and(|expected| {
+        // Compare digests without prefix-dependent early returns.
+        let a = digest(expected);
+        let b = digest(supplied);
+        a.bytes().zip(b.bytes()).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0
+    });
+    if !allowed {
+        return Err(ApiError(StatusCode::FORBIDDEN, "停止请求未获授权".into()));
+    }
+    state.shutdown.notify_one();
+    Ok(Json(json!({"ok":true})))
 }

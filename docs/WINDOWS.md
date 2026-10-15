@@ -4,4 +4,4 @@
 
 完整安装、启动、备份、升级及中文用户名处理说明见 [随安装包分发的 Windows README](../deploy/windows-native/README.md)。该文件是 Windows 操作步骤的唯一维护源。
 
-旧 `MarkSix-Windows-x64` 为 Docker Desktop 版，已停止自动打包；其说明仅保留在 [历史归档](archive/WINDOWS-DOCKER-v0.1.md)，不要将旧包误认为当前原生版。
+仅维护 Windows Native 与 Ubuntu Server；旧 Windows Docker 交付已经删除。授权服务见 [授权说明](LICENSING.md)。

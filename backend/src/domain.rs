@@ -88,6 +88,8 @@ pub struct Rule {
     pub combination_size: u8,
     #[serde(default)]
     pub compound_enabled: bool,
+    #[serde(default)]
+    pub selection_limit: Option<u8>,
     pub odds: String,
     pub rebate_percent: String,
     pub special_odds: Option<String>,
@@ -96,8 +98,22 @@ pub struct Rule {
 }
 impl Rule {
     pub fn validate(&self) -> RuleResult<()> {
-        if self.name.trim().is_empty() || self.name.chars().count() > 40 {
+        if self.name.trim().is_empty()
+            || self.name.chars().count() > 40
+            || self.name.chars().any(char::is_control)
+        {
             return Err("玩法名称须为 1–40 个字符".into());
+        }
+        if self.selection_limit.is_some_and(|n| {
+            n == 0
+                || n > self.kind.size()
+                || (self.compound_enabled && n < self.combination_size)
+                || !(1..=n).any(|k| {
+                    self.relation.accepts(k, self.quantity)
+                        && (self.condition != Condition::AtLeast || k >= self.minimum_hits)
+                })
+        }) {
+            return Err("最多可选数量不能产生合法基础注".into());
         }
         if self.quantity == 0
             || !(1..=self.kind.size()).any(|n| self.relation.accepts(n, self.quantity))
@@ -337,6 +353,15 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
         })
     {
         return Err("投注选项为空、重复或不合法".into());
+    }
+    if rule
+        .selection_limit
+        .is_some_and(|n| options.len() > n as usize)
+    {
+        return Err(format!(
+            "此玩法最多选择 {} 项",
+            rule.selection_limit.unwrap()
+        ));
     }
     let k = if input.compound {
         rule.combination_size as usize
@@ -649,6 +674,7 @@ pub fn defaults() -> Vec<Rule> {
             quantity: 1,
             combination_size: 1,
             compound_enabled: false,
+            selection_limit: None,
             odds: "43".into(),
             rebate_percent: "2".into(),
             special_odds: None,
@@ -664,6 +690,7 @@ pub fn defaults() -> Vec<Rule> {
             quantity: 1,
             combination_size: 1,
             compound_enabled: false,
+            selection_limit: None,
             odds: "2".into(),
             rebate_percent: "5".into(),
             special_odds: None,
@@ -679,6 +706,7 @@ pub fn defaults() -> Vec<Rule> {
             quantity: 5,
             combination_size: 5,
             compound_enabled: false,
+            selection_limit: None,
             odds: "10".into(),
             rebate_percent: "2".into(),
             special_odds: Some("8".into()),
@@ -740,6 +768,10 @@ mod tests {
         );
         let p = plan(&defaults()[0], &input(vec![1, 2, 49], false), &m).unwrap();
         assert_eq!(p.atoms.len(), 3);
+        let mut limited = defaults()[0].clone();
+        limited.selection_limit = Some(1);
+        assert!(plan(&limited, &input(vec![1, 2], false), &m).is_err());
+        assert!(plan(&limited, &input(vec![1], false), &m).is_ok());
     }
     #[test]
     fn ordered_pairs_and_three_hit_two() {

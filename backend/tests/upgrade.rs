@@ -15,6 +15,8 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
         .await
         .unwrap();
     for table in [
+        "client_license",
+        "license_codes",
         "bet_mutations",
         "layoffs",
         "bets",

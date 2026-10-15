@@ -26,16 +26,10 @@ try {
     $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8088/'
     Assert ($response.Content -match '<html') 'Static frontend was not served.'
     Assert ($response.Headers['Content-Security-Policy'] -match "frame-ancestors 'none'") 'Missing native CSP.'
-    $bootstrap = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/bootstrap' -WebSession $session
-    Assert ($bootstrap.plays.Count -ge 3) 'Database initialization failed.'
-    Assert (-not $bootstrap.plays[2].rule.compound_enabled) 'Compound must be opt-in.'
-    $rule = $bootstrap.plays[2].rule
-    $rule.compound_enabled = $true
-    $edit = @{version=1;rule=$rule;enabled=$true} | ConvertTo-Json -Depth 8
-    Invoke-RestMethod -Uri ("http://127.0.0.1:8088/api/plays/" + $bootstrap.plays[2].id) -Method Put -WebSession $session -Headers @{'X-Marksix'='1'} -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($edit)) | Out-Null
-    $quoteBody = @{period=$bootstrap.today.id; play_id=$bootstrap.plays[2].id; play_version=2; selections=@(6,0,1,2,3,4,5); compound=$true; amount='100'; request_id=[guid]::NewGuid().ToString()} | ConvertTo-Json
-    $quote = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/quote' -Method Post -WebSession $session -Headers @{'X-Marksix'='1'} -ContentType 'application/json' -Body $quoteBody
-    Assert ($quote.units -eq 21 -and $quote.stake -eq 210000) 'Native 7-choose-5 quote or cent accounting failed.'
+    $license = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/license' -WebSession $session
+    Assert (-not $license.active -and $license.binding.Length -eq 64) 'Native application must require device/account activation.'
+    try { Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/bootstrap' -WebSession $session | Out-Null; throw 'Unlicensed business API was accessible.' }
+    catch { if ($null -eq $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 402) { throw } }
     $before = Get-Content -LiteralPath (Join-Path $testData 'config.json') -Raw
     Assert (-not $before.Contains($password)) 'Plaintext password leaked into config.'
     & $scriptPath -Action Start -DataDirectory $testData -NoBrowser
@@ -43,13 +37,32 @@ try {
     $backup = @(Get-ChildItem -LiteralPath (Join-Path $testData 'backups') -Filter '*.sql')
     Assert ($backup.Count -eq 1 -and $backup[0].Length -gt 1000) 'Backup is missing or empty.'
     Assert ((Get-Content -LiteralPath $backup[0].FullName -Raw) -match 'CREATE TABLE') 'Backup does not contain schema.'
+    # A missing app PID and reused database PID must not prevent authenticated shutdown,
+    # and must never kill this PowerShell test process.
+    Remove-Item -LiteralPath (Join-Path $testData 'app.process.json')
+    $self = Get-Process -Id $PID
+    @{id=$PID;path=$self.Path;started='stale'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $testData 'mysql.process.json') -Encoding UTF8
+    & $scriptPath -Action Stop -DataDirectory $testData
+    foreach ($port in @(8088,33306)) {
+        $client=New-Object Net.Sockets.TcpClient
+        try { $open=$client.ConnectAsync('127.0.0.1',$port).Wait(500) -and $client.Connected; Assert (-not $open) "Port $port remained open after Stop." } catch [System.Management.Automation.MethodInvocationException] { } finally { $client.Dispose() }
+    }
     & $scriptPath -Action Stop -DataDirectory $testData
     & $scriptPath -Action Install -DataDirectory $testData -NoBrowser
-    # Reuse the pre-restart session to prove persisted database state, not just defaults.
-    $again = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/bootstrap' -WebSession $session
-    Assert ($again.plays[2].id -eq $bootstrap.plays[2].id) 'Database did not persist across restart.'
+    $again = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/session' -WebSession $session
+    Assert ($again.username -eq 'native-test') 'Database/session did not persist across restart.'
+    # Restore a portable .sql.gz dump and prove it restores the pre-logout session.
+    Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/logout' -Method Post -Headers @{'X-Marksix'='1';'Cookie'=$session.Cookies.GetCookieHeader([uri]'http://127.0.0.1:8088')} -ContentType 'application/json' -Body '{}' | Out-Null
+    $compressed = Join-Path $testRoot 'portable backup.sql.gz'
+    $inputStream=[IO.File]::OpenRead($backup[0].FullName)
+    $outputStream=[IO.File]::Create($compressed)
+    $gzip=New-Object IO.Compression.GZipStream($outputStream,[IO.Compression.CompressionMode]::Compress)
+    try { $inputStream.CopyTo($gzip) } finally { $gzip.Dispose();$outputStream.Dispose();$inputStream.Dispose() }
+    & $scriptPath -Action Restore -DataDirectory $testData -BackupFile $compressed -ConfirmRestore -NoBrowser
+    $restored = Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/session' -WebSession $session
+    Assert ($restored.username -eq 'native-test') 'Restored SQL did not recover the original session.'
     Assert ((Get-Content -LiteralPath (Join-Path $testData 'config.json') -Raw) -ceq $before) 'Reinstall overwrote credentials.'
-    Write-Host 'Native Windows installation, login, frontend, quote, restart and backup passed.'
+    Write-Host 'Native Windows installation, activation gate, stale PID shutdown, idempotent stop, persistence, backup and restore passed.'
 } catch {
     foreach ($log in @('mysql-error.log','app.stderr.log','app.stdout.log')) {
         $path = Join-Path $testData $log

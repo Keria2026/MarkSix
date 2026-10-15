@@ -3120,3 +3120,50 @@ td {
     font-size: 11px;
   }
 }
+
+.configuration-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.play-search {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.import-preview {
+  max-height: 360px;
+  overflow: auto;
+  list-style: none;
+  margin: 18px 0;
+  padding: 0;
+}
+.import-preview li {
+  display: grid;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border, #e0e4eb);
+}
+.import-preview span {
+  font-size: 12px;
+  color: var(--text-secondary, #667085);
+}
+
+.license-summary {
+  padding: 24px;
+  margin-bottom: 20px;
+  display: grid;
+  gap: 12px;
+}
+.license-summary h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+.license-summary p {
+  margin: 0;
+}

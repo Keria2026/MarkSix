@@ -14,6 +14,9 @@ use tokio::sync::{Mutex, Semaphore};
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
+    pub license: Option<crate::license::Client>,
+    pub shutdown: Arc<tokio::sync::Notify>,
+    pub shutdown_token: Option<String>,
     pub clock: Arc<dyn Fn() -> NaiveDateTime + Send + Sync>,
     pub client: reqwest::Client,
     pub draw_url: String,
@@ -27,6 +30,9 @@ impl AppState {
     pub fn new(pool: MySqlPool) -> anyhow::Result<Self> {
         Ok(Self {
             pool,
+            license: None,
+            shutdown: Arc::default(),
+            shutdown_token: None,
             clock: Arc::new(|| {
                 Utc::now()
                     .with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
@@ -34,7 +40,7 @@ impl AppState {
             }),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
-                .user_agent("MarkSix/0.2 (+local statistics)")
+                .user_agent("MarkSix/0.3 (+local statistics)")
                 .build()?,
             draw_url: "https://macaumarksix.com/api/macaujc2.com".into(),
             secure_cookie: false,

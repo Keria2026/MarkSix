@@ -36,6 +36,8 @@
     Info,
     X,
   } from "lucide-svelte";
+  import Activation from "./components/Activation.svelte";
+  import type { LicenseStatus } from "./components/Activation.svelte";
   import StatisticsPanel from "./components/Statistics.svelte";
   import Balls from "./components/Balls.svelte";
   import Modal from "./components/Modal.svelte";
@@ -48,6 +50,7 @@
     label,
     options,
     basicCount,
+    selectionBoundary,
     annualMapping,
     wave,
     zodiacs,
@@ -91,6 +94,7 @@
     password = $state(""),
     loginError = $state(""),
     globalError = $state("");
+  let licenseStatus = $state<LicenseStatus | null>(null);
   let toast = $state("");
   let toastTimer: ReturnType<typeof setTimeout>;
   let records = $state<Page<Bet>>({
@@ -152,12 +156,31 @@
     enabled = $state(true),
     editError = $state("");
   let rule = $state<Rule>(newRule());
+  let playSearch = $state("");
+  let selectionError = $state("");
+  let deletePlayTarget = $state<Play | null>(null);
+  let importFile = $state<{
+    format: string;
+    schema: number;
+    plays: { rule: Rule; enabled: boolean }[];
+  } | null>(null);
+  let importError = $state("");
+  let importInput = $state<HTMLInputElement>();
+  const matchingPlays = $derived(
+    boot?.plays.filter(
+      (p) =>
+        p.enabled &&
+        p.rule.name
+          .toLocaleLowerCase()
+          .includes(playSearch.trim().toLocaleLowerCase()),
+    ) ?? [],
+  );
   let currentTime = $state(Date.now());
   let serverOffset = 0;
   const today = $derived(boot?.today ?? null);
   const active = $derived(selectedPeriod ?? today);
   const currentPlay = $derived(
-    boot?.plays.find((p) => p.id === playId) ??
+    boot?.plays.find((p) => p.id === playId && p.enabled) ??
       boot?.plays.find((p) => p.enabled),
   );
   const nav = [
@@ -245,6 +268,7 @@
       quantity: 1,
       combination_size: 1,
       compound_enabled: false,
+      selection_limit: null,
       minimum_hits: 1,
       odds: "43",
       rebate_percent: "2",
@@ -262,6 +286,11 @@
       loggedIn = false;
       boot = null;
       password = "";
+    }
+    if (error instanceof ApiError && error.status === 402) {
+      void api<LicenseStatus>("/license")
+        .then((value) => (licenseStatus = value))
+        .catch(() => {});
     }
     return error instanceof Error ? error.message : "操作失败，请重试";
   }
@@ -290,6 +319,8 @@
     if (refreshing) return;
     refreshing = true;
     try {
+      licenseStatus = await api<LicenseStatus>("/license");
+      if (!licenseStatus.active) return;
       const data = await api<Bootstrap>("/bootstrap");
       boot = data;
       serverOffset = new Date(data.today.server_time).getTime() - Date.now();
@@ -401,6 +432,7 @@
     try {
       await api("/logout", { method: "POST", body: "{}" });
       loggedIn = false;
+      licenseStatus = null;
       boot = null;
       tab = "overview";
       selectedPeriod = null;
@@ -412,11 +444,120 @@
     playId = value;
     selections = [];
     compound = false;
+    selectionError = "";
+  }
+  function setCompound(next: boolean) {
+    if (currentPlay) {
+      const error = selectionBoundary(currentPlay.rule, selections, next);
+      if (error) {
+        selectionError = error;
+        notify(error);
+        return;
+      }
+    }
+    selectionError = "";
+    compound = next;
   }
   function toggleOption(value: number) {
-    selections = selections.includes(value)
-      ? selections.filter((n) => n !== value)
-      : [...selections, value];
+    if (selections.includes(value)) {
+      selections = selections.filter((n) => n !== value);
+      selectionError = "";
+      return;
+    }
+    const next = [...selections, value];
+    const error = currentPlay
+      ? selectionBoundary(currentPlay.rule, next, compound)
+      : null;
+    if (error) {
+      selectionError = error;
+      notify(error);
+      return;
+    }
+    selectionError = "";
+    selections = next;
+  }
+  function matchPlay() {
+    const exact = matchingPlays.find((p) => p.rule.name === playSearch.trim());
+    if (exact || matchingPlays.length === 1)
+      selectPlay((exact ?? matchingPlays[0]).id);
+  }
+  async function exportPlays(id?: number) {
+    try {
+      const file = await api(`/plays/export${id ? `?id=${id}` : ""}`);
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(file, null, 2)], { type: "application/json" }),
+      );
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `MarkSix-玩法${id ? `-${id}` : ""}.json`;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      notify(fail(e));
+    }
+  }
+  async function readImport(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    (event.target as HTMLInputElement).value = "";
+    if (!file) return;
+    importError = "";
+    try {
+      if (file.size > 1024 * 1024) throw new Error("玩法文件不能超过 1 MB");
+      const parsed = JSON.parse(await file.text());
+      if (
+        parsed.format !== "marksix-play-rules" ||
+        parsed.schema !== 1 ||
+        !Array.isArray(parsed.plays) ||
+        !parsed.plays.length ||
+        parsed.plays.length > 1000
+      )
+        throw new Error("请选择包含 1–1000 条玩法的 MarkSix 玩法文件");
+      if (
+        parsed.plays.some(
+          (p: { rule?: Rule }) => !p?.rule || typeof p.rule.name !== "string",
+        )
+      )
+        throw new Error("玩法文件内容不完整");
+      importFile = parsed;
+    } catch (e) {
+      notify(fail(e));
+    }
+  }
+  async function confirmImport() {
+    if (!importFile) return;
+    busy = true;
+    try {
+      const result = await api<{ imported: number }>("/plays/import", {
+        method: "POST",
+        body: JSON.stringify(importFile),
+      });
+      importFile = null;
+      notify(`已新增 ${result.imported} 条玩法`);
+      await refresh();
+    } catch (e) {
+      importError = fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function removePlay() {
+    if (!deletePlayTarget) return;
+    busy = true;
+    try {
+      await api(`/plays/${deletePlayTarget.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ version: deletePlayTarget.version }),
+      });
+      deletePlayTarget = null;
+      editor = false;
+      selections = [];
+      notify("玩法已删除，历史投注保留");
+      await refresh();
+    } catch (e) {
+      notify(fail(e));
+    } finally {
+      busy = false;
+    }
   }
   async function submitBet() {
     if (!inputValid || !quoteKey || !bettor.trim()) return;
@@ -777,7 +918,13 @@
       </div>
     </section>
   </main>
-{:else}
+{:else if !licenseStatus?.active}<Activation
+    status={licenseStatus}
+    onactivated={async () => {
+      await refresh();
+    }}
+    onlogout={signOut}
+  />{:else}
   <div class="app-shell">
     <aside class="sidebar glass">
       <a
@@ -1151,8 +1298,28 @@
               <h2><span class="step">01</span> 选择玩法</h2>
               <span class="muted small">规则由管理员配置</span>
             </div>
+            <label class="play-search"
+              >搜索玩法名称<input
+                type="search"
+                bind:value={playSearch}
+                oninput={(event) => {
+                  playSearch = event.currentTarget.value;
+                  matchPlay();
+                }}
+                placeholder="输入名称自动匹配，按 Enter 选择"
+                onkeydown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    matchPlay();
+                  }
+                }}
+              /></label
+            >
+            {#if playSearch && !matchingPlays.length}<p class="field-help">
+                没有匹配的玩法，请检查名称或在配置页创建。
+              </p>{/if}
             <div class="play-picker">
-              {#each boot?.plays.filter((p) => p.enabled) ?? [] as play}<button
+              {#each matchingPlays as play}<button
                   class:selected={currentPlay?.id === play.id}
                   onclick={() => selectPlay(play.id)}
                   ><span>{play.rule.name}</span><small
@@ -1190,11 +1357,11 @@
                     <button
                       class:active={!compound}
                       aria-pressed={!compound}
-                      onclick={() => (compound = false)}>普通 / 多选</button
+                      onclick={() => setCompound(false)}>普通 / 多选</button
                     ><button
                       class:active={compound}
                       aria-pressed={compound}
-                      onclick={() => (compound = true)}>复式</button
+                      onclick={() => setCompound(true)}>复式</button
                     >
                   </div>{/if}
               </div>
@@ -1254,6 +1421,9 @@
                       >{/if}</button
                   >{/each}
               </div>
+              {#if selectionError}<p class="inline-error" role="alert">
+                  {selectionError}
+                </p>{/if}
               <div class="selection-meta">
                 <span>已选 <strong>{selections.length}</strong> 项</span
                 >{#if currentPlay.rule.special_odds}<span
@@ -1527,10 +1697,53 @@
             <h1>玩法与配置</h1>
             <p>配置玩法与生效时间，已记录的投注始终保留原始规则。</p>
           </div>
-          <button class="button primary" onclick={() => openEditor()}
-            ><Plus size={17} /> 新建玩法</button
-          >
+          <div class="configuration-actions">
+            <input
+              type="file"
+              accept=".json,application/json"
+              bind:this={importInput}
+              onchange={readImport}
+              hidden
+              aria-label="选择玩法文件"
+            />
+            <button
+              class="button secondary"
+              onclick={() => importInput?.click()}>导入玩法</button
+            >
+            <button
+              class="button secondary"
+              disabled={!boot?.plays.length}
+              onclick={() => exportPlays()}>导出全部</button
+            >
+            <button class="button primary" onclick={() => openEditor()}
+              ><Plus size={17} /> 新建玩法</button
+            >
+          </div>
         </section>
+        {#if licenseStatus && !licenseStatus.testing}<section
+            class="glass license-summary"
+          >
+            <h2><ShieldCheck size={18} />客户端授权</h2>
+            <p>
+              有效至 {licenseStatus.expires_at
+                ? new Intl.DateTimeFormat("zh-CN", {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                    timeZone: "Asia/Shanghai",
+                  }).format(licenseStatus.expires_at * 1000)
+                : "—"}（北京时间）
+            </p>
+            <p class="field-help">
+              授权服务：{licenseStatus.server_url}。到期后使用新授权码续期。
+            </p>
+            {#if licenseStatus.license_id}<label
+                >授权编号<input
+                  readonly
+                  value={licenseStatus.license_id}
+                  onclick={(e) => e.currentTarget.select()}
+                /></label
+              >{/if}
+          </section>{/if}
         <section class="glass plays-panel">
           <div class="section-head">
             <h2>
@@ -1868,442 +2081,473 @@
   </section>
 {/snippet}
 
-{#if detail}<Modal title="投注记录详情" wide onclose={() => (detail = null)}
-    ><div class="detail-heading">
-      <div>
-        <span class="eyebrow"
-          >{detail.record.period_id} · {time(detail.record.created_at)}</span
-        >
-        <h3>
-          {detail.record.rule.name}<span class="soft-chip"
-            >V{detail.record.play_version} 快照</span
+{#if loggedIn && licenseStatus?.active}
+  {#if detail}<Modal title="投注记录详情" wide onclose={() => (detail = null)}
+      ><div class="detail-heading">
+        <div>
+          <span class="eyebrow"
+            >{detail.record.period_id} · {time(detail.record.created_at)}</span
           >
-        </h3>
-        <p>
-          {scopes[detail.record.rule.scope]} · {conditions[
-            detail.record.rule.condition
-          ]}
-        </p>
-      </div>
-      <strong>{money(detail.record.stake)}</strong>
-    </div>
-    <div class="detail-info">
-      <span
-        >投注人 <strong>{detail.record.bettor || "未登记（旧记录）"}</strong
-        ></span
-      >
-      <span>基础注 <strong>{detail.atoms.length}</strong></span><span
-        >每注本金 <strong>{money(detail.record.amount)}</strong></span
-      ><span
-        >反水比例 <strong>{detail.record.rule.rebate_percent}%</strong></span
-      ><span
-        >状态 <strong
-          >{detail.record.status === "cancelled"
-            ? "已撤销"
-            : detail.record.status === "settled"
-              ? "已结算"
-              : "待结算"}</strong
-        ></span
-      >
-    </div>
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
-    <div
-      class="table-scroll"
-      role="region"
-      tabindex="0"
-      aria-label="数据表格，可横向滚动"
-    >
-      <table>
-        <thead
-          ><tr
-            ><th>组合</th><th>赔率</th><th>结果</th><th>含本返还</th><th
-              >反水</th
-            ><th>盘口净盈亏</th></tr
-          ></thead
-        ><tbody
-          >{#each detail.atoms.slice((detailPage - 1) * 50, detailPage * 50) as atom, offset}{@const result =
-              detail.results?.[(detailPage - 1) * 50 + offset]}<tr
-              ><td
-                >{atom.options
-                  .map((v) => label(detail!.record.rule.kind, v))
-                  .join(" · ")}</td
-              ><td>{atom.odds}×</td><td
-                >{result
-                  ? result.voided
-                    ? "和局退本"
-                    : result.won
-                      ? "中奖"
-                      : "未中奖"
-                  : detail.record.status === "cancelled"
-                    ? "已撤销"
-                    : "待开奖"}</td
-              ><td>{result ? money(result.payout) : "—"}</td><td
-                >{detail.record.status === "cancelled"
-                  ? "—"
-                  : money(result?.rebate ?? atom.rebate)}</td
-              ><td
-                class:negative={(result?.net ?? 0) < 0}
-                class:positive={(result?.net ?? 0) > 0}
-                >{result ? signed(result.net) : "—"}</td
-              ></tr
-            >{/each}</tbody
-        >
-      </table>
-    </div>
-    <div class="table-footer">
-      <span
-        >组合明细 · 第 {detailPage} / {Math.ceil(detail.atoms.length / 50)} 页</span
-      >
-      <div class="pagination">
-        <button
-          class="icon-button"
-          aria-label="上一页组合"
-          disabled={detailPage === 1}
-          onclick={() => detailPage--}><ChevronLeft size={16} /></button
-        ><button
-          class="icon-button"
-          aria-label="下一页组合"
-          disabled={detailPage * 50 >= detail.atoms.length}
-          onclick={() => detailPage++}><ChevronRight size={16} /></button
-        >
-      </div>
-    </div>
-    {#if detail.layoffs.length}<section class="detail-ledger">
-        <h3>关联飞出</h3>
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
-        <div
-          class="table-scroll"
-          role="region"
-          tabindex="0"
-          aria-label="数据表格，可横向滚动"
-        >
-          <table>
-            <thead
-              ><tr
-                ><th>受注方</th><th>每注金额</th><th>飞出总额</th><th
-                  >状态 / 本方盈亏</th
-                ><th></th></tr
-              ></thead
-            ><tbody
-              >{#each detail.layoffs as row}<tr
-                  ><td>{row.receiver}</td><td>{money(row.amount)}</td><td
-                    >{money(row.stake)}</td
-                  ><td
-                    >{row.status === "cancelled"
-                      ? "已作废"
-                      : row.status === "settled"
-                        ? signed((row.payout ?? 0) + row.rebate - row.stake)
-                        : "待开奖"}</td
-                  ><td
-                    >{#if row.status === "pending" && today?.phase === "open" && row.period_id === today.id}<button
-                        class="text-button"
-                        onclick={() => {
-                          flyCancel = row;
-                          detail = null;
-                        }}>撤销飞出</button
-                      >{/if}</td
-                  ></tr
-                >{/each}</tbody
+          <h3>
+            {detail.record.rule.name}<span class="soft-chip"
+              >V{detail.record.play_version} 快照</span
             >
-          </table>
+          </h3>
+          <p>
+            {scopes[detail.record.rule.scope]} · {conditions[
+              detail.record.rule.condition
+            ]}
+          </p>
         </div>
-      </section>{/if}
-    {#if detail.events.length}<details class="audit-details">
-        <summary>操作记录（最近 100 条）</summary
-        >{#each detail.events as event}<p>
-            <time>{time(event.created_at)}</time> · {{
-              bet_created: "录入投注",
-              bet_cancelled: "作废投注",
-              bet_amount_changed: "纠正金额",
-              bet_flown: "记录飞出",
-              layoff_cancelled: "撤销飞出",
-            }[event.event] ??
-              event.event}{#if event.event === "bet_amount_changed"}
-              · 每注 {money(Number(event.detail.before_amount))} → {money(
-                Number(event.detail.after_amount),
-              )}{/if}{#if event.event === "bet_flown"}
-              · {String(event.detail.receiver)} · 每注 {money(
-                Number(event.detail.amount),
-              )}{/if}
-          </p>{/each}
-      </details>{/if}
-    {#if detail.record.status === "pending" && detail.record.period_id === today?.id && today.phase === "open"}<div
-        class="modal-actions"
-      >
-        <button
-          class="button secondary"
-          onclick={() => openMutation(detail!.record, "amount")}
-          >修改金额</button
+        <strong>{money(detail.record.stake)}</strong>
+      </div>
+      <div class="detail-info">
+        <span
+          >投注人 <strong>{detail.record.bettor || "未登记（旧记录）"}</strong
+          ></span
         >
-        <button
-          class="button primary"
-          onclick={() => openMutation(detail!.record, "layoffs")}>飞出</button
-        >
-        <button
-          class="button danger"
-          onclick={() => {
-            cancelTarget = detail!.record;
-            detail = null;
-          }}><Trash2 size={15} /> 撤销整条记录</button
-        >
-      </div>{/if}</Modal
-  >{/if}
-{#if cancelTarget}<Modal
-    title="撤销这条投注？"
-    onclose={() => (cancelTarget = null)}
-    ><p class="modal-description">
-      将撤销「{cancelTarget.rule.name}」的全部 {cancelTarget.unit_count} 条基础注，总本金
-      {money(cancelTarget.stake)}。原始记录会保留，不再计入有效投注及反水。
-    </p>
-    <div class="modal-actions">
-      <button class="button secondary" onclick={() => (cancelTarget = null)}
-        >保留记录</button
-      ><button class="button danger" disabled={busy} onclick={cancelBet}
-        >确认撤销</button
-      >
-    </div></Modal
-  >{/if}
-{#if mutationTarget}<Modal
-    title={mutationMode === "amount" ? "修改投注金额" : "记录飞出"}
-    onclose={() => (mutationTarget = null)}
-  >
-    <form onsubmit={saveMutation} class="rule-form">
-      <div class="segmented">
-        <button
-          type="button"
-          class:active={mutationMode === "amount"}
-          onclick={() => (mutationMode = "amount")}>纠正原金额</button
-        ><button
-          type="button"
-          class:active={mutationMode === "layoffs"}
-          onclick={() => (mutationMode = "layoffs")}>飞出</button
+        <span>基础注 <strong>{detail.atoms.length}</strong></span><span
+          >每注本金 <strong>{money(detail.record.amount)}</strong></span
+        ><span
+          >反水比例 <strong>{detail.record.rule.rebate_percent}%</strong></span
+        ><span
+          >状态 <strong
+            >{detail.record.status === "cancelled"
+              ? "已撤销"
+              : detail.record.status === "settled"
+                ? "已结算"
+                : "待结算"}</strong
+          ></span
         >
       </div>
-      <p class="modal-description">
-        {mutationTarget.bettor || "未登记"} · {mutationTarget.rule.name} · {mutationTarget.unit_count}
-        条基础注 · 原每注 {money(mutationTarget.amount)}
-      </p>
-      {#if mutationMode === "layoffs"}<label
-          >飞出受注方<input
-            bind:value={receiver}
-            list="receiver-suggestions"
-            maxlength="80"
-            required
-            placeholder="选择已有受注方或手工填写"
-          /></label
-        >{/if}
-      <label
-        >{mutationMode === "amount"
-          ? "修改后的每注金额（整数元）"
-          : "每条基础注飞出金额（元）"}<input
-          bind:value={mutationAmount}
-          inputmode="decimal"
-          required
-        /></label
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
+      <div
+        class="table-scroll"
+        role="region"
+        tabindex="0"
+        aria-label="数据表格，可横向滚动"
       >
-      <p class="field-help">
-        {mutationMode === "amount"
-          ? "保留原规则和赔率，记录修改前后金额；不能低于已飞出金额。"
-          : "原投注保留，所有基础注按相同每注金额飞出。沿用原注赔率、反水，逐注四舍五入；累计不得超过原注。"}
+        <table>
+          <thead
+            ><tr
+              ><th>组合</th><th>赔率</th><th>结果</th><th>含本返还</th><th
+                >反水</th
+              ><th>盘口净盈亏</th></tr
+            ></thead
+          ><tbody
+            >{#each detail.atoms.slice((detailPage - 1) * 50, detailPage * 50) as atom, offset}{@const result =
+                detail.results?.[(detailPage - 1) * 50 + offset]}<tr
+                ><td
+                  >{atom.options
+                    .map((v) => label(detail!.record.rule.kind, v))
+                    .join(" · ")}</td
+                ><td>{atom.odds}×</td><td
+                  >{result
+                    ? result.voided
+                      ? "和局退本"
+                      : result.won
+                        ? "中奖"
+                        : "未中奖"
+                    : detail.record.status === "cancelled"
+                      ? "已撤销"
+                      : "待开奖"}</td
+                ><td>{result ? money(result.payout) : "—"}</td><td
+                  >{detail.record.status === "cancelled"
+                    ? "—"
+                    : money(result?.rebate ?? atom.rebate)}</td
+                ><td
+                  class:negative={(result?.net ?? 0) < 0}
+                  class:positive={(result?.net ?? 0) > 0}
+                  >{result ? signed(result.net) : "—"}</td
+                ></tr
+              >{/each}</tbody
+          >
+        </table>
+      </div>
+      <div class="table-footer">
+        <span
+          >组合明细 · 第 {detailPage} / {Math.ceil(detail.atoms.length / 50)} 页</span
+        >
+        <div class="pagination">
+          <button
+            class="icon-button"
+            aria-label="上一页组合"
+            disabled={detailPage === 1}
+            onclick={() => detailPage--}><ChevronLeft size={16} /></button
+          ><button
+            class="icon-button"
+            aria-label="下一页组合"
+            disabled={detailPage * 50 >= detail.atoms.length}
+            onclick={() => detailPage++}><ChevronRight size={16} /></button
+          >
+        </div>
+      </div>
+      {#if detail.layoffs.length}<section class="detail-ledger">
+          <h3>关联飞出</h3>
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
+          <div
+            class="table-scroll"
+            role="region"
+            tabindex="0"
+            aria-label="数据表格，可横向滚动"
+          >
+            <table>
+              <thead
+                ><tr
+                  ><th>受注方</th><th>每注金额</th><th>飞出总额</th><th
+                    >状态 / 本方盈亏</th
+                  ><th></th></tr
+                ></thead
+              ><tbody
+                >{#each detail.layoffs as row}<tr
+                    ><td>{row.receiver}</td><td>{money(row.amount)}</td><td
+                      >{money(row.stake)}</td
+                    ><td
+                      >{row.status === "cancelled"
+                        ? "已作废"
+                        : row.status === "settled"
+                          ? signed((row.payout ?? 0) + row.rebate - row.stake)
+                          : "待开奖"}</td
+                    ><td
+                      >{#if row.status === "pending" && today?.phase === "open" && row.period_id === today.id}<button
+                          class="text-button"
+                          onclick={() => {
+                            flyCancel = row;
+                            detail = null;
+                          }}>撤销飞出</button
+                        >{/if}</td
+                    ></tr
+                  >{/each}</tbody
+              >
+            </table>
+          </div>
+        </section>{/if}
+      {#if detail.events.length}<details class="audit-details">
+          <summary>操作记录（最近 100 条）</summary
+          >{#each detail.events as event}<p>
+              <time>{time(event.created_at)}</time> · {{
+                bet_created: "录入投注",
+                bet_cancelled: "作废投注",
+                bet_amount_changed: "纠正金额",
+                bet_flown: "记录飞出",
+                layoff_cancelled: "撤销飞出",
+              }[event.event] ??
+                event.event}{#if event.event === "bet_amount_changed"}
+                · 每注 {money(Number(event.detail.before_amount))} → {money(
+                  Number(event.detail.after_amount),
+                )}{/if}{#if event.event === "bet_flown"}
+                · {String(event.detail.receiver)} · 每注 {money(
+                  Number(event.detail.amount),
+                )}{/if}
+            </p>{/each}
+        </details>{/if}
+      {#if detail.record.status === "pending" && detail.record.period_id === today?.id && today.phase === "open"}<div
+          class="modal-actions"
+        >
+          <button
+            class="button secondary"
+            onclick={() => openMutation(detail!.record, "amount")}
+            >修改金额</button
+          >
+          <button
+            class="button primary"
+            onclick={() => openMutation(detail!.record, "layoffs")}>飞出</button
+          >
+          <button
+            class="button danger"
+            onclick={() => {
+              cancelTarget = detail!.record;
+              detail = null;
+            }}><Trash2 size={15} /> 撤销整条记录</button
+          >
+        </div>{/if}</Modal
+    >{/if}
+  {#if cancelTarget}<Modal
+      title="撤销这条投注？"
+      onclose={() => (cancelTarget = null)}
+      ><p class="modal-description">
+        将撤销「{cancelTarget.rule.name}」的全部 {cancelTarget.unit_count} 条基础注，总本金
+        {money(cancelTarget.stake)}。原始记录会保留，不再计入有效投注及反水。
       </p>
-      {#if mutationError}<div class="inline-error" role="alert">
-          {mutationError}
-        </div>{/if}
       <div class="modal-actions">
-        <button
-          type="button"
-          class="button secondary"
-          onclick={() => (mutationTarget = null)}>取消</button
-        ><button class="button primary" disabled={busy}
-          >确认{mutationMode === "amount" ? "修改" : "飞出"}</button
+        <button class="button secondary" onclick={() => (cancelTarget = null)}
+          >保留记录</button
+        ><button class="button danger" disabled={busy} onclick={cancelBet}
+          >确认撤销</button
         >
-      </div>
-    </form>
-  </Modal>{/if}
-{#if flyCancel}<Modal title="撤销这条飞出？" onclose={() => (flyCancel = null)}
-    ><p class="modal-description">
-      受注方 {flyCancel.receiver}，飞出总额 {money(
-        flyCancel.stake,
-      )}。作废后不再计入飞出统计，原记录仍保留。
-    </p>
-    <div class="modal-actions">
-      <button class="button secondary" onclick={() => (flyCancel = null)}
-        >保留记录</button
-      ><button class="button danger" disabled={busy} onclick={cancelFly}
-        >确认撤销飞出</button
-      >
-    </div></Modal
-  >{/if}
-<datalist id="bettor-suggestions"
-  >{#each parties.bettors as name}<option value={name}
-    ></option>{/each}</datalist
->
-<datalist id="receiver-suggestions"
-  >{#each parties.receivers as name}<option value={name}
-    ></option>{/each}</datalist
->
-{#if editor}<Modal
-    title={editId ? "编辑玩法" : "新建玩法"}
-    onclose={() => (editor = false)}
-    ><form onsubmit={savePlay} class="rule-form">
-      <label
-        >玩法名称<input
-          bind:value={rule.name}
-          required
-          maxlength="40"
-          placeholder="例如：五有"
-        /></label
-      >
-      <div class="form-two">
+      </div></Modal
+    >{/if}
+  {#if mutationTarget}<Modal
+      title={mutationMode === "amount" ? "修改投注金额" : "记录飞出"}
+      onclose={() => (mutationTarget = null)}
+    >
+      <form onsubmit={saveMutation} class="rule-form">
+        <div class="segmented">
+          <button
+            type="button"
+            class:active={mutationMode === "amount"}
+            onclick={() => (mutationMode = "amount")}>纠正原金额</button
+          ><button
+            type="button"
+            class:active={mutationMode === "layoffs"}
+            onclick={() => (mutationMode = "layoffs")}>飞出</button
+          >
+        </div>
+        <p class="modal-description">
+          {mutationTarget.bettor || "未登记"} · {mutationTarget.rule.name} · {mutationTarget.unit_count}
+          条基础注 · 原每注 {money(mutationTarget.amount)}
+        </p>
+        {#if mutationMode === "layoffs"}<label
+            >飞出受注方<input
+              bind:value={receiver}
+              list="receiver-suggestions"
+              maxlength="80"
+              required
+              placeholder="选择已有受注方或手工填写"
+            /></label
+          >{/if}
         <label
-          >投注对象<select
-            aria-label="投注对象"
-            value={rule.kind}
-            onchange={(e) => changeKind(e.currentTarget.value as Kind)}
-            >{#each Object.entries(kinds) as [key, value]}<option value={key}
-                >{value}</option
-              >{/each}</select
-          ></label
-        ><label
-          >开奖对比范围<select
-            bind:value={rule.scope}
-            disabled={rule.kind === "wave"}
-            >{#each Object.entries(scopes) as [key, value]}<option value={key}
-                >{value}</option
-              >{/each}</select
-          ></label
-        >
-      </div>
-      <label
-        >命中条件<select
-          value={rule.condition}
-          onchange={(e) =>
-            changeCondition(e.currentTarget.value as Rule["condition"])}
-          >{#each Object.entries(conditions) as [key, value]}<option value={key}
-              >{value}</option
-            >{/each}</select
-        ></label
-      >
-      {#if rule.condition === "at_least"}<label
-          >最少命中数量<input
-            type="number"
-            min="1"
-            max="49"
-            bind:value={rule.minimum_hits}
+          >{mutationMode === "amount"
+            ? "修改后的每注金额（整数元）"
+            : "每条基础注飞出金额（元）"}<input
+            bind:value={mutationAmount}
+            inputmode="decimal"
             required
           /></label
-        >{/if}
-      <label class="checkbox-label"
-        ><input
-          type="checkbox"
-          bind:checked={rule.compound_enabled}
-          disabled={rule.condition === "hard_pair" ||
-            rule.condition === "soft_pair"}
-        /> 启用复式投注</label
-      >
-      <div class="form-three">
+        >
+        <p class="field-help">
+          {mutationMode === "amount"
+            ? "保留原规则和赔率，记录修改前后金额；不能低于已飞出金额。"
+            : "原投注保留，所有基础注按相同每注金额飞出。沿用原注赔率、反水，逐注四舍五入；累计不得超过原注。"}
+        </p>
+        {#if mutationError}<div class="inline-error" role="alert">
+            {mutationError}
+          </div>{/if}
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="button secondary"
+            onclick={() => (mutationTarget = null)}>取消</button
+          ><button class="button primary" disabled={busy}
+            >确认{mutationMode === "amount" ? "修改" : "飞出"}</button
+          >
+        </div>
+      </form>
+    </Modal>{/if}
+  {#if flyCancel}<Modal
+      title="撤销这条飞出？"
+      onclose={() => (flyCancel = null)}
+      ><p class="modal-description">
+        受注方 {flyCancel.receiver}，飞出总额 {money(
+          flyCancel.stake,
+        )}。作废后不再计入飞出统计，原记录仍保留。
+      </p>
+      <div class="modal-actions">
+        <button class="button secondary" onclick={() => (flyCancel = null)}
+          >保留记录</button
+        ><button class="button danger" disabled={busy} onclick={cancelFly}
+          >确认撤销飞出</button
+        >
+      </div></Modal
+    >{/if}
+  <datalist id="bettor-suggestions"
+    >{#each parties.bettors as name}<option value={name}
+      ></option>{/each}</datalist
+  >
+  <datalist id="receiver-suggestions"
+    >{#each parties.receivers as name}<option value={name}
+      ></option>{/each}</datalist
+  >
+  {#if editor}<Modal
+      title={editId ? "编辑玩法" : "新建玩法"}
+      onclose={() => (editor = false)}
+      ><form onsubmit={savePlay} class="rule-form">
         <label
-          >数量关系<select bind:value={rule.relation}
-            >{#each Object.entries(relations) as [key, value]}<option
+          >玩法名称<input
+            bind:value={rule.name}
+            required
+            maxlength="40"
+            placeholder="例如：五有"
+          /></label
+        >
+        <div class="form-two">
+          <label
+            >投注对象<select
+              aria-label="投注对象"
+              value={rule.kind}
+              onchange={(e) => changeKind(e.currentTarget.value as Kind)}
+              >{#each Object.entries(kinds) as [key, value]}<option value={key}
+                  >{value}</option
+                >{/each}</select
+            ></label
+          ><label
+            >开奖对比范围<select
+              bind:value={rule.scope}
+              disabled={rule.kind === "wave"}
+              >{#each Object.entries(scopes) as [key, value]}<option value={key}
+                  >{value}</option
+                >{/each}</select
+            ></label
+          >
+        </div>
+        <label
+          >命中条件<select
+            value={rule.condition}
+            onchange={(e) =>
+              changeCondition(e.currentTarget.value as Rule["condition"])}
+            >{#each Object.entries(conditions) as [key, value]}<option
                 value={key}>{value}</option
               >{/each}</select
           ></label
-        ><label
-          >数量阈值<input
-            type="number"
-            min="1"
-            max="49"
-            bind:value={rule.quantity}
-            required
-          /></label
-        ><label
-          >复式每注选项数<input
-            disabled={!rule.compound_enabled}
-            type="number"
-            min="1"
-            max="49"
-            bind:value={rule.combination_size}
-            required
-          /></label
         >
-      </div>
-      <p class="field-help">
-        普通投注须满足数量关系；单选玩法可多选逐项拆注。“不少于 5”选 7 个拆成 21
-        注。“等于 5”未开复式时只能选 5
-        个。复式候选池不受数量阈值限制，拆分后的每注须满足规则。
-      </p>
-      <div class="form-two">
-        <label
-          >含本赔率<input
-            inputmode="decimal"
-            bind:value={rule.odds}
-            required
-            placeholder="最多四位小数"
-          /></label
-        ><label
-          >反水比例（%）<input
-            inputmode="decimal"
-            bind:value={rule.rebate_percent}
-            required
-            placeholder="0–100，最多两位小数"
-          /></label
-        >
-      </div>
-      {#if rule.kind !== "wave"}<label class="checkbox-label"
-          ><input
-            type="checkbox"
-            checked={rule.special_odds !== null}
-            onchange={(e) =>
-              (rule.special_odds = e.currentTarget.checked ? "8" : null)}
-          /> 启用本命生肖特殊赔率</label
-        >{#if rule.special_odds !== null}<label
-            >特殊含本赔率<input
-              inputmode="decimal"
-              bind:value={rule.special_odds}
-              required
-            /></label
-          >
-          <p class="field-help">
-            按每条基础注是否包含本命生肖分别应用，全部不命中玩法同样适用。
-          </p>{/if}
-        <label class="checkbox-label"
-          ><input
-            type="checkbox"
-            checked={rule.special_rebate_percent !== null}
-            onchange={(e) =>
-              (rule.special_rebate_percent = e.currentTarget.checked
-                ? "0"
-                : null)}
-          /> 启用本命肖特殊反水</label
-        >
-        {#if rule.special_rebate_percent !== null}<label
-            >本命肖反水（%）<input
-              inputmode="decimal"
-              bind:value={rule.special_rebate_percent}
+        {#if rule.condition === "at_least"}<label
+            >最少命中数量<input
+              type="number"
+              min="1"
+              max="49"
+              bind:value={rule.minimum_hits}
               required
             /></label
           >{/if}
-        <p class="field-help">
-          号码、生肖、尾数、大小、单双均按当期映射逐条判断；含本命肖对应选项的基础注采用特殊值。
-        </p>
-      {/if}{#if editId}<label class="checkbox-label"
-          ><input type="checkbox" bind:checked={enabled} /> 允许录入新投注</label
-        >{/if}{#if editError}<div class="inline-error" role="alert">
-          <AlertCircle size={16} />{editError}
-        </div>{/if}
-      <div class="modal-actions">
-        <button
-          type="button"
-          class="button secondary"
-          onclick={() => (editor = false)}>取消</button
-        ><button class="button primary" disabled={busy}
-          >{#if busy}<LoaderCircle size={16} class="spin" />{:else}<Check
-              size={16}
-            />{/if}保存玩法</button
+        <label
+          >最多可选数量（留空允许普通多选）<input
+            type="number"
+            min="1"
+            max={options(rule.kind).length}
+            value={rule.selection_limit ?? ""}
+            oninput={(event) =>
+              (rule.selection_limit = event.currentTarget.value
+                ? Number(event.currentTarget.value)
+                : null)}
+          /></label
         >
-      </div>
-    </form></Modal
-  >{/if}
+        <label class="checkbox-label"
+          ><input
+            type="checkbox"
+            bind:checked={rule.compound_enabled}
+            disabled={rule.condition === "hard_pair" ||
+              rule.condition === "soft_pair"}
+          /> 启用复式投注</label
+        >
+        <div class="form-three">
+          <label
+            >数量关系<select bind:value={rule.relation}
+              >{#each Object.entries(relations) as [key, value]}<option
+                  value={key}>{value}</option
+                >{/each}</select
+            ></label
+          ><label
+            >数量阈值<input
+              type="number"
+              min="1"
+              max="49"
+              bind:value={rule.quantity}
+              required
+            /></label
+          ><label
+            >复式每注选项数<input
+              disabled={!rule.compound_enabled}
+              type="number"
+              min="1"
+              max="49"
+              bind:value={rule.combination_size}
+              required
+            /></label
+          >
+        </div>
+        <p class="field-help">
+          普通投注须满足数量关系；单选玩法可多选逐项拆注。“不少于 5”选 7 个拆成
+          21 注。“等于 5”未开复式时只能选 5
+          个。最多可选数量对普通和复式均生效；复式拆分后的每注也须满足规则。
+        </p>
+        <div class="form-two">
+          <label
+            >含本赔率<input
+              inputmode="decimal"
+              bind:value={rule.odds}
+              required
+              placeholder="最多四位小数"
+            /></label
+          ><label
+            >反水比例（%）<input
+              inputmode="decimal"
+              bind:value={rule.rebate_percent}
+              required
+              placeholder="0–100，最多两位小数"
+            /></label
+          >
+        </div>
+        {#if rule.kind !== "wave"}<label class="checkbox-label"
+            ><input
+              type="checkbox"
+              checked={rule.special_odds !== null}
+              onchange={(e) =>
+                (rule.special_odds = e.currentTarget.checked ? "8" : null)}
+            /> 启用本命生肖特殊赔率</label
+          >{#if rule.special_odds !== null}<label
+              >特殊含本赔率<input
+                inputmode="decimal"
+                bind:value={rule.special_odds}
+                required
+              /></label
+            >
+            <p class="field-help">
+              按每条基础注是否包含本命生肖分别应用，全部不命中玩法同样适用。
+            </p>{/if}
+          <label class="checkbox-label"
+            ><input
+              type="checkbox"
+              checked={rule.special_rebate_percent !== null}
+              onchange={(e) =>
+                (rule.special_rebate_percent = e.currentTarget.checked
+                  ? "0"
+                  : null)}
+            /> 启用本命肖特殊反水</label
+          >
+          {#if rule.special_rebate_percent !== null}<label
+              >本命肖反水（%）<input
+                inputmode="decimal"
+                bind:value={rule.special_rebate_percent}
+                required
+              /></label
+            >{/if}
+          <p class="field-help">
+            号码、生肖、尾数、大小、单双均按当期映射逐条判断；含本命肖对应选项的基础注采用特殊值。
+          </p>
+        {/if}{#if editId}<label class="checkbox-label"
+            ><input type="checkbox" bind:checked={enabled} /> 允许录入新投注</label
+          >{/if}{#if editError}<div class="inline-error" role="alert">
+            <AlertCircle size={16} />{editError}
+          </div>{/if}
+        <div class="modal-actions">
+          {#if editId}<button
+              type="button"
+              class="button danger"
+              disabled={busy}
+              onclick={() => {
+                deletePlayTarget =
+                  boot?.plays.find((p) => p.id === editId) ?? null;
+                editor = false;
+              }}>删除玩法</button
+            >
+            <button
+              type="button"
+              class="button secondary"
+              onclick={() => exportPlays(editId!)}>导出此玩法</button
+            >{/if}
+          <button
+            type="button"
+            class="button secondary"
+            onclick={() => (editor = false)}>取消</button
+          ><button class="button primary" disabled={busy}
+            >{#if busy}<LoaderCircle size={16} class="spin" />{:else}<Check
+                size={16}
+              />{/if}保存玩法</button
+          >
+        </div>
+      </form></Modal
+    >{/if}
+{/if}
 {#if toast}<div class="toast glass" role="status">
     <CheckCircle2 size={18} /><span>{toast}</span><button
       class="icon-button"
@@ -2311,3 +2555,49 @@
       onclick={() => (toast = "")}><X size={15} /></button
     >
   </div>{/if}
+
+{#if deletePlayTarget && licenseStatus?.active}<Modal
+    title="删除玩法？"
+    onclose={() => (deletePlayTarget = null)}
+  >
+    <p class="modal-description">
+      删除「{deletePlayTarget.rule
+        .name}」后不能再录入新投注。历史投注、规则快照和统计将完整保留。
+    </p>
+    <div class="modal-actions">
+      <button
+        class="button secondary"
+        disabled={busy}
+        onclick={() => (deletePlayTarget = null)}>取消</button
+      ><button class="button danger" disabled={busy} onclick={removePlay}
+        >确认删除玩法</button
+      >
+    </div>
+  </Modal>{/if}
+{#if importFile && licenseStatus?.active}<Modal
+    title="导入玩法规则"
+    onclose={() => (importFile = null)}
+  >
+    <p class="modal-description">
+      将新增 {importFile.plays.length} 条玩法，不覆盖现有配置。同名玩法也会另建一条，请核对后导入。
+    </p>
+    <ul class="import-preview">
+      {#each importFile.plays as item}<li>
+          {item.rule.name}<span
+            >{item.rule.odds} 倍 · 反水 {item.rule.rebate_percent}% · {item.enabled
+              ? "启用"
+              : "停用"}</span
+          >
+        </li>{/each}
+    </ul>
+    {#if importError}<p class="inline-error" role="alert">{importError}</p>{/if}
+    <div class="modal-actions">
+      <button
+        class="button secondary"
+        disabled={busy}
+        onclick={() => (importFile = null)}>取消</button
+      ><button class="button primary" disabled={busy} onclick={confirmImport}
+        >确认导入</button
+      >
+    </div>
+  </Modal>{/if}

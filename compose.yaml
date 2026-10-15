@@ -40,6 +40,9 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run scripts/configure.py first}
       BIND_ADDR: 0.0.0.0:8080
       SECURE_COOKIE: "false"
+      LICENSE_SERVER_URL: ${LICENSE_SERVER_URL:-}
+    volumes:
+      - /etc/machine-id:/run/marksix-machine-id:ro
     mem_limit: 384m
     cpus: 1.4
     stop_grace_period: 20s

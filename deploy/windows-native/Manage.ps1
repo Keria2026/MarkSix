@@ -1,8 +1,10 @@
 param(
-    [ValidateSet('Install','Start','Stop','Backup')][string]$Action = 'Start',
+    [ValidateSet('Install','Start','Stop','Backup','Restore')][string]$Action = 'Start',
     [string]$DataDirectory = (Join-Path $env:LOCALAPPDATA 'MarkSix'),
     [string]$AdminUsername = 'admin',
     [Security.SecureString]$AdminPassword,
+    [string]$BackupFile,
+    [switch]$ConfirmRestore,
     [switch]$NoBrowser
 )
 Set-StrictMode -Version Latest
@@ -74,8 +76,12 @@ function Get-OwnedProcess([string]$Name) {
     if (-not (Test-Path -LiteralPath $recordPath)) { return $null }
     $record = Get-Content -Encoding UTF8 -LiteralPath $recordPath -Raw | ConvertFrom-Json
     $process = Get-Process -Id $record.id -ErrorAction SilentlyContinue
-    if ($null -eq $process) { return $null }
-    if ($process.Path -ne $record.path -or $process.StartTime.ToUniversalTime().Ticks.ToString() -ne $record.started) { throw "Process identity changed ($Name); refusing to stop or reuse it." }
+    if ($null -eq $process) { Remove-Item -LiteralPath $recordPath -Force; return $null }
+    if ($process.Path -ne $record.path -or $process.StartTime.ToUniversalTime().Ticks.ToString() -ne $record.started) {
+        Write-Warning "Stale process record ($Name). The unrelated process will not be stopped."
+        Remove-Item -LiteralPath $recordPath -Force
+        return $null
+    }
     return $process
 }
 function Start-OwnedProcess([string]$Name, [string]$Exe, [string]$Arguments) {
@@ -107,14 +113,86 @@ function Invoke-Database([string]$Tool, [string[]]$ToolArguments) {
         return $output
     } finally { Remove-Item -LiteralPath $clientPath -Force -ErrorAction SilentlyContinue }
 }
-function Stop-Native {
+function Test-LocalPort([int]$Port) {
+    $client = New-Object Net.Sockets.TcpClient
+    try { $task = $client.ConnectAsync('127.0.0.1', $Port); return ($task.Wait(1000) -and $client.Connected) } catch { return $false } finally { $client.Dispose() }
+}
+function Stop-Application {
     $app = Get-OwnedProcess 'app'
-    if ($null -ne $app) { Stop-Process -Id $app.Id -ErrorAction Stop; $app.WaitForExit() }
-    $db = Get-OwnedProcess 'mysql'
-    if ($null -ne $db) {
-        Invoke-Database 'mysqladmin' @('shutdown') | Out-Null
-        if (-not $db.WaitForExit(60000)) { throw 'MySQL is still shutting down. Do not delete or move its data.' }
+    $tokenPath = Join-Path $DataDirectory 'shutdown.token'
+    if (Test-LocalPort 8088) {
+        $requested = $false
+        if (Test-Path -LiteralPath $tokenPath) {
+            try {
+                $token = [IO.File]::ReadAllText($tokenPath).Trim()
+                Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8088/api/internal/shutdown' -Method Post -Headers @{'X-Marksix'='1';'X-Marksix-Shutdown'=$token} -ContentType 'application/json' -Body '{}' -TimeoutSec 5 | Out-Null
+                $requested = $true
+            } catch { Write-Warning 'Graceful shutdown unavailable; checking the recorded process identity.' }
+        }
+        if ($requested) {
+            for ($attempt=0; $attempt -lt 40 -and (Test-LocalPort 8088); $attempt++) { Start-Sleep -Milliseconds 500 }
+        }
+        if (Test-LocalPort 8088) {
+            if ($null -eq $app) { throw 'Port 8088 is occupied but no owned process can be verified. Nothing unrelated was stopped.' }
+            Stop-Process -Id $app.Id -ErrorAction Stop
+            if (-not $app.WaitForExit(20000)) { throw 'MarkSix did not exit within 20 seconds.' }
+        }
+    } elseif ($null -ne $app) {
+        Stop-Process -Id $app.Id -ErrorAction Stop
+        if (-not $app.WaitForExit(20000)) { throw 'MarkSix did not exit within 20 seconds.' }
     }
+    if (Test-LocalPort 8088) { throw 'MarkSix port 8088 is still open; stop was not completed.' }
+    Remove-Item -LiteralPath (Join-Path $DataDirectory 'app.process.json') -Force -ErrorAction SilentlyContinue
+}
+function Stop-Native {
+    Stop-Application
+    $db = Get-OwnedProcess 'mysql'
+    if (Test-LocalPort 33306) {
+        # Authentication proves this is our database even when a PID record is stale.
+        Invoke-Database 'mysqladmin' @('shutdown') | Out-Null
+        if ($null -ne $db -and -not $db.WaitForExit(60000)) { throw 'MySQL is still shutting down. Do not delete or move its data.' }
+        for ($attempt=0; $attempt -lt 60 -and (Test-LocalPort 33306); $attempt++) { Start-Sleep -Seconds 1 }
+    }
+    if (Test-LocalPort 33306) { throw 'MySQL port 33306 remains open; stop was not completed.' }
+    Remove-Item -LiteralPath (Join-Path $DataDirectory 'mysql.process.json') -Force -ErrorAction SilentlyContinue
+}
+function Backup-Native {
+    if (-not (Test-LocalPort 33306)) { throw 'Start MarkSix before creating a backup.' }
+    $backupDirectory = Join-Path $DataDirectory 'backups'
+    [IO.Directory]::CreateDirectory($backupDirectory) | Out-Null
+    $destination = Join-Path $backupDirectory ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N') + '.sql')
+    $temporary = Join-Path (Join-Path $script:mysqlDataPath 'backups') ([IO.Path]::GetFileName($destination) + '.partial')
+    try {
+        Invoke-Database 'mysqldump' @('--single-transaction','--routines','--triggers','--hex-blob','--no-tablespaces','--set-gtid-purged=OFF','--default-character-set=utf8mb4',"--result-file=$temporary",'--databases','marksix') | Out-Null
+        if ((Get-Item -LiteralPath $temporary).Length -lt 100) { throw 'Backup was empty; it was not published.' }
+        Move-Item -LiteralPath $temporary -Destination $destination
+        Write-Host "Backup: $destination"
+    } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+}
+function Restore-Native {
+    if ([string]::IsNullOrWhiteSpace($BackupFile) -or -not (Test-Path -LiteralPath $BackupFile -PathType Leaf)) { throw 'Usage: Restore.cmd "C:\path\backup.sql" (also accepts .sql.gz)' }
+    if (-not $ConfirmRestore -and (Read-Host 'Restore overwrites this database. Type RESTORE to continue') -cne 'RESTORE') { throw 'Restore cancelled.' }
+    if (-not (Test-LocalPort 33306)) { throw 'Start MarkSix before restoring a backup.' }
+    $temporary = Join-Path $script:mysqlDataPath ('restore-' + [guid]::NewGuid().ToString('N') + '.sql')
+    try {
+        if ($BackupFile.EndsWith('.gz',[StringComparison]::OrdinalIgnoreCase)) {
+            $source = [IO.File]::OpenRead([IO.Path]::GetFullPath($BackupFile))
+            $gzip = New-Object IO.Compression.GZipStream($source,[IO.Compression.CompressionMode]::Decompress)
+            $destination = [IO.File]::Create($temporary)
+            try { $gzip.CopyTo($destination) } finally { $destination.Dispose(); $gzip.Dispose(); $source.Dispose() }
+        } else { Copy-Item -LiteralPath $BackupFile -Destination $temporary }
+        if ((Get-Item -LiteralPath $temporary).Length -lt 100) { throw 'Backup appears empty or incomplete.' }
+        Stop-Application
+        Backup-Native
+        $path = $temporary.Replace('\','/')
+        Invoke-Database 'mysql' @('--execute=DROP DATABASE marksix; CREATE DATABASE marksix CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;') | Out-Null
+        Invoke-Database 'mysql' @('--default-character-set=utf8mb4','marksix',"--execute=source $path") | Out-Null
+        Write-Host 'Database restored. Starting MarkSix and applying compatible forward migrations.'
+        Start-Native
+    } catch {
+        Write-Warning 'Restore did not complete. The application remains stopped if import failed. Keep the automatic pre-restore backup.'
+        throw
+    } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
 }
 function Start-Native {
     $mysqlExe = Join-Path $script:mysqlRuntimePath 'bin\mysqld.exe'
@@ -159,7 +237,10 @@ function Start-Native {
     Write-PrivateText $provisioned 'provisioned'
     Remove-Item -LiteralPath (Join-Path $DataDirectory 'bootstrap.sql') -Force -ErrorAction SilentlyContinue
     if ($null -eq $app) {
+        $shutdownToken = Random-Hex
+        Write-PrivateText (Join-Path $DataDirectory 'shutdown.token') $shutdownToken
         $values = @{
+            SHUTDOWN_TOKEN = $shutdownToken
             DATABASE_URL = "mysql://marksix:$script:dbPassword@127.0.0.1:33306/marksix"
             ADMIN_USERNAME = $script:config.username
             ADMIN_PASSWORD = (Decrypt-Text $script:config.adminPassword)
@@ -203,7 +284,10 @@ try {
         Write-PrivateText $configPath ($newConfig | ConvertTo-Json)
         $plain = $null
     }
-    if (-not (Test-Path -LiteralPath $configPath)) { throw 'Run Install.cmd first using this Windows user account.' }
+    if (-not (Test-Path -LiteralPath $configPath)) {
+        if ($Action -eq 'Stop') { Write-Host 'MarkSix is not installed for this user; nothing to stop.'; return }
+        throw 'Run Install.cmd first using this Windows user account.'
+    }
     $script:config = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json
     $script:rootPassword = Decrypt-Text $script:config.rootPassword
     $script:dbPassword = Decrypt-Text $script:config.dbPassword
@@ -213,16 +297,8 @@ try {
         'Install' { Start-Native }
         'Start' { Start-Native }
         'Stop' { Stop-Native; Write-Host 'MarkSix stopped.' }
-        'Backup' {
-            if ($null -eq (Get-OwnedProcess 'mysql')) { throw 'Start MarkSix before creating a backup.' }
-            $backupDirectory = Join-Path $DataDirectory 'backups'
-            [IO.Directory]::CreateDirectory($backupDirectory) | Out-Null
-            $destination = Join-Path $backupDirectory ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N') + '.sql')
-            $temporary = Join-Path (Join-Path $script:mysqlDataPath 'backups') ([IO.Path]::GetFileName($destination) + '.partial')
-            Invoke-Database 'mysqldump' @('--single-transaction','--routines','--triggers','--hex-blob','--no-tablespaces','--set-gtid-purged=OFF',"--result-file=$temporary",'--databases','marksix') | Out-Null
-            Move-Item -LiteralPath $temporary -Destination $destination
-            Write-Host "Backup: $destination"
-        }
+        'Backup' { Backup-Native }
+        'Restore' { Restore-Native }
     }
 } finally {
     $script:rootPassword = $null
