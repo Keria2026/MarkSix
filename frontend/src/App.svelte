@@ -36,6 +36,7 @@
     Info,
     X,
   } from "lucide-svelte";
+  import LicenseCountdown from "./components/LicenseCountdown.svelte";
   import Activation from "./components/Activation.svelte";
   import type { LicenseStatus } from "./components/Activation.svelte";
   import StatisticsPanel from "./components/Statistics.svelte";
@@ -1796,8 +1797,13 @@
                   }).format(licenseStatus.expires_at * 1000)
                 : "—"}（北京时间）
             </p>
+            <p>
+              授权剩余 <LicenseCountdown
+                seconds={licenseStatus.remaining_seconds}
+              />
+            </p>
             <p class="field-help">
-              授权服务：{licenseStatus.server_url}。到期后使用新授权码续期。
+              到期后使用新授权码续期；时间来自授权服务器，运行期间每分钟联网复核。
             </p>
             {#if licenseStatus.license_id}<label
                 >授权编号<input

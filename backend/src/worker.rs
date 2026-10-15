@@ -30,6 +30,9 @@ pub async fn run(state: AppState) {
 }
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     if crate::license::require(state).await.is_err() {
+        for flag in state.cancellations.lock().await.values() {
+            flag.store(true, Ordering::Relaxed);
+        }
         return Ok(());
     }
     ensure_period(state, state.now().date()).await?;

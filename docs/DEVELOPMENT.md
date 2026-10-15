@@ -41,6 +41,7 @@ cargo run --release --locked --example risk_bench
 cargo test --locked --test upgrade -- --ignored
 cargo test --locked --test workflow -- --ignored
 cargo test --locked --lib license::tests::online_activation -- --ignored
+cargo test --locked --test license_cli -- --ignored
 ```
 
 浏览器测试也清空 `marksix_test`，不要与集成测试同时运行。设置 `TEST_ADMIN_PASSWORD` 为至少 12 字符的测试密码，然后依次启动：
@@ -101,3 +102,9 @@ python3 scripts/runtime_acceptance.py
 Ubuntu 包构建命令：`python3 scripts/package_ubuntu.py --output ubuntu-package --version <提交> --backend <镜像> --frontend <镜像>`。Windows 使用 `scripts/package_windows_native.ps1`。没有 Windows Docker 打包分支。
 
 授权服务与 CLI、私钥保管及重新构建公钥的步骤见 [授权说明](LICENSING.md)。测试签名使用临时随机密钥，发布包始终使用仓库公钥；签发私钥不进入 GitHub 构建环境。
+
+## v0.4 授权时间与路由
+
+`license/clock.rs` 使用 Linux CLOCK_BOOTTIME／Windows GetTickCount64，租约只在内存，重启不读取持久化时间作为授权依据。`license/routing.rs` 验证 MSX1 激活封装及签名迁移文件；发现入口可配置，版本拒绝回退。`0004` 增加发现地址、路由版本、核销 UUID、预绑定及绝对期限，不能改写前三个已发布迁移。
+
+真实协议测试注入独立单调时钟并推进／回退，覆盖休眠、离线重启、过期、复制设备、密码变更、旧码不同提交拒绝、同次重试、旧地址实际停用后的发现迁移、签名文件迁移及原期限保持；CLI 测试实际执行 owner 命令并校验签名和数据库中的天数／固定期限／预绑定。生产私钥不参与测试。

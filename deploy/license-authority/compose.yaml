@@ -22,6 +22,8 @@ services:
     command: [marksix, --license-authority]
     environment:
       AUTHORITY_DATABASE_URL: mysql://authority:${AUTHORITY_DB_PASSWORD}@db:3306/marksix_authority
+      PUBLIC_AUTHORITY_URL: ${PUBLIC_AUTHORITY_URL:-http://127.0.0.1:8090}
+      LICENSE_DISCOVERY_URL: ${LICENSE_DISCOVERY_URL:-}
       AUTHORITY_BIND_ADDR: 0.0.0.0:8090
       LICENSE_SIGNING_KEY_FILE: /run/signing-key.hex
     volumes:

@@ -4,13 +4,29 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "MarkSix {}\nServer: marksix [--serve]\nOwner: --license-keygen NEW_FILE | --license-public-key | --license-issue DAYS | --license-revoke LICENSE_ID | --license-authority\nAuthority requires AUTHORITY_DATABASE_URL and LICENSE_SIGNING_KEY_FILE. Never distribute the private key.",
+            "MarkSix {}\nServer: marksix [--serve]\nOwner: --license-keygen NEW_FILE | --license-public-key | --license-issue DAYS [--bind BINDING] | --license-until RFC3339 [--bind BINDING] | --license-route REVISION | --license-revoke LICENSE_ID | --license-authority\nAuthority requires AUTHORITY_DATABASE_URL and LICENSE_SIGNING_KEY_FILE. Never distribute the private key.",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
     }
     if args.get(1).is_some_and(|s| s == "--license-public-key") {
         println!("{}", license::public_key()?);
+        return Ok(());
+    }
+    if args.get(1).is_some_and(|s| s == "--license-route") {
+        anyhow::ensure!(args.len() == 3, "Usage: --license-route REVISION");
+        let url = std::env::var("PUBLIC_AUTHORITY_URL")?;
+        let discovery = std::env::var("LICENSE_DISCOVERY_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&license::route_document(
+                &url,
+                discovery.as_deref(),
+                args[2].parse()?
+            )?)?
+        );
         return Ok(());
     }
     if args.get(1).is_some_and(|s| s == "--license-keygen") {
@@ -20,7 +36,10 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.get(1).is_some_and(|s| {
-        s == "--license-authority" || s == "--license-issue" || s == "--license-revoke"
+        s == "--license-authority"
+            || s == "--license-issue"
+            || s == "--license-until"
+            || s == "--license-revoke"
     }) {
         let pool = store::connect(&std::env::var("AUTHORITY_DATABASE_URL").map_err(|_| {
             anyhow::anyhow!("Set AUTHORITY_DATABASE_URL to the separate authority database")
@@ -39,12 +58,24 @@ async fn main() -> anyhow::Result<()> {
                 .execute(&pool)
                 .await?;
             println!("Revoked records: {}", result.rows_affected());
-        } else if args[1] == "--license-issue" {
-            let days = args
-                .get(2)
-                .ok_or_else(|| anyhow::anyhow!("Usage: marksix --license-issue DAYS"))?
-                .parse()?;
-            println!("{}", license::issue(&pool, days).await?);
+        } else if args[1] == "--license-issue" || args[1] == "--license-until" {
+            anyhow::ensure!(
+                args.len() == 3 || (args.len() == 5 && args[3] == "--bind"),
+                "Usage: --license-issue DAYS [--bind BINDING] | --license-until RFC3339 [--bind BINDING]"
+            );
+            let (days, expiry) = if args[1] == "--license-issue" {
+                (args[2].parse()?, None)
+            } else {
+                (
+                    1,
+                    Some(chrono::DateTime::parse_from_rfc3339(&args[2])?.timestamp()),
+                )
+            };
+            println!(
+                "{}",
+                license::issue_activation(&pool, days, expiry, args.get(4).map(String::as_str))
+                    .await?
+            );
         } else {
             license::authority(
                 pool,

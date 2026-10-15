@@ -40,7 +40,7 @@ impl AppState {
             }),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
-                .user_agent("MarkSix/0.3 (+local statistics)")
+                .user_agent("MarkSix/0.4 (+local statistics)")
                 .build()?,
             draw_url: "https://macaumarksix.com/api/macaujc2.com".into(),
             secure_cookie: false,

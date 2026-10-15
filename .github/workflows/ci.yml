@@ -49,6 +49,7 @@ jobs:
           cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
           cargo test --locked --lib license::tests::online_activation -- --ignored
+          cargo test --locked --test license_cli -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
       - name: Customer rules runtime accounting acceptance
@@ -164,7 +165,7 @@ jobs:
           docker compose -f ubuntu-package/license-authority/compose.yaml up -d --wait --wait-timeout 180
           curl -fsS http://127.0.0.1:8090/health
           code=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-issue 1)
-          test "${#code}" -eq 48
+          [[ "$code" == MSX1.* ]]
           public_key=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-public-key)
           [[ "$public_key" =~ ^[0-9a-f]{64}$ ]]
           docker compose -f ubuntu-package/license-authority/compose.yaml stop --timeout 60

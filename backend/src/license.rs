@@ -25,12 +25,16 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-const REFRESH_SECONDS: i64 = 60;
+mod clock;
+mod routing;
+use clock::{Lease, Runtime};
+pub use routing::route_document;
 #[derive(Clone)]
 pub struct Client {
     pub device: String,
     pub key: VerifyingKey,
-    pub gate: Arc<Mutex<Option<(Instant, String)>>>,
+    runtime: Arc<Mutex<Runtime>>,
+    monotonic: Arc<dyn Fn() -> anyhow::Result<Duration> + Send + Sync>,
     pub default_url: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,7 +121,8 @@ impl Client {
         Ok(Self {
             device: machine_id()?,
             key: VerifyingKey::from_bytes(&key)?,
-            gate: Arc::default(),
+            runtime: Arc::default(),
+            monotonic: Arc::new(clock::boot_time),
             default_url: std::env::var("LICENSE_SERVER_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -184,72 +189,97 @@ fn activation_error(message: impl Into<String>) -> ApiError {
     ApiError(StatusCode::PAYMENT_REQUIRED, message.into())
 }
 async fn check(state: &AppState, force: bool) -> ApiResult<Claims> {
-    let Some(client) = &state.license else {
-        return Err(activation_error("此测试实例未启用授权"));
-    };
-    let mut guard = client.gate.lock().await;
+    let client = state
+        .license
+        .as_ref()
+        .ok_or_else(|| activation_error("此测试实例未启用授权"))?;
+    let mut runtime = client.runtime.lock().await;
     let binding = binding(state, client).await?;
-    let row =
-        sqlx::query("SELECT certificate,authority_url,last_seen_at FROM client_license WHERE id=1")
-            .fetch_one(&state.pool)
-            .await?;
+    let row = sqlx::query("SELECT certificate,authority_url,last_seen_at,discovery_url FROM client_license WHERE id=1").fetch_one(&state.pool).await?;
     let certificate: Option<DbJson<Certificate>> = row.try_get("certificate")?;
     let certificate = certificate
-        .ok_or_else(|| activation_error("请使用授权码激活此设备"))?
+        .ok_or_else(|| activation_error("请使用新授权码激活此设备"))?
         .0;
-    let mut claims = certificate
+    let claims = certificate
         .verify(&client.key, &binding)
         .map_err(|_| activation_error("授权签名或设备、账号密码绑定不符，请重新激活"))?;
-    let now = Utc::now().timestamp();
-    if claims.expires_at <= now {
-        return Err(activation_error("授权已到期，请使用新的授权码续期"));
-    }
-    let rollback = now + 120 < row.try_get::<i64, _>("last_seen_at")?;
-    if force
-        || rollback
-        || claims.checked_at > now + 120
-        || now - claims.checked_at >= REFRESH_SECONDS
+    let fingerprint = digest(&serde_json::to_string(&certificate).map_err(anyhow::Error::from)?);
+    let now = (client.monotonic)().map_err(|e| activation_error(e.to_string()))?;
+    if !force
+        && let Some(lease) = &runtime.lease
+        && lease.fingerprint == fingerprint
+        && lease.binding == binding
     {
-        let url: Option<String> = row.try_get("authority_url")?;
-        let url = url
-            .or_else(|| client.default_url.clone())
-            .ok_or_else(|| activation_error("请设置授权服务地址"))?;
-        if !force
-            && let Some((when, message)) = &*guard
-            && when.elapsed() < Duration::from_secs(10)
-        {
-            return Err(activation_error(message.clone()));
+        match lease.remaining(now) {
+            Ok(0) => return Err(activation_error("授权已到期，请使用新的授权码续期")),
+            Ok(_) if lease.fresh(now) => return Ok(claims),
+            _ => {}
         }
-        let nonce = random_hex();
-        let fresh = call(
-            &url,
-            "refresh",
-            json!({"certificate":certificate,"binding":binding,"nonce":nonce}),
-        )
-        .await;
-        let fresh = match fresh {
-            Ok(value) => {
-                *guard = None;
-                value
-            }
-            Err(e) => {
-                let message = format!("授权校验失败：{e}");
-                *guard = Some((Instant::now(), message.clone()));
-                return Err(activation_error(message));
-            }
-        };
-        claims = fresh
-            .verify(&client.key, &binding)
-            .map_err(|_| activation_error("授权服务签名无效"))?;
-        if claims.nonce != nonce
-            || claims.expires_at <= now
-            || (claims.checked_at - now).abs() > 120
-        {
-            return Err(activation_error("授权响应已失效或系统时间有误，请校准时间"));
-        }
-        sqlx::query("UPDATE client_license SET certificate=?,last_seen_at=GREATEST(last_seen_at,?) WHERE id=1").bind(DbJson(&fresh)).bind(now).execute(&state.pool).await?;
     }
-    Ok(claims)
+    // Dropping the cached lease before any network attempt makes failures closed.
+    // A process restart always has no lease, even if a certificate is on disk.
+    runtime.lease = None;
+    if !force
+        && let Some((when, message)) = &runtime.failure
+        && now
+            .checked_sub(*when)
+            .is_some_and(|elapsed| elapsed < Duration::from_secs(10))
+    {
+        return Err(activation_error(message.clone()));
+    }
+    let url: Option<String> = row.try_get("authority_url")?;
+    let url = url
+        .or_else(|| client.default_url.clone())
+        .ok_or_else(|| activation_error("请设置授权服务地址"))?;
+    let resolution =
+        routing::resolve(state, client, &url, row.try_get("discovery_url")?, None).await?;
+    let nonce = random_hex();
+    let fresh = call(
+        &resolution.url,
+        "refresh",
+        json!({"certificate":certificate,"binding":binding,"nonce":nonce}),
+    )
+    .await;
+    let fresh = match fresh {
+        Ok(value) => value,
+        Err(e) => {
+            let message = format!("授权校验失败：{e}");
+            runtime.failure = Some(((client.monotonic)().unwrap_or(now), message.clone()));
+            return Err(activation_error(message));
+        }
+    };
+    let updated = fresh
+        .verify(&client.key, &binding)
+        .map_err(|_| activation_error("授权服务签名无效"))?;
+    if updated.nonce != nonce
+        || updated.id != claims.id
+        || updated.issued_at != claims.issued_at
+        || updated.expires_at != claims.expires_at
+        || updated.checked_at < claims.checked_at
+        || updated.checked_at >= updated.expires_at
+        || updated.checked_at < updated.issued_at
+    {
+        return Err(activation_error("授权响应无效或授权服务器时间回退"));
+    }
+    let lease = Lease {
+        fingerprint: digest(&serde_json::to_string(&fresh).map_err(anyhow::Error::from)?),
+        binding,
+        started: now,
+        server_time: updated.checked_at,
+        expires_at: updated.expires_at,
+    };
+    if !lease.fresh((client.monotonic)().map_err(|e| activation_error(e.to_string()))?)
+        || lease
+            .remaining((client.monotonic)().map_err(|e| activation_error(e.to_string()))?)
+            .unwrap_or(0)
+            == 0
+    {
+        return Err(activation_error("授权响应已失效，请重新联网核验"));
+    }
+    sqlx::query("UPDATE client_license SET certificate=?,last_seen_at=GREATEST(last_seen_at,?),authority_url=?,discovery_url=?,route_revision=?,route_certificate=? WHERE id=1").bind(DbJson(&fresh)).bind(updated.checked_at).bind(&resolution.url).bind(&resolution.discovery).bind(resolution.revision).bind(resolution.certificate.as_ref().map(DbJson)).execute(&state.pool).await?;
+    runtime.failure = None;
+    runtime.lease = Some(lease);
+    Ok(updated)
 }
 pub async fn require(state: &AppState) -> ApiResult<()> {
     if state.license.is_some() {
@@ -272,6 +302,18 @@ pub async fn status(State(state): State<AppState>) -> ApiResult<Json<Value>> {
         Ok(claims) => {
             value["active"] = json!(true);
             value["expires_at"] = json!(claims.expires_at);
+            let runtime = client.runtime.lock().await;
+            let remaining = runtime
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.remaining((client.monotonic)().ok()?).ok())
+                .unwrap_or(0);
+            if remaining == 0 {
+                value["active"] = json!(false);
+                value["message"] = json!("授权已到期或需重新联网核验");
+            }
+            value["remaining_seconds"] = json!(remaining);
+            value["server_time"] = json!(claims.expires_at.saturating_sub(remaining as i64));
             value["license_id"] = json!(claims.id);
         }
         Err(e) if e.0 == StatusCode::PAYMENT_REQUIRED => {
@@ -286,7 +328,15 @@ pub async fn status(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 #[serde(deny_unknown_fields)]
 pub struct Activate {
     code: String,
+    #[serde(default)]
     server_url: String,
+    #[serde(default = "activation_request_id")]
+    request_id: String,
+    #[serde(default)]
+    migration: Option<Certificate>,
+}
+fn activation_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 pub async fn activate(
     State(state): State<AppState>,
@@ -296,42 +346,102 @@ pub async fn activate(
         .license
         .as_ref()
         .ok_or_else(|| activation_error("测试实例不支持激活"))?;
-    let mut guard = client.gate.lock().await;
-    let url = authority_url(&input.server_url)
-        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
-    let code = input.code.trim().replace('-', "").to_ascii_lowercase();
-    if code.len() != 48 || !code.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(ApiError(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "授权码格式不正确".into(),
-        ));
-    }
+    let mut runtime = client.runtime.lock().await;
+    uuid::Uuid::parse_str(&input.request_id).map_err(|_| activation_error("激活提交标识无效"))?;
+    let text = input.code.trim();
+    let (code, initial_url, discovery) = if text.starts_with("MSX1.") {
+        let code = routing::decode_code(text, &client.key)
+            .map_err(|_| activation_error("激活码签名或内容无效"))?;
+        (code.token, code.authority_url, code.discovery_url)
+    } else {
+        let token = text.replace('-', "").to_ascii_lowercase();
+        if token.len() != 48 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(activation_error("激活码格式不正确"));
+        }
+        (token, input.server_url.clone(), None)
+    };
+    let resolution =
+        routing::resolve(&state, client, &initial_url, discovery, input.migration).await?;
     let binding = binding(&state, client).await?;
+    let started = (client.monotonic)().map_err(|e| activation_error(e.to_string()))?;
     let nonce = random_hex();
     let certificate = call(
-        &url,
+        &resolution.url,
         "redeem",
-        json!({"code":code,"binding":binding,"nonce":nonce}),
+        json!({"code":code,"binding":binding,"nonce":nonce,"request_id":input.request_id}),
     )
     .await
     .map_err(|e| activation_error(e.to_string()))?;
     let claims = certificate
         .verify(&client.key, &binding)
         .map_err(|_| activation_error("授权服务签名与本安装包不匹配"))?;
-    let now = Utc::now().timestamp();
-    if claims.nonce != nonce || claims.expires_at <= now || (claims.checked_at - now).abs() > 120 {
-        return Err(activation_error("授权响应无效，请校准时间后重试"));
+    let lease = Lease {
+        fingerprint: digest(&serde_json::to_string(&certificate).map_err(anyhow::Error::from)?),
+        binding,
+        started,
+        server_time: claims.checked_at,
+        expires_at: claims.expires_at,
+    };
+    let now = (client.monotonic)().map_err(|e| activation_error(e.to_string()))?;
+    if claims.nonce != nonce
+        || claims.checked_at < claims.issued_at
+        || !lease.fresh(now)
+        || lease.remaining(now).unwrap_or(0) == 0
+    {
+        return Err(activation_error("授权响应无效或已过期"));
     }
     sqlx::query(
-        "UPDATE client_license SET certificate=?,authority_url=?,last_seen_at=? WHERE id=1",
+        "UPDATE client_license SET certificate=?,authority_url=?,last_seen_at=?,discovery_url=?,route_revision=?,route_certificate=? WHERE id=1",
     )
     .bind(DbJson(certificate))
-    .bind(url)
-    .bind(now)
+    .bind(&resolution.url)
+    .bind(claims.checked_at)
+    .bind(&resolution.discovery)
+    .bind(resolution.revision)
+    .bind(resolution.certificate.as_ref().map(DbJson))
     .execute(&state.pool)
     .await?;
-    *guard = None;
+    runtime.failure = None;
+    runtime.lease = Some(lease);
     Ok(Json(json!({"active":true,"expires_at":claims.expires_at})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Migration {
+    migration: Certificate,
+}
+pub async fn migrate(
+    State(state): State<AppState>,
+    Json(input): Json<Migration>,
+) -> ApiResult<Json<Value>> {
+    let client = state
+        .license
+        .as_ref()
+        .ok_or_else(|| activation_error("测试实例不支持迁移"))?;
+    {
+        let mut runtime = client.runtime.lock().await;
+        let supplied = routing::decode_route(&input.migration, &client.key)
+            .map_err(|_| activation_error("迁移文件签名无效"))?;
+        let row = sqlx::query("SELECT authority_url,discovery_url FROM client_license WHERE id=1")
+            .fetch_one(&state.pool)
+            .await?;
+        let url: Option<String> = row.try_get("authority_url")?;
+        let resolution = routing::resolve(
+            &state,
+            client,
+            url.as_deref().unwrap_or(&supplied.authority_url),
+            row.try_get("discovery_url")?,
+            Some(input.migration),
+        )
+        .await?;
+        sqlx::query("UPDATE client_license SET authority_url=?,discovery_url=?,route_revision=?,route_certificate=? WHERE id=1").bind(&resolution.url).bind(&resolution.discovery).bind(resolution.revision).bind(resolution.certificate.as_ref().map(DbJson)).execute(&state.pool).await?;
+        runtime.lease = None;
+        runtime.failure = None;
+    }
+    // Changing an address never redeems a code or extends an existing license.
+    let _ = check(&state, true).await;
+    status(State(state)).await
 }
 
 #[derive(Clone)]
@@ -346,6 +456,8 @@ struct Redeem {
     code: String,
     binding: String,
     nonce: String,
+    #[serde(default = "activation_request_id")]
+    request_id: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -376,7 +488,8 @@ async fn redeem(
     Json(input): Json<Redeem>,
 ) -> ApiResult<Json<Certificate>> {
     rate_limit(&state).await?;
-    if !hex64(&input.binding)
+    if uuid::Uuid::parse_str(&input.request_id).is_err()
+        || !hex64(&input.binding)
         || input.code.len() != 48
         || !input.code.bytes().all(|b| b.is_ascii_hexdigit())
         || input.nonce.len() != 48
@@ -385,13 +498,18 @@ async fn redeem(
     }
     let id = digest(&input.code);
     let mut tx = state.pool.begin().await?;
-    let row=sqlx::query("SELECT valid_days,redeem_before,redeemed_at,binding,certificate FROM license_codes WHERE code_hash=? FOR UPDATE").bind(&id).fetch_optional(&mut *tx).await?.ok_or_else(||activation_error("授权码无效"))?;
+    let row=sqlx::query("SELECT valid_days,redeem_before,redeemed_at,binding,certificate,redemption_id,intended_binding,expires_at FROM license_codes WHERE code_hash=? FOR UPDATE").bind(&id).fetch_optional(&mut *tx).await?.ok_or_else(||activation_error("授权码无效"))?;
     let now = Utc::now().timestamp();
     // Retry from the same binding is idempotent, allowing recovery after a lost response.
     // A redeemed code can never create a second license, extend time or change its binding.
     let claims = if row.try_get::<Option<i64>, _>("redeemed_at")?.is_some() {
-        if row.try_get::<Option<String>, _>("binding")?.as_deref() != Some(&input.binding) {
-            return Err(activation_error("授权码已使用，不能绑定其他设备或账号"));
+        if row.try_get::<Option<String>, _>("binding")?.as_deref() != Some(&input.binding)
+            || row
+                .try_get::<Option<String>, _>("redemption_id")?
+                .as_deref()
+                != Some(&input.request_id)
+        {
+            return Err(activation_error("授权码已使用，请使用新的激活码"));
         }
         let cert: DbJson<Certificate> = row.try_get("certificate")?;
         let mut claims = cert.verify(&state.key.verifying_key(), &input.binding)?;
@@ -405,18 +523,30 @@ async fn redeem(
         if row.try_get::<i64, _>("redeem_before")? <= now {
             return Err(activation_error("授权码已超过激活期限"));
         }
+        if row
+            .try_get::<Option<String>, _>("intended_binding")?
+            .is_some_and(|b| b != input.binding)
+        {
+            return Err(activation_error("激活码与预绑定设备、账号密码不符"));
+        }
+        let expiry = row
+            .try_get::<Option<i64>, _>("expires_at")?
+            .unwrap_or(now + i64::from(row.try_get::<i32, _>("valid_days")?) * 86400);
+        if expiry <= now {
+            return Err(activation_error("激活码指定的到期时间已过"));
+        }
         Claims {
             schema: 1,
             id: id.clone(),
             binding: input.binding.clone(),
             issued_at: now,
-            expires_at: now + i64::from(row.try_get::<i32, _>("valid_days")?) * 86400,
+            expires_at: expiry,
             checked_at: now,
             nonce: input.nonce,
         }
     };
     let certificate = sign(&claims, &state.key)?;
-    sqlx::query("UPDATE license_codes SET redeemed_at=COALESCE(redeemed_at,?),binding=?,certificate=? WHERE code_hash=?").bind(now).bind(&input.binding).bind(DbJson(&certificate)).bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE license_codes SET redeemed_at=COALESCE(redeemed_at,?),binding=?,certificate=?,redemption_id=? WHERE code_hash=?").bind(now).bind(&input.binding).bind(DbJson(&certificate)).bind(&input.request_id).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(certificate))
 }
@@ -495,6 +625,34 @@ pub async fn issue(pool: &MySqlPool, days: i32) -> anyhow::Result<String> {
         .execute(pool)
         .await?;
     Ok(code)
+}
+pub async fn issue_activation(
+    pool: &MySqlPool,
+    days: i32,
+    expires_at: Option<i64>,
+    intended_binding: Option<&str>,
+) -> anyhow::Result<String> {
+    let url = std::env::var("PUBLIC_AUTHORITY_URL")
+        .context("请设置 PUBLIC_AUTHORITY_URL（客户可访问的 HTTPS 地址）")?;
+    let discovery = std::env::var("LICENSE_DISCOVERY_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let key = load_key()?;
+    let token = random_hex();
+    let encoded = routing::encode_code(&token, &url, discovery.as_deref(), &key)?;
+    ensure!((1..=3650).contains(&days), "授权期限须为 1–3650 天");
+    if let Some(expiry) = expires_at {
+        ensure!(
+            expiry > Utc::now().timestamp() && expiry <= Utc::now().timestamp() + 3650 * 86400,
+            "指定到期时间须在未来 3650 天内"
+        );
+    }
+    if let Some(binding) = intended_binding {
+        ensure!(hex64(binding), "预绑定标识须为 64 位十六进制");
+    }
+    let intended_binding = intended_binding.map(str::to_ascii_lowercase);
+    sqlx::query("INSERT INTO license_codes(code_hash,valid_days,redeem_before,intended_binding,expires_at) VALUES(?,?,?,?,?)").bind(digest(&token)).bind(days).bind(Utc::now().timestamp() + 30 * 86400).bind(intended_binding.as_deref()).bind(expires_at).execute(pool).await?;
+    Ok(encoded)
 }
 pub fn keygen(path: &Path) -> anyhow::Result<()> {
     use std::io::Write;
@@ -578,12 +736,20 @@ mod tests {
             .route("/refresh", post(refresh))
             .with_state(authority.clone());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        sqlx::query("UPDATE client_license SET certificate=NULL,authority_url=NULL,last_seen_at=0 WHERE id=1").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE client_license SET certificate=NULL,authority_url=NULL,last_seen_at=0,discovery_url=NULL,route_revision=0,route_certificate=NULL WHERE id=1").execute(&pool).await.unwrap();
         let mut state = AppState::new(pool.clone()).unwrap();
+        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+        let uptime = Arc::new(AtomicU64::new(1_000));
+        let read_uptime = uptime.clone();
         state.license = Some(Client {
             device: digest("device-one"),
             key: key.verifying_key(),
-            gate: Arc::default(),
+            runtime: Arc::default(),
+            monotonic: Arc::new(move || {
+                Ok(Duration::from_secs(
+                    read_uptime.load(AtomicOrdering::SeqCst),
+                ))
+            }),
             default_url: None,
         });
         assert!(require(&state).await.is_err());
@@ -621,7 +787,7 @@ mod tests {
         let first = call(
             &address,
             "redeem",
-            json!({"code":code,"binding":binding,"nonce":random_hex()}),
+            json!({"code":code,"binding":binding,"nonce":random_hex(),"request_id":activation_request_id()}),
         );
         let second = call(
             &address,
@@ -632,6 +798,7 @@ mod tests {
         assert_ne!(a.is_ok(), b.is_ok());
         // Use another fresh code to activate the real client irrespective of race winner.
         let code = issue(&pool, 1).await.unwrap();
+        let activation_id = activation_request_id();
         let response = router
             .clone()
             .oneshot(
@@ -642,7 +809,8 @@ mod tests {
                     .header("x-marksix", "1")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"code":code,"server_url":address}).to_string(),
+                        json!({"code":code,"server_url":address,"request_id":activation_id})
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -654,12 +822,49 @@ mod tests {
             "Activation must remain reachable before activation"
         );
         let before = check(&state, true).await.unwrap();
+        let _ = status(State(state.clone())).await.unwrap();
+        // Altering persisted timestamps or the business wall clock cannot extend
+        // a lease; expiry and refresh depend exclusively on signed time + uptime.
+        sqlx::query("UPDATE client_license SET last_seen_at=0 WHERE id=1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        state.clock = Arc::new(|| {
+            chrono::NaiveDate::from_ymd_opt(2000, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        });
+        uptime.fetch_add(15, AtomicOrdering::SeqCst);
+        let view = status(State(state.clone())).await.unwrap().0;
+        assert_eq!(
+            view["remaining_seconds"],
+            before.expires_at - before.checked_at - 15
+        );
+        assert!(view["server_time"].as_i64().unwrap() >= before.checked_at + 15);
+        // A fresh operation with the same code is rejected even on the same device.
+        assert!(
+            activate(
+                State(state.clone()),
+                Json(Activate {
+                    code: code.clone(),
+                    server_url: address.clone(),
+                    request_id: activation_request_id(),
+                    migration: None
+                })
+            )
+            .await
+            .is_err()
+        );
+
         // A retry recovers the same license without extending its expiry.
         let _ = activate(
             State(state.clone()),
             Json(Activate {
                 code,
                 server_url: address.clone(),
+                request_id: activation_id.clone(),
+                migration: None,
             }),
         )
         .await
@@ -696,6 +901,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("UPDATE license_codes SET certificate=? WHERE code_hash=?")
+            .bind(DbJson(sign(&expired, &key).unwrap()))
+            .bind(&expired.id)
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(require(&state).await.is_err());
         let new_code = issue(&pool, 2).await.unwrap();
         let _ = activate(
@@ -703,6 +914,8 @@ mod tests {
             Json(Activate {
                 code: new_code,
                 server_url: address.clone(),
+                request_id: activation_request_id(),
+                migration: None,
             }),
         )
         .await
@@ -716,7 +929,178 @@ mod tests {
             .await
             .unwrap();
         assert!(check(&state, true).await.is_err());
-        sqlx::query("UPDATE client_license SET certificate=NULL,authority_url=NULL,last_seen_at=0 WHERE id=1").execute(&pool).await.unwrap();
+        // Route migration: an old, unused signed code discovers the new server;
+        // the original address is actually stopped, and the same DB/key are retained.
+        use std::sync::RwLock;
+        let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = format!("http://{}", target_listener.local_addr().unwrap());
+        let target_app = Router::new()
+            .route("/redeem", post(redeem))
+            .route("/refresh", post(refresh))
+            .with_state(authority.clone());
+        let target_server =
+            tokio::spawn(async move { axum::serve(target_listener, target_app).await.unwrap() });
+        let discovery_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let discovery_url = format!("http://{}", discovery_listener.local_addr().unwrap());
+        let document = Arc::new(RwLock::new(
+            routing::signed_route(&key, &address, Some(&discovery_url), 1).unwrap(),
+        ));
+        let document_reader = document.clone();
+        let discovery_app = Router::new().route(
+            "/",
+            get(move || {
+                let value = document_reader.read().unwrap().clone();
+                async move { Json(value) }
+            }),
+        );
+        let discovery_server = tokio::spawn(async move {
+            axum::serve(discovery_listener, discovery_app)
+                .await
+                .unwrap()
+        });
+        let token = issue(&pool, 1).await.unwrap();
+        let encoded = routing::encode_code(&token, &address, Some(&discovery_url), &key).unwrap();
+        *document.write().unwrap() =
+            routing::signed_route(&key, &target, Some(&discovery_url), 2).unwrap();
+        server.abort();
+        let activation = Activate {
+            code: encoded.clone(),
+            server_url: String::new(),
+            request_id: activation_request_id(),
+            migration: None,
+        };
+        let response = activate(State(state.clone()), Json(activation))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(response["active"], true);
+        let stored_url: String =
+            sqlx::query_scalar("SELECT authority_url FROM client_license WHERE id=1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored_url, target);
+        let live = check(&state, false).await.unwrap();
+        let now_uptime = uptime.load(AtomicOrdering::SeqCst);
+        uptime.fetch_add(
+            (live.expires_at - live.checked_at + 1) as u64,
+            AtomicOrdering::SeqCst,
+        );
+        assert!(
+            require(&state).await.is_err(),
+            "monotonic expiry must not depend on wall time"
+        );
+        // Simulate a clock discontinuity: only a new authority response may
+        // re-establish time; the cached lease is never trusted after rollback.
+        uptime.store(now_uptime.saturating_sub(1), AtomicOrdering::SeqCst);
+        assert!(require(&state).await.is_ok());
+        // A copied installation with a different device cannot use this certificate.
+        let mut copy = state.clone();
+        copy.license.as_mut().unwrap().device = digest("copied machine");
+        assert!(require(&copy).await.is_err());
+        // Simulated suspend of more than 60 seconds forces a fresh signed response.
+        uptime.fetch_add(61, AtomicOrdering::SeqCst);
+        assert!(require(&state).await.is_ok());
+        // Process restart cannot reuse a persisted lease while offline.
+        let mut restarted = state.clone();
+        restarted.license.as_mut().unwrap().runtime = Arc::default();
+        target_server.abort();
+        discovery_server.abort();
+        assert!(require(&restarted).await.is_err());
+        // Existing process is limited to its current 60-second lease offline.
+        assert!(require(&state).await.is_ok());
+        uptime.fetch_add(61, AtomicOrdering::SeqCst);
+        assert!(require(&state).await.is_err());
+        // Restoring a DB backup does not restore the in-memory monotonic lease.
+        assert!(require(&restarted).await.is_err());
+        assert!(live.expires_at > live.checked_at);
+        // With both old addresses gone, a signed migration file repairs an
+        // existing installation without reactivating or extending its license.
+        let third_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let third = format!("http://{}", third_listener.local_addr().unwrap());
+        let third_app = Router::new()
+            .route("/redeem", post(redeem))
+            .route("/refresh", post(refresh))
+            .with_state(authority.clone());
+        let third_server =
+            tokio::spawn(async move { axum::serve(third_listener, third_app).await.unwrap() });
+        let route = routing::signed_route(&key, &third, None, 3).unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/license/migrate")
+                    .header("cookie", &cookie)
+                    .header("x-marksix", "1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"migration":route}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let repaired = check(&state, false).await.unwrap();
+        assert_eq!(repaired.expires_at, live.expires_at);
+        assert_eq!(repaired.id, live.id);
+        assert!(
+            migrate(
+                State(state.clone()),
+                Json(Migration {
+                    migration: routing::signed_route(&key, &third, None, 2).unwrap()
+                })
+            )
+            .await
+            .is_err()
+        );
+        let wrong_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        assert!(
+            migrate(
+                State(state.clone()),
+                Json(Migration {
+                    migration: routing::signed_route(&wrong_key, &third, None, 4).unwrap()
+                })
+            )
+            .await
+            .is_err()
+        );
+        // Unused codes issued before migration still work through the saved
+        // signed route; the new code can be pre-bound before it reaches a client.
+        let token = issue(&pool, 1).await.unwrap();
+        let encoded = routing::encode_code(&token, &address, Some(&discovery_url), &key).unwrap();
+        sqlx::query("UPDATE license_codes SET intended_binding=? WHERE code_hash=?")
+            .bind(&binding)
+            .bind(digest(&token))
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            activate(
+                State(copy),
+                Json(Activate {
+                    code: encoded.clone(),
+                    server_url: String::new(),
+                    request_id: activation_request_id(),
+                    migration: None
+                })
+            )
+            .await
+            .is_err()
+        );
+        let _ = activate(
+            State(state.clone()),
+            Json(Activate {
+                code: encoded,
+                server_url: String::new(),
+                request_id: activation_request_id(),
+                migration: None,
+            }),
+        )
+        .await
+        .unwrap();
+        third_server.abort();
+
+        sqlx::query("UPDATE client_license SET certificate=NULL,authority_url=NULL,last_seen_at=0,discovery_url=NULL,route_revision=0,route_certificate=NULL WHERE id=1").execute(&pool).await.unwrap();
         server.abort();
         pool.close().await;
     }

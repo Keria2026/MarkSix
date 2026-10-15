@@ -8,7 +8,7 @@
 1. 完整解压 ZIP 到固定目录，例如 `C:\MarkSix`，不要在压缩包中运行。
 2. 首次使用建议运行包内微软签名的 `vc_redist.x64.exe` 安装 VC++ x64 运行库（MySQL 所需；可能提示管理员授权）。已安装对应运行库可以跳过。
 3. 双击 `Install.cmd`，设置并再次确认管理员密码（至少 12 个字符）。默认账号 `admin`。
-4. 等待数据库初始化和页面自动打开，登录后填写你自配的授权服务 HTTPS 地址和一次性授权码。首次使用／到期续期均需授权；正常使用每 60 秒联网核验。详情见包内 LICENSING.md。之后双击 `Start.cmd` 即可使用。
+4. 等待数据库初始化和页面自动打开，登录后粘贴一次性激活码（自动携带授权服务地址）。首次使用／到期续期均需授权；正常使用每 60 秒联网核验。详情见包内 LICENSING.md。之后双击 `Start.cmd` 即可使用。
 
 命令行自动化可设置 `MARKSIX_NO_PAUSE=1` 关闭包装器暂停；失败会保留非零退出码。
 
@@ -28,7 +28,7 @@
 
 ## 中文用户名和中文路径
 
-v0.3 保留 `%LOCALAPPDATA%\MarkSix` 原始数据位置，为 MySQL 自动创建纯 ASCII 路径入口：`%ProgramData%\MarkSix\<当前用户 SID>\<路径标识>\data` 和 `runtime`。它们是 NTFS 目录联接，指向原数据和程序依赖，不是新的数据库副本。
+v0.4 保留 `%LOCALAPPDATA%\MarkSix` 原始数据位置，为 MySQL 自动创建纯 ASCII 路径入口：`%ProgramData%\MarkSix\<当前用户 SID>\<路径标识>\data` 和 `runtime`。它们是 NTFS 目录联接，指向原数据和程序依赖，不是新的数据库副本。
 
 MySQL 的配置、初始化脚本、日志和备份参数均使用该入口；PowerShell 配置读取显式采用 UTF-8。支持中文 Windows 用户名、中文安装路径及带空格路径，无需重命名 Windows 用户。
 

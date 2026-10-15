@@ -85,6 +85,7 @@ pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf
         .route("/session", get(session))
         .route("/license", get(crate::license::status))
         .route("/license/activate", post(crate::license::activate))
+        .route("/license/migrate", post(crate::license::migrate))
         .route("/logout", post(logout))
         .route("/bootstrap", get(bootstrap))
         .route("/periods", get(periods))
@@ -178,7 +179,7 @@ async fn authenticate(State(state): State<AppState>, req: Request, next: Next) -
         Ok(true) => {
             if !matches!(
                 req.uri().path(),
-                "/session" | "/logout" | "/license" | "/license/activate"
+                "/session" | "/logout" | "/license" | "/license/activate" | "/license/migrate"
             ) && let Err(e) = crate::license::require(&state).await
             {
                 return e.into_response();

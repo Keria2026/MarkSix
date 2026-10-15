@@ -280,14 +280,19 @@ test("activation and expiry keep business screens inaccessible until renewed", a
         server_url: "https://license.example.com",
         binding: "a".repeat(64),
         message: "请激活此设备",
+        expires_at: 1800000000,
+        remaining_seconds: 120,
       },
     }),
   );
   await page.route("**/api/license/activate", async (route) => {
-    expect(route.request().postDataJSON()).toEqual({
+    expect(route.request().postDataJSON()).toMatchObject({
       server_url: "https://license.example.com",
-      code: "b".repeat(48),
+      code: "MSX1.test-code.signature",
     });
+    expect(route.request().postDataJSON().request_id).toMatch(
+      /^[0-9a-f-]{36}$/,
+    );
     active = true;
     await route.fulfill({ json: { active: true } });
   });
@@ -297,21 +302,52 @@ test("activation and expiry keep business screens inaccessible until renewed", a
   await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(page.getByRole("heading", { name: "激活工作台" })).toBeVisible();
   await expect(page.getByRole("navigation")).toHaveCount(0);
-  await expect(page.getByLabel("授权服务地址")).toHaveValue(
-    "https://license.example.com",
-  );
+  await expect(page.getByLabel("旧版授权服务地址")).toBeHidden();
   const accessibility = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
     .analyze();
   expect(accessibility.violations.map((v) => v.id)).toEqual([]);
-  await page.getByLabel("一次性授权码").fill("b".repeat(48));
+  await page.getByLabel("一次性授权码").fill("MSX1.test-code.signature");
   await page.getByRole("button", { name: "激活并进入" }).click();
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "主要导航" })
+    .getByRole("button", { name: "玩法与配置" })
+    .click();
+  await expect(page.locator(".license-countdown")).toContainText("0 天");
+  await page.evaluate(() => {
+    Date.now = () => -2208988800000;
+  });
+  await expect(page.locator(".license-countdown")).toContainText("0 天 00:01:");
   active = false;
   await page.getByRole("button", { name: "刷新数据", exact: true }).click();
   await expect(page.getByRole("heading", { name: "激活工作台" })).toBeVisible();
+  await page.route("**/api/license/migrate", async (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      migration: { payload: "signed-fixture", signature: "a".repeat(128) },
+    });
+    active = true;
+    await route.fulfill({ json: { active: true } });
+  });
+  await page.getByText("旧码与服务迁移", { exact: true }).click();
+  await page
+    .getByLabel("签名迁移文件")
+    .setInputFiles({
+      name: "route.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(
+        JSON.stringify({
+          payload: "signed-fixture",
+          signature: "a".repeat(128),
+        }),
+      ),
+    });
+  await page.getByRole("button", { name: "更新服务地址并重新核验" }).click();
+  await expect(
+    page.getByRole("heading", { name: "玩法与配置", exact: true }),
+  ).toBeVisible();
 });
 
 test("narrow mobile navigation retains readable labels and touch targets", async ({
