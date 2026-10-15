@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, dev]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -46,6 +46,7 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+          cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
@@ -128,17 +129,7 @@ jobs:
           docker compose up -d --no-build --wait --wait-timeout 180
           curl -fsS http://127.0.0.1:8088/api/health
           curl -fsS http://127.0.0.1:8088/ >/dev/null
-      - name: Export tested images
-        env:
-          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
-          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
-        run: docker save "$BACKEND_IMAGE" "$FRONTEND_IMAGE" | gzip > marksix-images.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: marksix-images
-          path: marksix-images.tar.gz
-          retention-days: 7
-      - name: Package Windows Docker Desktop deployment
+      - name: Package Ubuntu deployment with all three tested images
         env:
           BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
@@ -146,25 +137,31 @@ jobs:
           DB_ROOT_PASSWORD: disposable-image-root
           ADMIN_PASSWORD: disposable-image-admin
         run: |
-          python3 scripts/package_windows.py --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
-          docker compose -f windows-package/compose.yaml config --quiet
-          docker load --input windows-package/images.tar.gz
-          docker compose -f windows-package/compose.yaml up -d --no-build --pull never --wait --wait-timeout 180
+          python3 scripts/package_windows.py --target ubuntu --output ubuntu-package --version "$GITHUB_SHA" --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
+          bash -n ubuntu-package/install.sh ubuntu-package/start.sh ubuntu-package/stop.sh ubuntu-package/scripts/backup.sh
+          docker compose -f ubuntu-package/compose.yaml config --quiet
+          python3 ubuntu-package/verify.py
+          docker load --input ubuntu-package/images.tar.gz
+          docker compose -f ubuntu-package/compose.yaml up -d --no-build --pull never --wait --wait-timeout 180
           curl -fsS http://127.0.0.1:8088/api/health
-        # The package contains no .env or credentials.
+          # Check the shipped lifecycle scripts with the existing disposable credentials.
+          bash ubuntu-package/stop.sh
+          bash ubuntu-package/start.sh
+          bash ubuntu-package/scripts/backup.sh
+          rm -rf ubuntu-package/backups
       - uses: actions/upload-artifact@v4
-        id: windows-package
+        id: ubuntu-package
         with:
-          name: MarkSix-Windows-x64
-          path: windows-package/
+          name: MarkSix-Ubuntu-x64
+          path: ubuntu-package/
           compression-level: 0
-          retention-days: 14
+          retention-days: 30
           if-no-files-found: error
-      - name: Windows download link
+      - name: Ubuntu download link
         env:
-          PACKAGE_URL: ${{ steps.windows-package.outputs.artifact-url }}
+          PACKAGE_URL: ${{ steps.ubuntu-package.outputs.artifact-url }}
         run: |
-          printf 'Windows x64 Docker Desktop installer: [Download package](%s)\nExtract the complete ZIP and run Install.cmd.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Ubuntu x64 deployment: [Download ZIP](%s). Extract all files and run bash install.sh.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Publish tested images
         if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:

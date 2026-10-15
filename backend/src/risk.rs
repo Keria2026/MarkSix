@@ -18,6 +18,10 @@ pub struct RiskResult {
     pub nodes: u64,
     pub elapsed_ms: u64,
     pub strategy: String,
+    #[serde(default)]
+    pub min_net: Option<i64>,
+    #[serde(default)]
+    pub max_net: Option<i64>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RiskError {
@@ -33,9 +37,12 @@ struct Term {
     kind: Kind,
     scope: Scope,
     condition: Condition,
+    minimum_hits: u8,
     mask: u64,
     pay: i64,
     event_numbers: u64,
+    special_gate: u64,
+    void_regular: bool,
 }
 struct Search<'a> {
     terms: Vec<Term>,
@@ -45,22 +52,22 @@ struct Search<'a> {
     start: Instant,
     result: RiskResult,
     groups: Vec<Vec<u8>>,
-    suffix: Vec<[u64; 5]>,
+    suffix: Vec<[u64; 6]>,
     suffix_count: Vec<usize>,
-    feature_numbers: [[u64; 49]; 5],
+    feature_numbers: [[u64; 49]; 6],
     special: u8,
-    special_masks: [u64; 5],
+    special_masks: [u64; 6],
     fixed: i64,
 }
-fn merge(a: [u64; 5], b: [u64; 5]) -> [u64; 5] {
+fn merge(a: [u64; 6], b: [u64; 6]) -> [u64; 6] {
     std::array::from_fn(|i| a[i] | b[i])
 }
 fn draw_payout(atoms: &[Atom], numbers: [u8; 7], mapping: &Mapping) -> i64 {
     let draw = Draw::predicted(numbers, mapping);
-    atoms
+    settle(atoms, &draw)
         .iter()
-        .filter(|a| wins(a, &draw))
-        .map(|a| a.payout)
+        .zip(atoms)
+        .map(|(r, a)| (r.payout + r.rebate - a.rebate) * i64::from(a.position))
         .sum()
 }
 fn update(result: &mut RiskResult, pay: i64, draw: [u8; 7]) {
@@ -72,6 +79,38 @@ fn update(result: &mut RiskResult, pay: i64, draw: [u8; 7]) {
         result.max_payout = pay;
         result.worst_draw = draw;
     }
+}
+
+fn finish(mut result: RiskResult, atoms: &[Atom]) -> Result<RiskResult, RiskError> {
+    let base = checked_sum(
+        atoms
+            .iter()
+            .map(|a| (a.stake - a.rebate) * i64::from(a.position)),
+    )
+    .map_err(|_| RiskError::Invalid)?;
+    result.min_net = Some(checked_sum([base, -result.max_payout]).map_err(|_| RiskError::Invalid)?);
+    result.max_net = Some(checked_sum([base, -result.min_payout]).map_err(|_| RiskError::Invalid)?);
+    if result.min_payout.abs() > MONEY_LIMIT || result.max_payout.abs() > MONEY_LIMIT {
+        return Err(RiskError::Invalid);
+    }
+    Ok(result)
+}
+fn special_payout(atoms: &[Atom], n: u8, mapping: &Mapping) -> i64 {
+    let masks = mapping.features(n);
+    atoms
+        .iter()
+        .filter(|a| a.scope == Scope::Special)
+        .map(|a| {
+            let payout = if a.void_on_49 && n == 49 {
+                a.stake - a.rebate
+            } else if matches_minimum(a.condition, a.mask, masks[a.kind.index()], a.minimum_hits) {
+                a.payout
+            } else {
+                0
+            };
+            payout * i64::from(a.position)
+        })
+        .sum()
 }
 
 pub fn solve(
@@ -98,7 +137,8 @@ fn solve_universe(
     let start = Instant::now();
     if mapping.validate().is_err()
         || universe.len() < 7
-        || checked_sum(atoms.iter().map(|a| a.payout)).is_err()
+        || checked_sum(atoms.iter().map(|a| a.payout.max(a.stake))).is_err()
+        || atoms.iter().any(|a| !matches!(a.position, -1 | 1))
     {
         return Err(RiskError::Invalid);
     }
@@ -110,28 +150,31 @@ fn solve_universe(
     }
     let mut result = RiskResult {
         min_payout: i64::MAX,
-        max_payout: -1,
+        max_payout: i64::MIN,
         best_draw: [0; 7],
         worst_draw: [0; 7],
         nodes: 0,
         elapsed_ms: 0,
         strategy: "branch_and_bound".into(),
+        min_net: None,
+        max_net: None,
     };
     // Linear number bets and arbitrary special-only bets have a direct exact solution.
-    if atoms
-        .iter()
-        .all(|a| a.scope == Scope::Special || (a.kind == Kind::Number && a.mask.count_ones() == 1))
-    {
+    if atoms.iter().all(|a| {
+        !matches!(a.condition, Condition::HardPair | Condition::SoftPair)
+            && (a.scope == Scope::Special || (a.kind == Kind::Number && a.mask.count_ones() == 1))
+    }) {
         let mut regular = [0_i64; 50];
         let mut all = [0_i64; 50];
         let mut constant = 0;
         for a in atoms.iter().filter(|a| a.scope != Scope::Special) {
             let n = a.mask.trailing_zeros() as usize + 1;
+            let pay = a.payout * i64::from(a.position);
             let coeff = if a.condition == Condition::None {
-                constant += a.payout;
-                -a.payout
+                constant += pay;
+                -pay
             } else {
-                a.payout
+                pay
             };
             regular[n] += coeff;
             if a.scope == Scope::All {
@@ -147,15 +190,7 @@ fn solve_universe(
             }
             let mut rest: Vec<u8> = universe.iter().copied().filter(|n| *n != s).collect();
             rest.sort_by_key(|n| regular[*n as usize]);
-            let mask = mapping.features(s);
-            let special: i64 = atoms
-                .iter()
-                .filter(|a| {
-                    a.scope == Scope::Special
-                        && condition_matches(a.condition, a.mask, mask[a.kind.index()])
-                })
-                .map(|a| a.payout)
-                .sum();
+            let special = special_payout(atoms, s, mapping);
             for ns in [&rest[..6], &rest[rest.len() - 6..]] {
                 let mut draw = [0; 7];
                 draw[..6].copy_from_slice(ns);
@@ -171,42 +206,91 @@ fn solve_universe(
         result.nodes = universe.len() as u64;
         result.elapsed_ms = start.elapsed().as_millis() as u64;
         result.strategy = "linear".into();
-        return Ok(result);
+        return finish(result, atoms);
     }
     // Seed valid witnesses only to tighten bounds. Proof still requires the full search.
     for shift in 0..universe.len() {
         let numbers = std::array::from_fn(|i| universe[(i + shift) % universe.len()]);
         update(&mut result, draw_payout(atoms, numbers, mapping), numbers);
     }
-    let mut aggregated = HashMap::<(Kind, Scope, Condition, u64), i64>::new();
+    let all_numbers = (1_u64 << 49) - 1;
+    let mut aggregated = HashMap::<(Kind, Scope, Condition, u64, u64, bool, u8), i64>::new();
     for a in atoms.iter().filter(|a| a.scope != Scope::Special) {
-        *aggregated
-            .entry((a.kind, a.scope, a.condition, a.mask))
-            .or_default() += a.payout;
+        let pay = a.payout * i64::from(a.position);
+        if matches!(a.condition, Condition::HardPair | Condition::SoftPair) {
+            if a.options.len() != 2 {
+                return Err(RiskError::Invalid);
+            }
+            let x = 1_u64 << (a.options[0] - 1);
+            let y = 1_u64 << (a.options[1] - 1);
+            *aggregated
+                .entry((Kind::Number, Scope::Regular, Condition::All, y, x, false, 1))
+                .or_default() += pay;
+            if a.condition == Condition::SoftPair {
+                *aggregated
+                    .entry((Kind::Number, Scope::Regular, Condition::All, x, y, false, 1))
+                    .or_default() += pay;
+            }
+        } else {
+            let gate = if a.void_on_49 && a.scope == Scope::All {
+                all_numbers & !(1 << 48)
+            } else {
+                all_numbers
+            };
+            *aggregated
+                .entry((
+                    a.kind,
+                    a.scope,
+                    a.condition,
+                    a.mask,
+                    gate,
+                    a.void_on_49,
+                    a.minimum_hits,
+                ))
+                .or_default() += pay;
+            if a.void_on_49 {
+                *aggregated
+                    .entry((
+                        Kind::Number,
+                        a.scope,
+                        Condition::Any,
+                        1 << 48,
+                        all_numbers,
+                        false,
+                        1,
+                    ))
+                    .or_default() += (a.stake - a.rebate) * i64::from(a.position);
+            }
+        }
     }
-    let mut feature_numbers = [[0; 49]; 5];
+    let mut feature_numbers = [[0; 49]; 6];
     for &n in universe {
         let f = mapping.features(n);
-        for k in 0..5 {
+        for k in 0..6 {
             feature_numbers[k][f[k].trailing_zeros() as usize] |= 1 << (n - 1);
         }
     }
     let mut terms: Vec<Term> = aggregated
         .into_iter()
-        .map(|((kind, scope, condition, mask), pay)| {
-            let event_numbers = universe
-                .iter()
-                .filter(|n| mapping.features(**n)[kind.index()] & mask != 0)
-                .fold(0, |m, n| m | 1 << (*n - 1));
-            Term {
-                kind,
-                scope,
-                condition,
-                mask,
-                pay,
-                event_numbers,
-            }
-        })
+        .map(
+            |((kind, scope, condition, mask, special_gate, void_regular, minimum_hits), pay)| {
+                let event_numbers = universe
+                    .iter()
+                    .filter(|n| mapping.features(**n)[kind.index()] & mask != 0)
+                    .fold(0, |m, n| m | 1 << (*n - 1));
+                Term {
+                    kind,
+                    scope,
+                    condition,
+                    minimum_hits,
+                    mask,
+                    pay,
+                    event_numbers,
+                    special_gate,
+                    void_regular,
+                }
+            },
+        )
         .collect();
     terms.sort_by_key(|a| (a.kind.index(), a.scope as u8, a.condition as u8, a.mask));
     let mut classes: Vec<(Vec<u64>, Vec<u8>)> = vec![];
@@ -221,6 +305,9 @@ fn solve_universe(
         // Number predicates depend on counts within identical membership classes.
         for t in terms.iter().filter(|t| t.kind == Kind::Number) {
             signature.push(u64::from(features[0] & t.mask != 0));
+        }
+        if terms.iter().any(|t| t.void_regular) {
+            signature.push(u64::from(n == 49));
         }
         if let Some((_, numbers)) = classes.iter_mut().find(|(sig, _)| *sig == signature) {
             numbers.push(n);
@@ -240,26 +327,24 @@ fn solve_universe(
         suffix_count: vec![],
         feature_numbers,
         special: 0,
-        special_masks: [0; 5],
+        special_masks: [0; 6],
         fixed: 0,
     };
     let mut special_classes = std::collections::HashSet::new();
     for &special in universe {
         search.check()?;
         let masks = mapping.features(special);
-        let fixed: i64 = atoms
+        let fixed = special_payout(atoms, special, mapping);
+        let gates: Vec<bool> = search
+            .terms
             .iter()
-            .filter(|a| {
-                a.scope == Scope::Special
-                    && condition_matches(a.condition, a.mask, masks[a.kind.index()])
-            })
-            .map(|a| a.payout)
-            .sum();
+            .map(|t| t.special_gate & (1 << (special - 1)) != 0)
+            .collect();
         let group_id = classes
             .iter()
             .position(|(_, ns)| ns.contains(&special))
             .unwrap();
-        if !special_classes.insert((group_id, fixed)) {
+        if !special_classes.insert((group_id, fixed, gates)) {
             continue;
         }
         search.special = special;
@@ -276,7 +361,7 @@ fn solve_universe(
             .filter(|ns| !ns.is_empty())
             .collect();
         let count = search.groups.len();
-        search.suffix = vec![[0; 5]; count + 1];
+        search.suffix = vec![[0; 6]; count + 1];
         search.suffix_count = vec![0; count + 1];
         for i in (0..count).rev() {
             search.suffix[i] = search.suffix[i + 1];
@@ -285,11 +370,11 @@ fn solve_universe(
             }
             search.suffix_count[i] = search.suffix_count[i + 1] + search.groups[i].len();
         }
-        search.visit(0, 6, [0; 5], &mut Vec::with_capacity(6))?;
+        search.visit(0, 6, [0; 6], &mut Vec::with_capacity(6))?;
     }
     search.check()?;
     search.result.elapsed_ms = search.start.elapsed().as_millis() as u64;
-    Ok(search.result)
+    finish(search.result, atoms)
 }
 impl Search<'_> {
     fn check(&self) -> Result<(), RiskError> {
@@ -301,9 +386,12 @@ impl Search<'_> {
             Ok(())
         }
     }
-    fn bounds(&self, masks: [u64; 5], future: [u64; 5], remaining: usize) -> (i64, i64) {
+    fn bounds(&self, masks: [u64; 6], future: [u64; 6], remaining: usize) -> (i64, i64) {
         let (mut low, mut high) = (self.fixed, self.fixed);
         for t in &self.terms {
+            if t.special_gate & (1 << (self.special - 1)) == 0 {
+                continue;
+            }
             let selected = if t.scope == Scope::All {
                 masks[t.kind.index()] | self.special_masks[t.kind.index()]
             } else {
@@ -312,9 +400,20 @@ impl Search<'_> {
             let hit = selected & t.mask;
             let possible = future[t.kind.index()] & t.mask;
             let forced_hit = (future[0] & !t.event_numbers).count_ones() < remaining as u32;
-            let (certain, possible_win) = match t.condition {
+            let (mut certain, mut possible_win) = match t.condition {
+                Condition::AtLeast => {
+                    let have = hit.count_ones();
+                    let can_add = (possible & !hit).count_ones().min(remaining as u32);
+                    (
+                        have >= u32::from(t.minimum_hits),
+                        have + can_add >= u32::from(t.minimum_hits),
+                    )
+                }
                 Condition::Any => (hit != 0 || forced_hit, hit != 0 || possible != 0),
                 Condition::None => (hit == 0 && possible == 0, hit == 0 && !forced_hit),
+                Condition::HardPair | Condition::SoftPair => {
+                    unreachable!("pair terms are expanded")
+                }
                 Condition::All => {
                     let missing = t.mask & !hit;
                     let can = missing & !future[t.kind.index()] == 0
@@ -330,11 +429,28 @@ impl Search<'_> {
                     (missing == 0 || must, missing == 0 || can)
                 }
             };
-            if certain {
-                low += t.pay;
+            if t.void_regular {
+                if masks[0] & (1 << 48) != 0 {
+                    certain = false;
+                    possible_win = false;
+                } else if remaining > 0 && future[0] & (1 << 48) != 0 {
+                    certain = false;
+                }
             }
-            if possible_win {
-                high += t.pay;
+            if t.pay >= 0 {
+                if certain {
+                    low += t.pay;
+                }
+                if possible_win {
+                    high += t.pay;
+                }
+            } else {
+                if possible_win {
+                    low += t.pay;
+                }
+                if certain {
+                    high += t.pay;
+                }
             }
         }
         (low, high)
@@ -343,7 +459,7 @@ impl Search<'_> {
         &mut self,
         index: usize,
         remaining: usize,
-        masks: [u64; 5],
+        masks: [u64; 6],
         picked: &mut Vec<u8>,
     ) -> Result<(), RiskError> {
         self.result.nodes += 1;
@@ -356,7 +472,7 @@ impl Search<'_> {
         let (low, high) = self.bounds(
             masks,
             if remaining == 0 {
-                [0; 5]
+                [0; 6]
             } else {
                 self.suffix[index]
             },
@@ -404,10 +520,14 @@ mod tests {
             kind,
             scope,
             condition,
+            minimum_hits: 1,
             stake: 100,
             payout,
             rebate: 0,
             odds: "1".into(),
+            rebate_percent: "0".into(),
+            void_on_49: false,
+            position: 1,
         }
     }
     #[test]
@@ -479,6 +599,96 @@ mod tests {
         }
     }
     #[test]
+    fn new_rules_and_outgoing_positions_match_exhaustive_settlement() {
+        let m = Mapping::default();
+        let universe = vec![1, 2, 6, 13, 24, 25, 37, 45, 48, 49];
+        for scenario in 0..9 {
+            let mut atoms = Vec::new();
+            for (i, scope) in [Scope::Regular, Scope::Special, Scope::All]
+                .into_iter()
+                .enumerate()
+            {
+                for kind in [Kind::Parity, Kind::Size] {
+                    let mut a = atom(
+                        kind,
+                        scope,
+                        [Condition::All, Condition::None, Condition::Any][scenario % 3],
+                        1,
+                        193 + i as i64 * 37,
+                    );
+                    a.void_on_49 = true;
+                    a.rebate = 3;
+                    a.position = if (scenario + i) % 2 == 0 { -1 } else { 1 };
+                    atoms.push(a);
+                }
+            }
+            for condition in [Condition::HardPair, Condition::SoftPair] {
+                let mut a = atom(
+                    Kind::Number,
+                    Scope::All,
+                    condition,
+                    (1 << 5) | (1 << 44),
+                    234,
+                );
+                a.options = vec![6, 45];
+                a.position = if scenario % 2 == 0 { -1 } else { 1 };
+                atoms.push(a);
+            }
+            let mut a = atom(
+                Kind::Number,
+                Scope::Regular,
+                Condition::AtLeast,
+                (1 << 0) | (1 << 12) | (1 << 48),
+                657,
+            );
+            a.minimum_hits = 2;
+            atoms.push(a);
+            let result = solve_universe(
+                &atoms,
+                &m,
+                Duration::from_secs(5),
+                &AtomicBool::new(false),
+                &universe,
+            )
+            .unwrap();
+            let (mut min, mut max) = (i64::MAX, i64::MIN);
+            for &special in &universe {
+                let rest = universe
+                    .iter()
+                    .copied()
+                    .filter(|n| *n != special)
+                    .collect::<Vec<_>>();
+                for regular in combinations(&rest, 6) {
+                    let mut draw = [0; 7];
+                    draw[..6].copy_from_slice(&regular);
+                    draw[6] = special;
+                    let net = settle(&atoms, &Draw::predicted(draw, &m))
+                        .iter()
+                        .zip(&atoms)
+                        .map(|(r, a)| r.net * i64::from(a.position))
+                        .sum::<i64>();
+                    min = min.min(net);
+                    max = max.max(net);
+                }
+            }
+            assert_eq!(
+                (result.min_net, result.max_net),
+                (Some(min), Some(max)),
+                "scenario {scenario}"
+            );
+            for (draw, expected) in [(result.best_draw, max), (result.worst_draw, min)] {
+                assert_eq!(
+                    settle(&atoms, &Draw::predicted(draw, &m))
+                        .iter()
+                        .zip(&atoms)
+                        .map(|(r, a)| r.net * i64::from(a.position))
+                        .sum::<i64>(),
+                    expected
+                );
+            }
+        }
+    }
+    #[test]
     fn timeouts_and_cancellation_never_return_an_estimate() {
         let m = Mapping::default();
         assert_eq!(
@@ -492,8 +702,10 @@ mod tests {
     }
     #[test]
     fn five_zodiac_extrema() {
+        let mut rule = defaults()[2].clone();
+        rule.compound_enabled = true;
         let p = plan(
-            &defaults()[2],
+            &rule,
             &BetInput {
                 period: "2026287".into(),
                 play_id: 1,
@@ -502,6 +714,7 @@ mod tests {
                 compound: true,
                 amount: "100".into(),
                 request_id: "test".into(),
+                bettor: "测试投注人".into(),
             },
             &Mapping::default(),
         )

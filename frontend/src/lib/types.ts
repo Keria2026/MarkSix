@@ -1,6 +1,12 @@
-export type Kind = "number" | "zodiac" | "wave" | "tail" | "parity";
+export type Kind = "number" | "zodiac" | "wave" | "tail" | "parity" | "size";
 export type Scope = "regular" | "special" | "all";
-export type Condition = "all" | "none" | "any";
+export type Condition =
+  | "all"
+  | "none"
+  | "any"
+  | "hard_pair"
+  | "soft_pair"
+  | "at_least";
 export type Relation = "eq" | "le" | "ge";
 export interface Rule {
   name: string;
@@ -10,9 +16,12 @@ export interface Rule {
   relation: Relation;
   quantity: number;
   combination_size: number;
+  compound_enabled: boolean;
+  minimum_hits: number;
   odds: string;
   rebate_percent: string;
   special_odds: string | null;
+  special_rebate_percent: string | null;
 }
 export interface Play {
   id: number;
@@ -33,6 +42,8 @@ export interface Draw {
 }
 export interface Risk {
   min_payout: number;
+  min_net: number | null;
+  max_net: number | null;
   max_payout: number;
   best_draw: number[];
   worst_draw: number[];
@@ -50,12 +61,17 @@ export interface Totals {
   winning_stake: number;
   losing_stake: number;
   gross: number | null;
+  refunded: number;
+  flyout_stake: number;
+  flyout_net: number | null;
+  retained_net: number | null;
   net: number | null;
 }
 export interface Period {
   id: string;
   business_date: string;
   close_time: string;
+  open_time: string;
   mapping: Mapping;
   state: string;
   phase: string;
@@ -79,6 +95,10 @@ export interface Bootstrap {
   zodiacs: string[];
 }
 export interface Bet {
+  bettor: string;
+  revision: number;
+  void_stake: number;
+  void_units: number;
   id: string;
   period_id: string;
   play_id: number;
@@ -105,6 +125,7 @@ export interface Atom {
   odds: string;
 }
 export interface AtomResult {
+  voided: boolean;
   won: boolean;
   payout: number;
   rebate: number;
@@ -114,6 +135,12 @@ export interface Detail {
   record: Bet;
   atoms: Atom[];
   results: AtomResult[] | null;
+  layoffs: Layoff[];
+  events: {
+    event: string;
+    detail: Record<string, unknown>;
+    created_at: string;
+  }[];
 }
 export interface Page<T> {
   items: T[];
@@ -130,7 +157,7 @@ export interface Quote {
   result: Risk;
 }
 export interface Settings {
-  closing: { effective_date: string; close_time: string }[];
+  closing: { effective_date: string; open_time: string; close_time: string }[];
   mappings: { effective_date: string; mapping: Mapping }[];
   tomorrow: string;
 }
@@ -174,6 +201,7 @@ export const kinds: Record<Kind, string> = {
   wave: "波色",
   tail: "尾数",
   parity: "单双",
+  size: "大小",
 };
 export const scopes: Record<Scope, string> = {
   regular: "平码 · 前 6 个",
@@ -184,6 +212,9 @@ export const conditions: Record<Condition, string> = {
   all: "全部命中",
   none: "全部不命中",
   any: "至少命中一个",
+  at_least: "至少命中 N 个",
+  hard_pair: "特碰 · 位置固定",
+  soft_pair: "软碰 · 位置可互换",
 };
 export const relations: Record<Relation, string> = {
   eq: "等于",
@@ -243,10 +274,19 @@ export function label(kind: Kind, value: number): string {
         ? ["红波", "蓝波", "绿波"][value]
         : kind === "tail"
           ? `${value}尾`
-          : ["双", "单"][value];
+          : kind === "size"
+            ? ["小", "大"][value]
+            : ["双", "单"][value];
 }
 export function options(kind: Kind): number[] {
-  const size = { number: 49, zodiac: 12, wave: 3, tail: 10, parity: 2 }[kind];
+  const size = {
+    number: 49,
+    zodiac: 12,
+    wave: 3,
+    tail: 10,
+    parity: 2,
+    size: 2,
+  }[kind];
   return Array.from({ length: size }, (_, i) =>
     kind === "number" ? i + 1 : i,
   );
@@ -268,4 +308,73 @@ export function time(value: string | null): string {
     minute: "2-digit",
     hour12: false,
   }).format(new Date(`${value}Z`));
+}
+
+export interface LedgerTotals {
+  records: number;
+  units: number;
+  stake: number;
+  rebate: number;
+  payout: number;
+  refunded: number;
+  net: number | null;
+}
+export interface Layoff {
+  id: string;
+  bet_id: string;
+  period_id: string;
+  receiver: string;
+  amount: number;
+  unit_count: number;
+  stake: number;
+  rebate: number;
+  status: string;
+  payout: number | null;
+  void_stake: number;
+  void_units: number;
+  created_at: string;
+}
+export interface Statistics {
+  period: string;
+  settled: boolean;
+  incoming: LedgerTotals;
+  outgoing: LedgerTotals;
+  retained: {
+    stake: number;
+    rebate: number;
+    payout: number;
+    net: number | null;
+  };
+  bettors: { name: string; totals: LedgerTotals }[];
+  receivers: { name: string; totals: LedgerTotals }[];
+  layoffs: Layoff[];
+  layoffs_total: number;
+  layoffs_page: number;
+}
+export function basicCount(
+  rule: Rule,
+  selections: number[],
+  compound: boolean,
+): number {
+  const n = selections.length;
+  if (!n || (compound && !rule.compound_enabled)) return 0;
+  const accepts = (v: number) =>
+    rule.relation === "eq"
+      ? v === rule.quantity
+      : rule.relation === "le"
+        ? v <= rule.quantity
+        : v >= rule.quantity;
+  if (!compound && rule.quantity !== 1 && !accepts(n)) return 0;
+  if (rule.condition === "hard_pair" && n !== 2) return 0;
+  const k = compound ? rule.combination_size : Math.min(n, rule.quantity);
+  if (!accepts(k) || (rule.condition === "at_least" && k < rule.minimum_hits))
+    return 0;
+  return count(n, k);
+}
+export function annualMapping(year: number): Mapping {
+  const natal = (((6 + year - 2026) % 12) + 12) % 12;
+  return {
+    natal,
+    zodiac: Array.from({ length: 49 }, (_, i) => (natal - (i % 12) + 12) % 12),
+  };
 }

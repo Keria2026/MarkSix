@@ -1,7 +1,7 @@
 name: Windows Native
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, dev]
   pull_request:
   workflow_dispatch:
 permissions:

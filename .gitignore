@@ -14,3 +14,7 @@ backups/
 /deploy/windows/data/
 /windows-native-package/
 /windows native package/
+
+/ubuntu-package/
+
+__pycache__/

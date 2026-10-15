@@ -36,6 +36,7 @@
     Info,
     X,
   } from "lucide-svelte";
+  import StatisticsPanel from "./components/Statistics.svelte";
   import Balls from "./components/Balls.svelte";
   import Modal from "./components/Modal.svelte";
   import {
@@ -46,7 +47,8 @@
     time,
     label,
     options,
-    count,
+    basicCount,
+    annualMapping,
     wave,
     zodiacs,
     kinds,
@@ -67,9 +69,17 @@
     Settings,
     Mapping,
     Kind,
+    Statistics,
+    Layoff,
   } from "./lib/types";
 
-  type Tab = "overview" | "bet" | "history" | "settings";
+  type Tab =
+    | "overview"
+    | "bet"
+    | "history"
+    | "settings"
+    | "statistics"
+    | "official";
   const amountPattern = /^\d+$/;
   let tab = $state<Tab>("overview");
   let boot = $state<Bootstrap | null>(null);
@@ -90,6 +100,27 @@
     page_size: 25,
   });
   let recordFilter = $state<number | "">("");
+  let bettor = $state("");
+  let bettorFilter = $state("");
+  let minAmount = $state("");
+  let maxAmount = $state("");
+  let report = $state<Statistics | null>(null);
+  let historyCategory = $state<"all" | "bettors" | "receivers">("all");
+  let statisticsCategory = $state<"all" | "bettors" | "receivers">("all");
+  let parties = $state<{ bettors: string[]; receivers: string[] }>({
+    bettors: [],
+    receivers: [],
+  });
+  let mutationTarget = $state<Bet | null>(null);
+  let mutationMode = $state<"amount" | "layoffs">("amount");
+  let mutationAmount = $state("");
+  let receiver = $state("");
+  let mutationError = $state("");
+  let flyCancel = $state<Layoff | null>(null);
+  let pendingMutation: { key: string; id: string } | null = null;
+  let openTime = $state("08:00");
+  let settingsUsername = $state("");
+  let settingsPassword = $state("");
   let selectedPeriod = $state<Period | null>(null);
   let history = $state<Page<Period>>({
       items: [],
@@ -132,36 +163,21 @@
   const nav = [
     { id: "overview" as Tab, label: "本期概览", icon: LayoutDashboard },
     { id: "bet" as Tab, label: "录入投注", icon: Plus },
+    { id: "statistics" as Tab, label: "本期统计", icon: Activity },
     { id: "history" as Tab, label: "历史统计", icon: History },
     { id: "settings" as Tab, label: "玩法与配置", icon: Settings2 },
+    { id: "official" as Tab, label: "官方频道", icon: ArrowUpRight },
   ];
   const selectedCount = $derived(
-    compound
-      ? count(selections.length, currentPlay?.rule.combination_size ?? 1)
-      : selections.length
-        ? 1
-        : 0,
+    currentPlay ? basicCount(currentPlay.rule, selections, compound) : 0,
   );
-  const inputValid = $derived.by(() => {
-    if (
-      !currentPlay ||
-      !selections.length ||
-      !/^\d+$/.test(amount) ||
-      BigInt(amount) < 1n
-    )
-      return false;
-    const r = currentPlay.rule;
-    const n = compound ? r.combination_size : selections.length;
-    return (
-      (r.relation === "eq"
-        ? n === r.quantity
-        : r.relation === "le"
-          ? n <= r.quantity
-          : n >= r.quantity) &&
-      (!compound || selections.length >= n) &&
-      selectedCount <= 1000
-    );
-  });
+  const inputValid = $derived(
+    !!currentPlay &&
+      selectedCount > 0 &&
+      selectedCount <= 1000 &&
+      /^\d+$/.test(amount) &&
+      BigInt(amount) > 0n,
+  );
   const stakePreview = $derived(
     /^\d+$/.test(amount) ? BigInt(amount) * BigInt(selectedCount) * 100n : 0n,
   );
@@ -171,7 +187,11 @@
           period: today.id,
           play_id: currentPlay.id,
           play_version: currentPlay.version,
-          selections: [...selections].sort((a, b) => a - b),
+          selections:
+            currentPlay.rule.condition === "hard_pair"
+              ? [...selections]
+              : [...selections].sort((a, b) => a - b),
+          bettor: bettor.trim(),
           compound,
           amount,
           request_id: "00000000-0000-4000-8000-000000000001",
@@ -189,7 +209,8 @@
     risk && active
       ? Math.max(
           0,
-          active.totals.stake - risk.min_payout - active.totals.rebate,
+          risk.max_net ??
+            active.totals.stake - risk.min_payout - active.totals.rebate,
         )
       : null,
   );
@@ -197,10 +218,9 @@
     risk && active
       ? Math.max(
           0,
-          Number(
-            BigInt(risk.max_payout) +
-              BigInt(active.totals.rebate) -
-              BigInt(active.totals.stake),
+          -(
+            risk.min_net ??
+            active.totals.stake - risk.max_payout - active.totals.rebate
           ),
         )
       : null,
@@ -224,9 +244,12 @@
       relation: "eq",
       quantity: 1,
       combination_size: 1,
+      compound_enabled: false,
+      minimum_hits: 1,
       odds: "43",
       rebate_percent: "2",
       special_odds: null,
+      special_rebate_percent: null,
     };
   }
   function notify(message: string) {
@@ -242,10 +265,26 @@
     }
     return error instanceof Error ? error.message : "操作失败，请重试";
   }
+  let recordsRequest = 0;
+  let statisticsRequest = 0;
   async function loadRecords(page = 1) {
     if (!active) return;
-    const filter = recordFilter ? `&play_id=${recordFilter}` : "";
-    records = await api(`/bets?period=${active.id}&page=${page}${filter}`);
+    const id = active.id;
+    const request = ++recordsRequest;
+    const query = new URLSearchParams();
+    if (recordFilter) query.set("play_id", String(recordFilter));
+    if (bettorFilter)
+      query.set(
+        bettorFilter === "未登记（旧记录）" ? "unassigned" : "bettor",
+        bettorFilter === "未登记（旧记录）" ? "true" : bettorFilter,
+      );
+    if (minAmount) query.set("min_amount", minAmount);
+    if (maxAmount) query.set("max_amount", maxAmount);
+    const filter = `&${query.toString()}`;
+    const next = await api<Page<Bet>>(
+      `/bets?period=${id}&page=${page}${filter}`,
+    );
+    if (request === recordsRequest && active?.id === id) records = next;
   }
   async function refresh(silent = false) {
     if (refreshing) return;
@@ -254,15 +293,42 @@
       const data = await api<Bootstrap>("/bootstrap");
       boot = data;
       serverOffset = new Date(data.today.server_time).getTime() - Date.now();
-      if (selectedPeriod)
-        selectedPeriod = await api(`/periods/${selectedPeriod.id}`);
-      if (tab === "overview" || tab === "bet") await loadRecords(records.page);
+      if (selectedPeriod) {
+        const id = selectedPeriod.id;
+        const updated = await api<Period>(`/periods/${id}`);
+        if (selectedPeriod?.id === id) selectedPeriod = updated;
+      }
+      if (
+        tab === "overview" ||
+        tab === "bet" ||
+        (tab === "history" && selectedPeriod)
+      )
+        await loadRecords(records.page);
+      if (active && tab !== "official")
+        await loadStatistics(
+          report?.period === active.id ? report.layoffs_page : 1,
+        );
+      if (!parties.bettors.length && !parties.receivers.length)
+        parties = await api("/parties");
       globalError = "";
     } catch (e) {
       globalError = fail(e);
       if (!silent) notify(globalError);
     } finally {
       refreshing = false;
+    }
+  }
+  async function loadStatistics(page = 1) {
+    if (!active) return;
+    const id = active.id;
+    const request = ++statisticsRequest;
+    try {
+      const next = await api<Statistics>(
+        `/periods/${id}/statistics?page=${page}`,
+      );
+      if (active?.id === id && request === statisticsRequest) report = next;
+    } catch (e) {
+      notify(fail(e));
     }
   }
   async function loadHistory(page = 1) {
@@ -273,6 +339,9 @@
   async function loadSettings() {
     config = await api<Settings>("/settings");
     closeTime = config.closing[0]?.close_time ?? "21:28";
+    openTime = config.closing[0]?.open_time ?? "08:00";
+    settingsUsername = username;
+    settingsPassword = "";
     effectiveDate = config.tomorrow;
     mapping = structuredClone($state.snapshot(today?.mapping ?? mapping));
   }
@@ -280,21 +349,32 @@
     tab = next;
     selectedPeriod = null;
     recordFilter = "";
+    bettorFilter = "";
+    minAmount = "";
+    maxAmount = "";
     globalError = "";
     try {
       if (next === "history") await loadHistory();
       else if (next === "settings") await loadSettings();
-      else await loadRecords();
+      else if (next !== "official") {
+        await loadRecords();
+        if (active) await loadStatistics();
+      }
     } catch (e) {
       globalError = fail(e);
     }
   }
   async function openPeriod(period: Period) {
     selectedPeriod = period;
-    tab = "overview";
+    tab = "history";
+    report = null;
+    bettorFilter = "";
+    minAmount = "";
+    maxAmount = "";
     recordFilter = "";
     try {
       await loadRecords();
+      await loadStatistics();
     } catch (e) {
       globalError = fail(e);
     }
@@ -339,7 +419,7 @@
       : [...selections, value];
   }
   async function submitBet() {
-    if (!inputValid || !quoteKey) return;
+    if (!inputValid || !quoteKey || !bettor.trim()) return;
     busy = true;
     const body = JSON.parse(quoteKey);
     delete body.request_id;
@@ -387,6 +467,87 @@
       busy = false;
     }
   }
+  function openMutation(bet: Bet, mode: "amount" | "layoffs") {
+    mutationTarget = bet;
+    mutationMode = mode;
+    mutationAmount = mode === "amount" ? String(bet.amount / 100) : "";
+    receiver = "";
+    mutationError = "";
+    pendingMutation = null;
+    detail = null;
+  }
+  async function saveMutation(event: SubmitEvent) {
+    event.preventDefault();
+    if (!mutationTarget) return;
+    const payload = {
+      revision: mutationTarget.revision,
+      amount: mutationAmount,
+      receiver: mutationMode === "layoffs" ? receiver.trim() : null,
+    };
+    const key = JSON.stringify({
+      id: mutationTarget.id,
+      mode: mutationMode,
+      payload,
+    });
+    if (!pendingMutation || pendingMutation.key !== key)
+      pendingMutation = { key, id: crypto.randomUUID() };
+    busy = true;
+    mutationError = "";
+    try {
+      const bet = mutationTarget;
+      await api(`/bets/${bet.id}/${mutationMode}`, {
+        method: mutationMode === "amount" ? "PUT" : "POST",
+        body: JSON.stringify({ ...payload, request_id: pendingMutation.id }),
+      });
+      mutationTarget = null;
+      pendingMutation = null;
+      parties = await api("/parties");
+      notify(
+        mutationMode === "amount"
+          ? "金额已更新，修改记录已保存"
+          : "飞出已记录，原受注金额保持不变",
+      );
+      await refresh();
+      await showDetail(bet);
+    } catch (e) {
+      mutationError = fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function cancelFly() {
+    if (!flyCancel) return;
+    busy = true;
+    try {
+      await api(`/layoffs/${flyCancel.id}/cancel`, {
+        method: "POST",
+        body: "{}",
+      });
+      flyCancel = null;
+      detail = null;
+      await refresh();
+      notify("飞出记录已作废，审计记录已保留");
+    } catch (e) {
+      notify(fail(e));
+    } finally {
+      busy = false;
+    }
+  }
+  async function filterBettor(name: string) {
+    bettorFilter = name;
+    await loadRecords();
+  }
+  function changeCondition(value: Rule["condition"]) {
+    rule.condition = value;
+    if (rule.condition === "hard_pair" || rule.condition === "soft_pair") {
+      rule.kind = "number";
+      rule.scope = "all";
+      rule.relation = "eq";
+      rule.quantity = 2;
+      rule.combination_size = 2;
+      rule.compound_enabled = false;
+    }
+  }
   function openEditor(play?: Play) {
     editId = play?.id ?? null;
     editVersion = play?.version ?? 0;
@@ -400,12 +561,18 @@
     rule.quantity = 1;
     rule.combination_size = 1;
     if (value === "wave") rule.scope = "special";
-    if (value !== "zodiac") rule.special_odds = null;
+    if (value === "wave") {
+      rule.special_odds = null;
+      rule.special_rebate_percent = null;
+    }
+    if (["hard_pair", "soft_pair"].includes(rule.condition))
+      rule.condition = "all";
   }
   async function savePlay(event: SubmitEvent) {
     event.preventDefault();
     busy = true;
     editError = "";
+    if (!rule.compound_enabled) rule.combination_size = rule.quantity;
     try {
       await api(editId ? `/plays/${editId}` : "/plays", {
         method: editId ? "PUT" : "POST",
@@ -428,9 +595,15 @@
     try {
       await api("/settings/closing", {
         method: "PUT",
-        body: JSON.stringify({ close_time: closeTime }),
+        body: JSON.stringify({
+          open_time: openTime,
+          close_time: closeTime,
+          username: settingsUsername,
+          password: settingsPassword,
+        }),
       });
       await loadSettings();
+      settingsPassword = "";
       notify("封盘时间已安排，从下一期生效");
     } catch (e) {
       notify(fail(e));
@@ -620,12 +793,38 @@
       <nav aria-label="主要导航">
         {#each nav as item}<button
             class:active={tab === item.id}
+            aria-label={item.label}
             aria-current={tab === item.id ? "page" : undefined}
             onclick={() => navigate(item.id)}
             ><item.icon size={19} strokeWidth={1.7} /><span>{item.label}</span
             >{#if item.id === "bet"}<span class="nav-plus">＋</span
               >{/if}</button
-          >{/each}
+          >
+          {#if item.id === "statistics" && tab === "statistics"}<div
+              class="nav-submenu"
+            >
+              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }] as sub}<button
+                  class:active={statisticsCategory === sub.id}
+                  onclick={() =>
+                    (statisticsCategory = sub.id as
+                      | "all"
+                      | "receivers"
+                      | "bettors")}>{sub.label}</button
+                >{/each}
+            </div>{/if}
+          {#if item.id === "history" && tab === "history" && selectedPeriod}<div
+              class="nav-submenu"
+            >
+              <button class="active" aria-current="page"
+                >第 {selectedPeriod.id} 期</button
+              >
+            </div>{/if}
+          {#if item.id === "official" && tab === "official"}<div
+              class="nav-submenu"
+            >
+              <button class="active" aria-current="page">调码助手</button>
+            </div>{/if}
+        {/each}
       </nav>
       <div class="sidebar-bottom">
         <div class="private-card">
@@ -642,7 +841,7 @@
             onclick={signOut}><LogOut size={17} /></button
           >
         </div>
-        <span class="version">MARKSIX <span>V 0.1</span></span>
+        <span class="version">MARKSIX <span>V 0.2</span></span>
       </div>
     </aside>
     <main class="main-content" id="main">
@@ -676,7 +875,7 @@
           <LoaderCircle class="spin" size={25} />
           <h2>正在加载工作台</h2>
         </div>
-      {:else if tab === "overview" && active}
+      {:else if (tab === "overview" || (tab === "history" && selectedPeriod)) && active}
         <section class="page-heading">
           <div>
             {#if selectedPeriod}<button
@@ -685,9 +884,7 @@
                 ><ArrowLeft size={14} /> 返回历史统计</button
               >{:else}<span class="eyebrow">YOUR DAILY OVERVIEW</span>{/if}
             <h1>
-              {selectedPeriod
-                ? "回看每一笔，了然于心。"
-                : "每一期，都清晰在握。"}
+              {selectedPeriod ? `历史统计 · 第 ${active.id} 期` : "本期概览"}
             </h1>
             <p>
               {active.business_date.replaceAll("-", " / ")}
@@ -751,7 +948,7 @@
           <article class="stat glass">
             <div class="stat-label">
               {active.state === "settled"
-                ? "盘口净盈利"
+                ? "自留净盈亏"
                 : "最大可能净亏损"}<span class="stat-icon coral-tone"
                 ><ArrowDownLeft size={17} /></span
               >
@@ -759,16 +956,16 @@
             <strong
               class="stat-value"
               class:negative={active.state !== "settled" ||
-                (active.totals.net ?? 0) < 0}
+                (active.totals.retained_net ?? 0) < 0}
               class:positive={active.state === "settled" &&
-                (active.totals.net ?? 0) >= 0}
+                (active.totals.retained_net ?? 0) >= 0}
               >{active.state === "settled"
-                ? signed(active.totals.net)
+                ? signed(active.totals.retained_net)
                 : money(lossMax)}</strong
             >
             <div class="stat-foot">
               {active.state === "settled"
-                ? "已扣除中奖返还及反水"
+                ? "原受注净盈亏加飞出净盈亏"
                 : riskFresh
                   ? "最坏合法开奖情形"
                   : "单一期次 · 统一结果"}
@@ -827,7 +1024,7 @@
               <span class="stat-icon purple-tone"><Activity size={18} /></span>
             </div>
             {#if active.state === "settled"}<div class="ledger-row">
-                <span>盘口毛利</span><strong
+                <span>原受注毛利</span><strong
                   >{signed(active.totals.gross)}</strong
                 >
               </div>
@@ -850,17 +1047,19 @@
                 <span
                   >最有利情形<strong class="positive"
                     >{signed(
-                      active.totals.stake -
-                        risk.min_payout -
-                        active.totals.rebate,
+                      risk.max_net ??
+                        active.totals.stake -
+                          risk.min_payout -
+                          active.totals.rebate,
                     )}</strong
                   ></span
                 ><span
                   >最不利情形<strong class="negative"
                     >{signed(
-                      active.totals.stake -
-                        risk.max_payout -
-                        active.totals.rebate,
+                      risk.min_net ??
+                        active.totals.stake -
+                          risk.max_payout -
+                          active.totals.rebate,
                     )}</strong
                   ></span
                 >
@@ -902,12 +1101,38 @@
               </div>{/if}
           </section>
         </div>
+        {#if selectedPeriod}<div
+            class="segmented history-categories"
+            aria-label="历史统计分类"
+          >
+            <button
+              class:active={historyCategory === "all"}
+              onclick={() => (historyCategory = "all")}>全部受注统计</button
+            >
+            <button
+              class:active={historyCategory === "bettors"}
+              onclick={() => (historyCategory = "bettors")}
+              >投注人分类统计</button
+            >
+            <button
+              class:active={historyCategory === "receivers"}
+              onclick={() => (historyCategory = "receivers")}
+              >飞出受注统计</button
+            >
+          </div>{/if}
+        {#if report && report.period === active.id}<StatisticsPanel
+            {report}
+            compact={!selectedPeriod}
+            category={selectedPeriod ? historyCategory : "bettors"}
+            onbettor={filterBettor}
+            onpage={loadStatistics}
+          />{/if}
         {@render recordTable()}
       {:else if tab === "bet"}
         <section class="page-heading">
           <div>
             <span class="eyebrow">MAKE EVERY RECORD COUNT</span>
-            <h1>记录一笔，清晰一步。</h1>
+            <h1>录入投注</h1>
             <p>
               第 <strong>{today.id}</strong> 期 <span class="separator">·</span>
               {today.close_time} 封盘
@@ -961,23 +1186,44 @@
               </div>
               <div class="section-head selection-heading">
                 <h2><span class="step">02</span> 选择投注项</h2>
-                <div class="segmented">
-                  <button
-                    class:active={!compound}
-                    aria-pressed={!compound}
-                    onclick={() => (compound = false)}>单式</button
-                  ><button
-                    class:active={compound}
-                    aria-pressed={compound}
-                    onclick={() => (compound = true)}>复式</button
-                  >
-                </div>
+                {#if currentPlay.rule.compound_enabled}<div class="segmented">
+                    <button
+                      class:active={!compound}
+                      aria-pressed={!compound}
+                      onclick={() => (compound = false)}>普通 / 多选</button
+                    ><button
+                      class:active={compound}
+                      aria-pressed={compound}
+                      onclick={() => (compound = true)}>复式</button
+                    >
+                  </div>{/if}
               </div>
+              {#if currentPlay.rule.condition === "hard_pair"}<p
+                  class="field-help"
+                >
+                  按顺序选择：第一个号码必须开在特码，第二个必须开在平码。当前：{selections
+                    .map(
+                      (n, i) =>
+                        `${i === 0 ? "特码" : "平码"} ${label("number", n)}`,
+                    )
+                    .join(" → ") || "尚未选择"}
+                </p>{/if}
+              {#if currentPlay.rule.condition === "at_least"}<p
+                  class="field-help"
+                >
+                  每注至少命中 {currentPlay.rule.minimum_hits} 个选项即中奖。
+                </p>{/if}
+              {#if currentPlay.rule.kind === "size" || currentPlay.rule.kind === "parity"}<p
+                  class="field-help"
+                >
+                  所选开奖范围出现 49
+                  时，本基础注和局退本，不计有效投注、无反水。
+                </p>{/if}
               <div class="selection-description">
                 <span
                   >{compound
                     ? `从候选项中每 ${currentPlay.rule.combination_size} 个拆成一注`
-                    : `一条基础注包含${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个选项`}</span
+                    : `选择数量${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个${currentPlay.rule.quantity === 1 ? "；多选逐项拆注" : "；允许的超额选择按阈值拆注"}`}</span
                 ><button
                   class="text-button"
                   onclick={() => (selections = [])}
@@ -1020,6 +1266,16 @@
                 <h2><span class="step">03</span> 填写金额</h2>
                 <span class="muted small">每条基础注的本金</span>
               </div>
+              <label class="bettor-input"
+                >投注人<input
+                  bind:value={bettor}
+                  list="bettor-suggestions"
+                  maxlength="80"
+                  autocomplete="off"
+                  placeholder="手工填写姓名或代号"
+                  required
+                /></label
+              >
               <label class="amount-input"
                 ><span>¥</span><input
                   aria-label="每注金额"
@@ -1046,7 +1302,7 @@
             </div>
             <div class="summary-name">
               {currentPlay?.rule.name ?? "选择一个玩法"}<span class="soft-chip"
-                >{compound ? "复式" : "单式"}</span
+                >{compound ? "复式" : selectedCount > 1 ? "多选" : "单注"}</span
               >
             </div>
             <div class="selected-tags">
@@ -1102,11 +1358,15 @@
                 class="notice compact-notice"
               >
                 <Clock3 size={16} /><span
-                  >当前{phases[today.phase]}，08:00 至 {today.close_time} 可提交。</span
+                  >当前{phases[today.phase]}，{today.open_time} 至 {today.close_time}
+                  可提交。</span
                 >
               </div>{/if}<button
               class="button primary submit-bet"
-              disabled={busy || !inputValid || today.phase !== "open"}
+              disabled={busy ||
+                !inputValid ||
+                !bettor.trim() ||
+                today.phase !== "open"}
               onclick={submitBet}
               >{#if busy}<LoaderCircle size={17} class="spin" />{:else}<Plus
                   size={17}
@@ -1127,7 +1387,7 @@
         <section class="page-heading">
           <div>
             <span class="eyebrow">EVERY PERIOD, IN PERSPECTIVE</span>
-            <h1>让每一期，都有迹可循。</h1>
+            <h1>历史统计</h1>
             <p>回看开奖记录与收支，只将已结算期次计入实际盈亏。</p>
           </div>
           <span class="heading-icon glass"><History size={24} /></span>
@@ -1149,7 +1409,13 @@
               /><button type="submit">查询</button>
             </form>
           </div>
-          <div class="table-scroll">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
+          <div
+            class="table-scroll"
+            role="region"
+            tabindex="0"
+            aria-label="数据表格，可横向滚动"
+          >
             <table>
               <thead
                 ><tr
@@ -1209,11 +1475,56 @@
             </div>
           </div>
         </section>
+      {:else if tab === "statistics"}
+        <section class="page-heading">
+          <div>
+            <span class="eyebrow">CURRENT PERIOD</span>
+            <h1>本期统计</h1>
+            <p>
+              第 <strong>{today.id}</strong> 期 · {statisticsCategory ===
+              "receivers"
+                ? "飞出受注统计"
+                : statisticsCategory === "bettors"
+                  ? "投注人分类统计"
+                  : "全部受注统计"}
+            </p>
+          </div>
+        </section>
+        {#if report && report.period === today.id}<StatisticsPanel
+            {report}
+            category={statisticsCategory}
+            onpage={loadStatistics}
+          />{:else}<div class="empty-panel glass">正在加载本期统计…</div>{/if}
+      {:else if tab === "official"}
+        <section class="page-heading">
+          <div>
+            <span class="eyebrow">OFFICIAL CHANNEL</span>
+            <h1>调码助手</h1>
+            <p>macaujc.com 官方网页 · 页面内容及生肖口径由外部网站提供。</p>
+          </div>
+          <a
+            class="button secondary"
+            href="https://macaujc.com/picker/"
+            target="_blank"
+            rel="noopener noreferrer">在新窗口打开 <ArrowUpRight size={16} /></a
+          >
+        </section>
+        <section class="glass official-panel">
+          <iframe
+            title="macaujc.com 官方调码助手"
+            src="https://macaujc.com/picker/"
+            referrerpolicy="no-referrer"
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+          ></iframe>
+          <p class="field-help">
+            若官网限制内嵌或网络暂时不可用，请使用上方新窗口入口。
+          </p>
+        </section>
       {:else if tab === "settings"}
         <section class="page-heading">
           <div>
             <span class="eyebrow">BUILT AROUND YOUR RULES</span>
-            <h1>你的规则，有序运转。</h1>
+            <h1>玩法与配置</h1>
             <p>配置玩法与生效时间，已记录的投注始终保留原始规则。</p>
           </div>
           <button class="button primary" onclick={() => openEditor()}
@@ -1270,7 +1581,7 @@
               <h2><Clock3 size={19} /> 投注时间</h2>
             </div>
             <div class="schedule-rail">
-              <span>08:00<small>开始投注</small></span>
+              <span>{today.open_time}<small>开始投注</small></span>
               <div></div>
               <span>{today.close_time}<small>本期封盘</small></span>
               <div></div>
@@ -1278,13 +1589,39 @@
             </div>
             <form onsubmit={saveClosing}>
               <label
+                >新的开始时间<input
+                  type="time"
+                  bind:value={openTime}
+                  required
+                /></label
+              >
+              <label
                 >新的封盘时间<input
                   type="time"
                   bind:value={closeTime}
                   required
                 /></label
               >
-              <p class="field-help">从下一期生效，当前期不会重新开放。</p>
+              <p class="field-help">
+                从下一期生效，当前期不会重新开放。保存前请验证管理员身份。
+              </p>
+              <label
+                >验证账号<input
+                  bind:value={settingsUsername}
+                  autocomplete="username"
+                  required
+                  maxlength="80"
+                /></label
+              >
+              <label
+                >验证密码<input
+                  type="password"
+                  bind:value={settingsPassword}
+                  autocomplete="current-password"
+                  required
+                  maxlength="256"
+                /></label
+              >
               <button class="button secondary" disabled={busy}
                 >保存时间 <ArrowRight size={15} /></button
               >
@@ -1292,7 +1629,7 @@
             {#if config}<div class="scheduled-list">
                 {#each config.closing.filter((c) => c.effective_date >= today!.business_date) as c}<span
                     >{c.effective_date} 生效
-                    <strong>{c.close_time}</strong></span
+                    <strong>{c.open_time} – {c.close_time}</strong></span
                   >{/each}
               </div>{/if}
           </section>
@@ -1303,17 +1640,31 @@
                 >本期本命 · {zodiacs[today.mapping.natal]}</span
               >
             </div>
+            <p class="field-help">
+              每年 1 月 1 日自动换肖，01、13、25、37、49
+              对应当年本命肖；每期映射固定，实际结算以接口为准。
+            </p>
             <form onsubmit={saveMapping}>
               <div class="form-two">
                 <label
                   >生效日期<input
                     type="date"
                     bind:value={effectiveDate}
+                    onchange={() =>
+                      (mapping = annualMapping(
+                        Number(effectiveDate.slice(0, 4)),
+                      ))}
                     min={config?.tomorrow}
                     required
                   /></label
                 ><label
-                  >本命生肖<select bind:value={mapping.natal}
+                  >本命生肖<select
+                    bind:value={mapping.natal}
+                    onchange={() =>
+                      (mapping.zodiac = Array.from(
+                        { length: 49 },
+                        (_, i) => (mapping.natal - (i % 12) + 12) % 12,
+                      ))}
                     >{#each zodiacs as zodiac, i}<option value={i}
                         >{zodiac}</option
                       >{/each}</select
@@ -1382,11 +1733,57 @@
         >
       </div>
     </div>
-    <div class="table-scroll">
+    <form
+      class="record-filters"
+      onsubmit={(e) => {
+        e.preventDefault();
+        void loadRecords(1).catch((e) => notify(fail(e)));
+      }}
+    >
+      <label
+        >投注人筛选<input
+          bind:value={bettorFilter}
+          list="bettor-suggestions"
+          placeholder="全部投注人"
+        /></label
+      >
+      <label
+        >投注总额下限（元）<input
+          bind:value={minAmount}
+          inputmode="decimal"
+          placeholder="不限"
+        /></label
+      >
+      <label
+        >投注总额上限（元）<input
+          bind:value={maxAmount}
+          inputmode="decimal"
+          placeholder="不限"
+        /></label
+      >
+      <button class="button secondary" type="submit">筛选</button><button
+        class="text-button"
+        type="button"
+        onclick={() => {
+          bettorFilter = "";
+          minAmount = "";
+          maxAmount = "";
+          void loadRecords(1);
+        }}>重置</button
+      >
+    </form>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
+    <div
+      class="table-scroll"
+      role="region"
+      tabindex="0"
+      aria-label="数据表格，可横向滚动"
+    >
       <table>
         <thead
           ><tr
-            ><th>玩法 / 投注项</th><th>基础注</th><th>投注本金</th><th>反水</th
+            ><th>玩法 / 投注人 / 投注项</th><th>基础注</th><th>投注本金</th><th
+              >反水</th
             ><th>盘口净盈利</th><th>状态</th><th></th></tr
           ></thead
         ><tbody
@@ -1395,7 +1792,11 @@
                 ><strong
                   >{bet.rule.name}{#if bet.compound}<span class="table-tag"
                       >复式</span
+                    >{:else if bet.unit_count > 1}<span class="table-tag"
+                      >多选</span
                     >{/if}</strong
+                ><small class="bettor-name"
+                  >{bet.bettor || "未登记（旧记录）"}</small
                 ><small class="bet-selection"
                   >{bet.selections
                     .map((v) => label(bet.rule.kind, v))
@@ -1487,6 +1888,10 @@
       <strong>{money(detail.record.stake)}</strong>
     </div>
     <div class="detail-info">
+      <span
+        >投注人 <strong>{detail.record.bettor || "未登记（旧记录）"}</strong
+        ></span
+      >
       <span>基础注 <strong>{detail.atoms.length}</strong></span><span
         >每注本金 <strong>{money(detail.record.amount)}</strong></span
       ><span
@@ -1501,7 +1906,13 @@
         ></span
       >
     </div>
-    <div class="table-scroll">
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
+    <div
+      class="table-scroll"
+      role="region"
+      tabindex="0"
+      aria-label="数据表格，可横向滚动"
+    >
       <table>
         <thead
           ><tr
@@ -1518,16 +1929,18 @@
                   .join(" · ")}</td
               ><td>{atom.odds}×</td><td
                 >{result
-                  ? result.won
-                    ? "中奖"
-                    : "未中奖"
+                  ? result.voided
+                    ? "和局退本"
+                    : result.won
+                      ? "中奖"
+                      : "未中奖"
                   : detail.record.status === "cancelled"
                     ? "已撤销"
                     : "待开奖"}</td
               ><td>{result ? money(result.payout) : "—"}</td><td
                 >{detail.record.status === "cancelled"
                   ? "—"
-                  : money(atom.rebate)}</td
+                  : money(result?.rebate ?? atom.rebate)}</td
               ><td
                 class:negative={(result?.net ?? 0) < 0}
                 class:positive={(result?.net ?? 0) > 0}
@@ -1555,13 +1968,83 @@
         >
       </div>
     </div>
+    {#if detail.layoffs.length}<section class="detail-ledger">
+        <h3>关联飞出</h3>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
+        <div
+          class="table-scroll"
+          role="region"
+          tabindex="0"
+          aria-label="数据表格，可横向滚动"
+        >
+          <table>
+            <thead
+              ><tr
+                ><th>受注方</th><th>每注金额</th><th>飞出总额</th><th
+                  >状态 / 本方盈亏</th
+                ><th></th></tr
+              ></thead
+            ><tbody
+              >{#each detail.layoffs as row}<tr
+                  ><td>{row.receiver}</td><td>{money(row.amount)}</td><td
+                    >{money(row.stake)}</td
+                  ><td
+                    >{row.status === "cancelled"
+                      ? "已作废"
+                      : row.status === "settled"
+                        ? signed((row.payout ?? 0) + row.rebate - row.stake)
+                        : "待开奖"}</td
+                  ><td
+                    >{#if row.status === "pending" && today?.phase === "open" && row.period_id === today.id}<button
+                        class="text-button"
+                        onclick={() => {
+                          flyCancel = row;
+                          detail = null;
+                        }}>撤销飞出</button
+                      >{/if}</td
+                  ></tr
+                >{/each}</tbody
+            >
+          </table>
+        </div>
+      </section>{/if}
+    {#if detail.events.length}<details class="audit-details">
+        <summary>操作记录（最近 100 条）</summary
+        >{#each detail.events as event}<p>
+            <time>{time(event.created_at)}</time> · {{
+              bet_created: "录入投注",
+              bet_cancelled: "作废投注",
+              bet_amount_changed: "纠正金额",
+              bet_flown: "记录飞出",
+              layoff_cancelled: "撤销飞出",
+            }[event.event] ??
+              event.event}{#if event.event === "bet_amount_changed"}
+              · 每注 {money(Number(event.detail.before_amount))} → {money(
+                Number(event.detail.after_amount),
+              )}{/if}{#if event.event === "bet_flown"}
+              · {String(event.detail.receiver)} · 每注 {money(
+                Number(event.detail.amount),
+              )}{/if}
+          </p>{/each}
+      </details>{/if}
     {#if detail.record.status === "pending" && detail.record.period_id === today?.id && today.phase === "open"}<div
         class="modal-actions"
       >
         <button
+          class="button secondary"
+          onclick={() => openMutation(detail!.record, "amount")}
+          >修改金额</button
+        >
+        <button
+          class="button primary"
+          onclick={() => openMutation(detail!.record, "layoffs")}>飞出</button
+        >
+        <button
           class="button danger"
-          onclick={() => (cancelTarget = detail!.record)}
-          ><Trash2 size={15} /> 撤销整条记录</button
+          onclick={() => {
+            cancelTarget = detail!.record;
+            detail = null;
+          }}><Trash2 size={15} /> 撤销整条记录</button
         >
       </div>{/if}</Modal
   >{/if}
@@ -1580,6 +2063,85 @@
       >
     </div></Modal
   >{/if}
+{#if mutationTarget}<Modal
+    title={mutationMode === "amount" ? "修改投注金额" : "记录飞出"}
+    onclose={() => (mutationTarget = null)}
+  >
+    <form onsubmit={saveMutation} class="rule-form">
+      <div class="segmented">
+        <button
+          type="button"
+          class:active={mutationMode === "amount"}
+          onclick={() => (mutationMode = "amount")}>纠正原金额</button
+        ><button
+          type="button"
+          class:active={mutationMode === "layoffs"}
+          onclick={() => (mutationMode = "layoffs")}>飞出</button
+        >
+      </div>
+      <p class="modal-description">
+        {mutationTarget.bettor || "未登记"} · {mutationTarget.rule.name} · {mutationTarget.unit_count}
+        条基础注 · 原每注 {money(mutationTarget.amount)}
+      </p>
+      {#if mutationMode === "layoffs"}<label
+          >飞出受注方<input
+            bind:value={receiver}
+            list="receiver-suggestions"
+            maxlength="80"
+            required
+            placeholder="选择已有受注方或手工填写"
+          /></label
+        >{/if}
+      <label
+        >{mutationMode === "amount"
+          ? "修改后的每注金额（整数元）"
+          : "每条基础注飞出金额（元）"}<input
+          bind:value={mutationAmount}
+          inputmode="decimal"
+          required
+        /></label
+      >
+      <p class="field-help">
+        {mutationMode === "amount"
+          ? "保留原规则和赔率，记录修改前后金额；不能低于已飞出金额。"
+          : "原投注保留，所有基础注按相同每注金额飞出。沿用原注赔率、反水，逐注四舍五入；累计不得超过原注。"}
+      </p>
+      {#if mutationError}<div class="inline-error" role="alert">
+          {mutationError}
+        </div>{/if}
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="button secondary"
+          onclick={() => (mutationTarget = null)}>取消</button
+        ><button class="button primary" disabled={busy}
+          >确认{mutationMode === "amount" ? "修改" : "飞出"}</button
+        >
+      </div>
+    </form>
+  </Modal>{/if}
+{#if flyCancel}<Modal title="撤销这条飞出？" onclose={() => (flyCancel = null)}
+    ><p class="modal-description">
+      受注方 {flyCancel.receiver}，飞出总额 {money(
+        flyCancel.stake,
+      )}。作废后不再计入飞出统计，原记录仍保留。
+    </p>
+    <div class="modal-actions">
+      <button class="button secondary" onclick={() => (flyCancel = null)}
+        >保留记录</button
+      ><button class="button danger" disabled={busy} onclick={cancelFly}
+        >确认撤销飞出</button
+      >
+    </div></Modal
+  >{/if}
+<datalist id="bettor-suggestions"
+  >{#each parties.bettors as name}<option value={name}
+    ></option>{/each}</datalist
+>
+<datalist id="receiver-suggestions"
+  >{#each parties.receivers as name}<option value={name}
+    ></option>{/each}</datalist
+>
 {#if editor}<Modal
     title={editId ? "编辑玩法" : "新建玩法"}
     onclose={() => (editor = false)}
@@ -1613,11 +2175,31 @@
         >
       </div>
       <label
-        >命中条件<select bind:value={rule.condition}
+        >命中条件<select
+          value={rule.condition}
+          onchange={(e) =>
+            changeCondition(e.currentTarget.value as Rule["condition"])}
           >{#each Object.entries(conditions) as [key, value]}<option value={key}
               >{value}</option
             >{/each}</select
         ></label
+      >
+      {#if rule.condition === "at_least"}<label
+          >最少命中数量<input
+            type="number"
+            min="1"
+            max="49"
+            bind:value={rule.minimum_hits}
+            required
+          /></label
+        >{/if}
+      <label class="checkbox-label"
+        ><input
+          type="checkbox"
+          bind:checked={rule.compound_enabled}
+          disabled={rule.condition === "hard_pair" ||
+            rule.condition === "soft_pair"}
+        /> 启用复式投注</label
       >
       <div class="form-three">
         <label
@@ -1636,6 +2218,7 @@
           /></label
         ><label
           >复式每注选项数<input
+            disabled={!rule.compound_enabled}
             type="number"
             min="1"
             max="49"
@@ -1645,7 +2228,9 @@
         >
       </div>
       <p class="field-help">
-        数量关系约束每条基础注，不约束复式候选池；拆分数量也须满足此关系。
+        普通投注须满足数量关系；单选玩法可多选逐项拆注。“不少于 5”选 7 个拆成 21
+        注。“等于 5”未开复式时只能选 5
+        个。复式候选池不受数量阈值限制，拆分后的每注须满足规则。
       </p>
       <div class="form-two">
         <label
@@ -1664,7 +2249,7 @@
           /></label
         >
       </div>
-      {#if rule.kind === "zodiac"}<label class="checkbox-label"
+      {#if rule.kind !== "wave"}<label class="checkbox-label"
           ><input
             type="checkbox"
             checked={rule.special_odds !== null}
@@ -1680,7 +2265,28 @@
           >
           <p class="field-help">
             按每条基础注是否包含本命生肖分别应用，全部不命中玩法同样适用。
-          </p>{/if}{/if}{#if editId}<label class="checkbox-label"
+          </p>{/if}
+        <label class="checkbox-label"
+          ><input
+            type="checkbox"
+            checked={rule.special_rebate_percent !== null}
+            onchange={(e) =>
+              (rule.special_rebate_percent = e.currentTarget.checked
+                ? "0"
+                : null)}
+          /> 启用本命肖特殊反水</label
+        >
+        {#if rule.special_rebate_percent !== null}<label
+            >本命肖反水（%）<input
+              inputmode="decimal"
+              bind:value={rule.special_rebate_percent}
+              required
+            /></label
+          >{/if}
+        <p class="field-help">
+          号码、生肖、尾数、大小、单双均按当期映射逐条判断；含本命肖对应选项的基础注采用特殊值。
+        </p>
+      {/if}{#if editId}<label class="checkbox-label"
           ><input type="checkbox" bind:checked={enabled} /> 允许录入新投注</label
         >{/if}{#if editError}<div class="inline-error" role="alert">
           <AlertCircle size={16} />{editError}

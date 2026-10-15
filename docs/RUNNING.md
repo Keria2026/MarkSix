@@ -1,62 +1,53 @@
-# Ubuntu 本机运行
+# Ubuntu 部署与维护
 
-需要 Docker Engine 与 Docker Compose v2、Python 3，以及可访问镜像仓库和开奖接口的网络。数据库不暴露宿主机端口，网页仅监听本机。首次构建请预留足够磁盘空间（建议至少 6 GB）；数据库与备份空间随历史记录增长。
+## 使用 Actions 构建包
+
+适用 Ubuntu 22.04／24.04 x64，需预先安装 Docker Engine、Docker Compose v2 和 Python 3；当前用户须能运行 Docker。运行目标 2 vCPU／1 GB，构建建议使用更大内存机器或 GitHub Actions。
+
+1. 在 dev 分支成功的 **CI** 工作流下载 `MarkSix-Ubuntu-x64` 并完整解压到固定目录。
+2. 运行 `bash install.sh`。脚本验证包内 SHA256，首次要求设置管理员账号和密码，生成私有 `.env`，导入包含 MySQL 的镜像并等待服务健康。
+3. 浏览器访问 `http://127.0.0.1:8088`。包不包含任何预置账号密码。
+4. 日常启动 `bash start.sh`，停止 `bash stop.sh`。已启动服务通过 Docker 重启策略恢复。
+
+默认仅绑定服务器本机。远程管理可使用 `ssh -L 8088:127.0.0.1:8088 user@server`，再在自己电脑访问该地址。不要直接公开数据库端口。
+
+## 从源码部署
+
+在仓库根目录执行：
 
 ```bash
-git clone https://github.com/Keria2026/MarkSix.git
-cd MarkSix
 python3 scripts/configure.py
-docker compose up -d --build
-docker compose ps
+docker compose up -d --build --wait --wait-timeout 180
 ```
 
-打开 **http://127.0.0.1:8088**，使用配置脚本中自行设置的管理员账号与密码。没有默认密码。首次构建需要下载 Rust、Bun 与依赖；建议在内存至少 2 GB 的构建机上构建，1 GB 运行机使用预构建镜像。
+首次构建需要下载依赖。`.env` 已存在时配置脚本拒绝覆盖；修改环境变量不会重置数据库中的管理员密码。
 
-管理员凭据只在数据库首次初始化时创建。之后修改 `.env` 不会重置已有账号。保管好 `.env` 与备份；不要提交到 Git。初始三个玩法只是说明书示例，正式录入前核对赔率、反水、封盘时间和生肖表。
-
-## 页面与流程
-
-- 本期概览：盘口本金、反水、实际盈亏或开奖前精确极值及对应示例开奖。
-- 录入投注：选择玩法、单式或复式、选项和每注金额；预览按投注者口径显示。
-- 投注详情：查看每条拆分基础注；封盘前可撤销整条记录并重新录入。
-- 历史统计：按期查询，未结算金额与已实现盈亏分开。
-- 玩法与配置：版本化规则、下一期封盘时间、未来生效的生肖映射。历史快照不随配置变化。
-
-时间统一按北京时间处理。默认 08:00 开始、21:28 封盘、21:34 起每 60 秒抓取开奖。无有效数据时保留待结算本金；不会编造或手动补填开奖。风险计算超时会明确显示，不能当作已通过性能验收。
-
-## 更新与镜像
-
-更新前备份，然后 `git pull --ff-only`、`docker compose up -d --build`。数据库迁移启动时自动执行。
-
-GitHub Actions 在每次提交中验证代码和构建镜像，并上传镜像归档。手动运行 CI 时启用 `publish` 可发布到 GHCR；在 `.env` 设置该次运行输出的 `BACKEND_IMAGE`、`FRONTEND_IMAGE` 完整标签，然后执行：
-
-```bash
-docker compose pull
-docker compose up -d --no-build
-```
-
-私有 GHCR 镜像需要先 `docker login ghcr.io`。不要混用不同提交的前后端镜像。
-
-## 备份、恢复与停止
+## 备份和恢复
 
 ```bash
 bash scripts/backup.sh
-# 恢复会覆盖当前数据，先另存现状备份，再执行：
+# 恢复会覆盖当前数据库，确认目标和备份后执行：
 CONFIRM_RESTORE=yes bash scripts/restore.sh backups/marksix-时间.sql.gz
 ```
 
-备份包含完整投注与管理员哈希，应保存在受限位置并定期复制到另一块磁盘。恢复失败时保持服务停止，检查错误后重新恢复。
+备份包含业务数据及账号密码哈希，应复制到其他存储并限制访问。恢复脚本会停止应用和前端，导入后再启动。
 
-`docker compose down` 停止服务且保留数据库卷；不要使用 `down -v`，它会删除持久数据库。
+## 升级
 
-## 排查
+1. 先备份数据库、旧程序包及 `.env`。
+2. 停止旧应用，完整解压新版文件；保留 `.env`，不要删除 Docker 卷。
+3. 运行新包 `bash install.sh` 导入镜像并启动。原 Compose 项目名为 `marksix`，数据库卷沿用。
+4. 检查登录、历史记录和当期期次。v0.2 使用增量迁移，旧投注快照不变；旧投注人显示“未登记（旧记录）”。
+
+不要运行 `docker compose down -v`，它会删除数据库。迁移后回退旧程序，应同时恢复对应旧版数据库备份。
+
+## 日志和配置
 
 ```bash
 docker compose ps
-docker compose logs --tail=100 backend
-docker compose logs --tail=100 db
+docker compose logs --tail=100 backend db
 ```
 
-若数据库初始化中，等待其健康检查通过。若接口不可用，页面会显示获取异常并按窗口重试。首次启动日期与接口不匹配时不会结算不匹配结果。端口占用时修改 `.env` 的 `PORT` 后重新启动。
+网页端口由 `.env` 中 PORT 控制，默认 8088。应用与数据库只在 Compose 内部通信。开始／封盘时间在网页配置，需要再次验证管理员账号密码，下一期生效。
 
-Compose 的三项服务合计限制 2 vCPU、832 MiB 内存。实际目标机仍需按 [测试说明](TESTING.md) 验收；镜像编译资源不属于运行资源预算。
+开奖接口和官方频道需要外网。运行服务不需要 GitHub 凭据；安装包不包含云开发环境的配置或密钥。

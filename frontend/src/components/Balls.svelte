@@ -26,6 +26,9 @@
     <div class="ball-item" class:special={i === 6}>
       <span
         class="ball"
+        aria-label={numbers[i]
+          ? `${String(numbers[i]).padStart(2, "0")} ${["红波", "蓝波", "绿波"][waves?.[i] ?? wave(numbers[i])]}`
+          : "待开奖"}
         class:blank={!numbers[i]}
         data-wave={numbers[i] ? (waves?.[i] ?? wave(numbers[i])) : undefined}
         >{numbers[i] ? String(numbers[i]).padStart(2, "0") : "—"}</span

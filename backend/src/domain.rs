@@ -17,6 +17,7 @@ pub enum Kind {
     Wave,
     Tail,
     Parity,
+    Size,
 }
 impl Kind {
     pub fn index(self) -> usize {
@@ -26,6 +27,7 @@ impl Kind {
             Self::Wave => 2,
             Self::Tail => 3,
             Self::Parity => 4,
+            Self::Size => 5,
         }
     }
     pub fn size(self) -> u8 {
@@ -34,7 +36,7 @@ impl Kind {
             Self::Zodiac => 12,
             Self::Wave => 3,
             Self::Tail => 10,
-            Self::Parity => 2,
+            Self::Parity | Self::Size => 2,
         }
     }
 }
@@ -51,6 +53,9 @@ pub enum Condition {
     All,
     None,
     Any,
+    HardPair,
+    SoftPair,
+    AtLeast,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -76,12 +81,18 @@ pub struct Rule {
     pub kind: Kind,
     pub scope: Scope,
     pub condition: Condition,
+    #[serde(default = "one_hit")]
+    pub minimum_hits: u8,
     pub relation: Relation,
     pub quantity: u8,
     pub combination_size: u8,
+    #[serde(default)]
+    pub compound_enabled: bool,
     pub odds: String,
     pub rebate_percent: String,
     pub special_odds: Option<String>,
+    #[serde(default)]
+    pub special_rebate_percent: Option<String>,
 }
 impl Rule {
     pub fn validate(&self) -> RuleResult<()> {
@@ -102,6 +113,28 @@ impl Rule {
         if self.kind == Kind::Wave && self.scope != Scope::Special {
             return Err("波色只支持特码范围".into());
         }
+        if matches!(self.condition, Condition::HardPair | Condition::SoftPair)
+            && (self.kind != Kind::Number
+                || self.scope != Scope::All
+                || self.relation != Relation::Eq
+                || self.quantity != 2
+                || self.combination_size != 2
+                || self.compound_enabled)
+        {
+            return Err("特碰、软碰须设置：号码、全部范围、等于 2、每注 2 个选项，关闭复式".into());
+        }
+        if self.condition == Condition::AtLeast
+            && (self.minimum_hits == 0
+                || self.minimum_hits > self.combination_size
+                || self.minimum_hits > self.quantity)
+        {
+            return Err("最少命中数须为正数，且不能超过每注选项数／数量阈值".into());
+        }
+        if let Some(value) = &self.special_rebate_percent
+            && (self.kind == Kind::Wave || scaled(value, 2)? > 10_000)
+        {
+            return Err("本命肖特殊反水不适用于波色，比例须为 0%–100%".into());
+        }
         let odds = scaled(&self.odds, 4)?;
         if odds == 0 || odds > 100_000_000_000 {
             return Err("赔率须大于 0，且不超过 10000000".into());
@@ -110,8 +143,8 @@ impl Rule {
             return Err("反水比例须在 0%–100% 之间".into());
         }
         if let Some(ref value) = self.special_odds {
-            if self.kind != Kind::Zodiac {
-                return Err("特殊赔率仅适用于生肖玩法".into());
+            if self.kind == Kind::Wave {
+                return Err("波色不能设置本命肖特殊赔率".into());
             }
             let odds = scaled(value, 4)?;
             if odds == 0 || odds > 100_000_000_000 {
@@ -161,7 +194,7 @@ pub fn rounded_product(cents: i64, rate: i64) -> RuleResult<i64> {
 pub fn checked_sum(values: impl IntoIterator<Item = i64>) -> RuleResult<i64> {
     values.into_iter().try_fold(0_i64, |sum, n| {
         sum.checked_add(n)
-            .filter(|v| v.abs() <= MONEY_LIMIT)
+            .filter(|v| v.checked_abs().is_some_and(|n| n <= MONEY_LIMIT))
             .ok_or("汇总金额超出安全计算范围".into())
     })
 }
@@ -174,13 +207,24 @@ pub struct Mapping {
 }
 impl Default for Mapping {
     fn default() -> Self {
-        Self {
-            zodiac: (1..=49).map(|n| ((7 + 12 - n % 12) % 12) as u8).collect(),
-            natal: 6,
-        }
+        Self::for_year(2026)
     }
 }
 impl Mapping {
+    pub fn for_year(year: i32) -> Self {
+        let natal = (6 + year - 2026).rem_euclid(12) as u8;
+        Self {
+            natal,
+            zodiac: (1..=49)
+                .map(|n| (i32::from(natal) - (n - 1)).rem_euclid(12) as u8)
+                .collect(),
+        }
+    }
+    pub fn natal_options(&self, kind: Kind) -> u64 {
+        (1..=49)
+            .filter(|n| self.zodiac[(*n - 1) as usize] == self.natal)
+            .fold(0, |mask, n| mask | self.features(n)[kind.index()])
+    }
     pub fn validate(&self) -> RuleResult<()> {
         if self.zodiac.len() != 49 || self.zodiac.iter().any(|n| *n >= 12) || self.natal >= 12 {
             Err("映射须覆盖 49 个号码，生肖值须合法".into())
@@ -188,13 +232,14 @@ impl Mapping {
             Ok(())
         }
     }
-    pub fn features(&self, n: u8) -> [u64; 5] {
+    pub fn features(&self, n: u8) -> [u64; 6] {
         [
             1_u64 << (n - 1),
             1_u64 << self.zodiac[(n - 1) as usize],
             1_u64 << wave(n),
             1_u64 << (n % 10),
             1_u64 << (n % 2),
+            1_u64 << u8::from(n >= 25),
         ]
     }
 }
@@ -222,6 +267,8 @@ pub struct BetInput {
     pub compound: bool,
     pub amount: String, // integer yuan
     pub request_id: String,
+    #[serde(default)]
+    pub bettor: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Atom {
@@ -230,10 +277,24 @@ pub struct Atom {
     pub kind: Kind,
     pub scope: Scope,
     pub condition: Condition,
+    #[serde(default = "one_hit")]
+    pub minimum_hits: u8,
     pub stake: i64,
     pub payout: i64,
     pub rebate: i64,
     pub odds: String,
+    #[serde(default)]
+    pub rebate_percent: String,
+    #[serde(default)]
+    pub void_on_49: bool,
+    #[serde(default = "long_position")]
+    pub position: i8,
+}
+fn long_position() -> i8 {
+    1
+}
+fn one_hit() -> u8 {
+    1
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BetPlan {
@@ -253,9 +314,20 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
         return Err("每注最少 1 元".into());
     }
     let mut options = input.selections.clone();
-    options.sort_unstable();
+    if rule.condition != Condition::HardPair {
+        options.sort_unstable();
+    }
+    if input.compound && !rule.compound_enabled {
+        return Err("此玩法未启用复式".into());
+    }
+    if rule.condition == Condition::HardPair && options.len() != 2 {
+        return Err("特碰请依次选择一个特码、一个平码，位置不可互换".into());
+    }
     if options.is_empty()
-        || options.windows(2).any(|w| w[0] == w[1])
+        || options
+            .iter()
+            .enumerate()
+            .any(|(i, n)| options[..i].contains(n))
         || options.iter().any(|n| {
             if rule.kind == Kind::Number {
                 !(1..=49).contains(n)
@@ -268,33 +340,32 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
     }
     let k = if input.compound {
         rule.combination_size as usize
+    } else if rule.quantity == 1 {
+        1 // Multi-select single-option plays produce independent basic bets.
     } else {
-        options.len()
+        if !rule.relation.accepts(options.len() as u8, rule.quantity) {
+            return Err("未启用复式时，选择数量必须满足配置的数量关系".into());
+        }
+        options.len().min(rule.quantity as usize)
     };
+    if rule.condition == Condition::AtLeast && k < rule.minimum_hits as usize {
+        return Err("选项数量不能少于最少命中数".into());
+    }
+    let split = input.compound || k < options.len();
     if k > options.len() || !rule.relation.accepts(k as u8, rule.quantity) {
         return Err("选项数量不满足玩法配置".into());
     }
-    let count = if input.compound {
-        choose(options.len(), k)
-    } else {
-        1
-    };
+    let count = if split { choose(options.len(), k) } else { 1 };
     if count > MAX_UNITS as u64 {
         return Err("单次提交最多 1000 条基础注，请减少候选选项".into());
     }
-    let sets = if input.compound {
+    let sets = if split {
         combinations(&options, k)
     } else {
         vec![options]
     };
-    let rebate = rounded_product(amount, scaled(&rule.rebate_percent, 2)?)?;
     let mut atoms = Vec::with_capacity(sets.len());
     for opts in sets {
-        let odds = if rule.kind == Kind::Zodiac && opts.contains(&mapping.natal) {
-            rule.special_odds.as_ref().unwrap_or(&rule.odds)
-        } else {
-            &rule.odds
-        };
         let mask = opts.iter().fold(0_u64, |m, n| {
             m | 1_u64
                 << (if rule.kind == Kind::Number {
@@ -303,16 +374,34 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
                     *n
                 })
         });
+        let natal = rule.kind != Kind::Wave && mask & mapping.natal_options(rule.kind) != 0;
+        let odds = if natal {
+            rule.special_odds.as_ref().unwrap_or(&rule.odds)
+        } else {
+            &rule.odds
+        };
+        let rebate_percent = if natal {
+            rule.special_rebate_percent
+                .as_ref()
+                .unwrap_or(&rule.rebate_percent)
+        } else {
+            &rule.rebate_percent
+        };
+        let rebate = rounded_product(amount, scaled(rebate_percent, 2)?)?;
         atoms.push(Atom {
             options: opts,
             mask,
             kind: rule.kind,
             scope: rule.scope,
             condition: rule.condition,
+            minimum_hits: rule.minimum_hits,
             stake: amount,
             payout: rounded_product(amount, scaled(odds, 4)?)?,
             rebate,
             odds: odds.clone(),
+            rebate_percent: rebate_percent.clone(),
+            void_on_49: matches!(rule.kind, Kind::Parity | Kind::Size),
+            position: 1,
         });
     }
     Ok(BetPlan {
@@ -375,19 +464,20 @@ impl Draw {
             numbers,
         }
     }
-    pub fn masks(&self, scope: Scope) -> [u64; 5] {
+    pub fn masks(&self, scope: Scope) -> [u64; 6] {
         let indexes = match scope {
             Scope::Regular => 0..6,
             Scope::Special => 6..7,
             Scope::All => 0..7,
         };
-        let mut masks = [0; 5];
+        let mut masks = [0; 6];
         for i in indexes {
             masks[0] |= 1 << (self.numbers[i] - 1);
             masks[1] |= 1 << self.zodiac[i];
             masks[2] |= 1 << self.waves[i];
             masks[3] |= 1 << (self.numbers[i] % 10);
             masks[4] |= 1 << (self.numbers[i] % 2);
+            masks[5] |= 1 << u8::from(self.numbers[i] >= 25);
         }
         masks
     }
@@ -398,23 +488,53 @@ impl Draw {
         })
     }
 }
+pub fn is_void(atom: &Atom, draw: &Draw) -> bool {
+    atom.void_on_49
+        && match atom.scope {
+            Scope::Regular => draw.numbers[..6].contains(&49),
+            Scope::Special => draw.numbers[6] == 49,
+            Scope::All => draw.numbers.contains(&49),
+        }
+}
 pub fn wins(atom: &Atom, draw: &Draw) -> bool {
-    condition_matches(
+    if is_void(atom, draw) {
+        return false;
+    }
+    if matches!(atom.condition, Condition::HardPair | Condition::SoftPair) {
+        if atom.options.len() != 2 {
+            return false;
+        }
+        let a = atom.options[0];
+        let b = atom.options[1];
+        return (draw.numbers[6] == a && draw.numbers[..6].contains(&b))
+            || (atom.condition == Condition::SoftPair
+                && draw.numbers[6] == b
+                && draw.numbers[..6].contains(&a));
+    }
+    matches_minimum(
         atom.condition,
         atom.mask,
         draw.masks(atom.scope)[atom.kind.index()],
+        atom.minimum_hits,
     )
 }
 pub fn condition_matches(condition: Condition, mask: u64, draw: u64) -> bool {
+    matches_minimum(condition, mask, draw, 1)
+}
+pub fn matches_minimum(condition: Condition, mask: u64, draw: u64, minimum_hits: u8) -> bool {
     let hit = mask & draw;
     match condition {
         Condition::All => hit == mask,
         Condition::None => hit == 0,
         Condition::Any => hit != 0,
+        Condition::AtLeast => hit.count_ones() >= u32::from(minimum_hits),
+        Condition::HardPair | Condition::SoftPair => false,
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AtomResult {
+    #[serde(default)]
+    pub voided: bool,
     pub won: bool,
     pub payout: i64,
     pub rebate: i64,
@@ -424,13 +544,22 @@ pub fn settle(atoms: &[Atom], draw: &Draw) -> Vec<AtomResult> {
     atoms
         .iter()
         .map(|a| {
+            let voided = is_void(a, draw);
             let won = wins(a, draw);
-            let payout = if won { a.payout } else { 0 };
+            let payout = if voided {
+                a.stake
+            } else if won {
+                a.payout
+            } else {
+                0
+            };
+            let rebate = if voided { 0 } else { a.rebate };
             AtomResult {
+                voided,
                 won,
                 payout,
-                rebate: a.rebate,
-                net: a.stake - payout - a.rebate,
+                rebate,
+                net: a.stake - payout - rebate,
             }
         })
         .collect()
@@ -440,8 +569,11 @@ pub fn period_id(date: NaiveDate) -> String {
     format!("{}{:03}", date.year(), date.ordinal())
 }
 pub fn is_open(now: NaiveDateTime, date: NaiveDate, close: &str) -> bool {
+    is_open_between(now, date, "08:00", close)
+}
+pub fn is_open_between(now: NaiveDateTime, date: NaiveDate, open: &str, close: &str) -> bool {
     now.date() == date
-        && now.time() >= NaiveTime::from_hms_opt(8, 0, 0).unwrap()
+        && NaiveTime::parse_from_str(open, "%H:%M").is_ok_and(|start| now.time() >= start)
         && NaiveTime::parse_from_str(close, "%H:%M").is_ok_and(|end| now.time() < end)
 }
 pub fn normalize_zodiac(s: &str) -> Option<u8> {
@@ -512,36 +644,45 @@ pub fn defaults() -> Vec<Rule> {
             kind: Kind::Number,
             scope: Scope::Special,
             condition: Condition::All,
+            minimum_hits: 1,
             relation: Relation::Eq,
             quantity: 1,
             combination_size: 1,
+            compound_enabled: false,
             odds: "43".into(),
             rebate_percent: "2".into(),
             special_odds: None,
+            special_rebate_percent: None,
         },
         Rule {
             name: "平特一肖中".into(),
             kind: Kind::Zodiac,
             scope: Scope::All,
             condition: Condition::Any,
+            minimum_hits: 1,
             relation: Relation::Eq,
             quantity: 1,
             combination_size: 1,
+            compound_enabled: false,
             odds: "2".into(),
             rebate_percent: "5".into(),
             special_odds: None,
+            special_rebate_percent: None,
         },
         Rule {
             name: "五有".into(),
             kind: Kind::Zodiac,
             scope: Scope::All,
             condition: Condition::All,
+            minimum_hits: 1,
             relation: Relation::Eq,
             quantity: 5,
             combination_size: 5,
+            compound_enabled: false,
             odds: "10".into(),
             rebate_percent: "2".into(),
             special_odds: Some("8".into()),
+            special_rebate_percent: None,
         },
     ]
 }
@@ -558,12 +699,15 @@ mod tests {
             compound,
             amount: "100".into(),
             request_id: "test".into(),
+            bettor: "测试投注人".into(),
         }
     }
     #[test]
     fn combinations_and_special_payout() {
         let m = Mapping::default();
-        let rule = &defaults()[2];
+        let mut rule = defaults()[2].clone();
+        rule.compound_enabled = true;
+        let rule = &rule;
         let p = plan(rule, &input(vec![6, 0, 1, 2, 3, 4, 5], true), &m).unwrap();
         assert_eq!(p.atoms.len(), 21);
         assert_eq!(p.stake, 210000);
@@ -574,6 +718,111 @@ mod tests {
         assert_eq!(results.iter().map(|r| r.net).sum::<i64>(), -294200);
     }
     #[test]
+    fn multi_selection_thresholds_and_annual_mapping() {
+        let m = Mapping::for_year(2027);
+        assert_eq!(m.natal, 7);
+        for n in [1, 13, 25, 37, 49] {
+            assert_eq!(m.zodiac[n - 1], 7);
+        }
+        assert_eq!(m.zodiac[1], 6);
+        assert_eq!(Mapping::for_year(2028).natal, 8);
+        let mut r = defaults()[2].clone();
+        assert!(!r.compound_enabled);
+        assert!(plan(&r, &input((0..7).collect(), false), &m).is_err());
+        assert!(plan(&r, &input((0..7).collect(), true), &m).is_err());
+        r.relation = Relation::Ge;
+        assert_eq!(
+            plan(&r, &input((0..7).collect(), false), &m)
+                .unwrap()
+                .atoms
+                .len(),
+            21
+        );
+        let p = plan(&defaults()[0], &input(vec![1, 2, 49], false), &m).unwrap();
+        assert_eq!(p.atoms.len(), 3);
+    }
+    #[test]
+    fn ordered_pairs_and_three_hit_two() {
+        let m = Mapping::default();
+        let mut r = defaults()[0].clone();
+        r.scope = Scope::All;
+        r.quantity = 2;
+        r.combination_size = 2;
+        r.condition = Condition::HardPair;
+        let p = plan(&r, &input(vec![6, 45], false), &m).unwrap();
+        assert!(wins(
+            &p.atoms[0],
+            &Draw::predicted([45, 1, 2, 3, 4, 5, 6], &m)
+        ));
+        assert!(!wins(
+            &p.atoms[0],
+            &Draw::predicted([6, 1, 2, 3, 4, 5, 45], &m)
+        ));
+        r.condition = Condition::SoftPair;
+        let p = plan(&r, &input(vec![6, 45], false), &m).unwrap();
+        assert!(wins(
+            &p.atoms[0],
+            &Draw::predicted([6, 1, 2, 3, 4, 5, 45], &m)
+        ));
+        assert!(!wins(
+            &p.atoms[0],
+            &Draw::predicted([6, 45, 2, 3, 4, 5, 7], &m)
+        ));
+        r.condition = Condition::AtLeast;
+        r.minimum_hits = 2;
+        r.quantity = 3;
+        r.combination_size = 3;
+        let p = plan(&r, &input(vec![6, 45, 49], false), &m).unwrap();
+        for (draw, won) in [
+            ([6, 1, 2, 3, 4, 5, 7], false),
+            ([6, 1, 2, 3, 4, 5, 45], true),
+            ([6, 1, 2, 3, 4, 49, 45], true),
+        ] {
+            assert_eq!(wins(&p.atoms[0], &Draw::predicted(draw, &m)), won);
+        }
+    }
+    #[test]
+    fn natal_rates_per_atom_and_scope_specific_refunds() {
+        let m = Mapping::default();
+        let mut r = defaults()[0].clone();
+        r.special_odds = Some("8".into());
+        r.special_rebate_percent = Some("1.25".into());
+        let p = plan(&r, &input(vec![1, 2, 13], false), &m).unwrap();
+        assert_eq!(
+            p.atoms.iter().map(|a| a.odds.as_str()).collect::<Vec<_>>(),
+            vec!["8", "43", "8"]
+        );
+        assert_eq!(p.atoms[0].rebate, 125);
+        r.kind = Kind::Tail;
+        let p = plan(&r, &input(vec![1, 2, 3], false), &m).unwrap();
+        assert_eq!(p.atoms[0].odds, "8");
+        assert_eq!(p.atoms[1].odds, "43");
+        assert_eq!(p.atoms[2].odds, "8");
+        for kind in [Kind::Size, Kind::Parity] {
+            r.kind = kind;
+            for scope in [Scope::Regular, Scope::Special, Scope::All] {
+                r.scope = scope;
+                let p = plan(&r, &input(vec![0, 1], false), &m).unwrap();
+                for (draw, expected) in [
+                    ([49, 1, 2, 3, 4, 5, 6], scope != Scope::Special),
+                    ([1, 2, 3, 4, 5, 6, 49], scope != Scope::Regular),
+                ] {
+                    let results = settle(&p.atoms, &Draw::predicted(draw, &m));
+                    for result in results {
+                        assert_eq!(result.voided, expected);
+                        if expected {
+                            assert_eq!((result.payout, result.rebate, result.net), (10000, 0, 0));
+                        }
+                    }
+                }
+            }
+        }
+        // Missing new fields on a historical atom preserve the old settlement contract.
+        let old = serde_json::json!({"options":[1],"mask":2,"kind":"parity","scope":"special","condition":"all","stake":100,"payout":200,"rebate":2,"odds":"2"});
+        let a: Atom = serde_json::from_value(old).unwrap();
+        assert!(!settle(&[a], &Draw::predicted([1, 2, 3, 4, 5, 6, 49], &m))[0].voided);
+    }
+    #[test]
     fn precision_and_overflow() {
         assert_eq!(rounded_product(100, 50).unwrap(), 1);
         assert_eq!(rounded_product(10000, 430000).unwrap(), 430000);
@@ -581,6 +830,7 @@ mod tests {
             assert!(scaled(invalid, 4).is_err(), "{invalid}");
         }
         assert!(rounded_product(MONEY_LIMIT, MONEY_LIMIT).is_err());
+        assert!(checked_sum([i64::MIN]).is_err());
     }
     #[test]
     fn quantities_and_capacity() {

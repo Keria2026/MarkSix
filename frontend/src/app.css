@@ -2966,3 +2966,157 @@ td {
     bottom: max(12px, env(safe-area-inset-bottom));
   }
 }
+
+/* v0.2: API wave colors and comfortable ledger controls. */
+.ball[data-wave="0"] {
+  background: linear-gradient(145deg, #d93647, #ae2032);
+  color: #fff;
+}
+.ball[data-wave="1"] {
+  background: linear-gradient(145deg, #246bda, #174ba4);
+  color: #fff;
+}
+.ball[data-wave="2"] {
+  background: linear-gradient(145deg, #19864e, #106438);
+  color: #fff;
+}
+.ball[data-wave] {
+  box-shadow:
+    inset 0 1px 2px #ffffff55,
+    0 4px 10px #172c4817;
+  border-color: #ffffffb3;
+}
+.nav-submenu {
+  padding: 2px 0 8px 27px;
+}
+.nav-submenu button {
+  min-height: 44px;
+  font-size: 12px;
+  padding: 10px 12px;
+}
+.record-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 0 24px 20px;
+}
+.record-filters label {
+  flex: 1 1 150px;
+  font-size: 12px;
+}
+.record-filters input {
+  min-height: 44px;
+  width: 100%;
+}
+.bettor-input {
+  display: block;
+  margin-bottom: 16px;
+}
+.bettor-input input {
+  width: 100%;
+  min-height: 48px;
+}
+.bettor-name {
+  color: #5e6878;
+  margin-top: 5px;
+}
+.ledger-stats {
+  margin-bottom: 24px;
+}
+.official-panel {
+  padding: 18px;
+}
+.official-panel iframe {
+  width: 100%;
+  height: 75vh;
+  min-height: 520px;
+  border: 0;
+  border-radius: 16px;
+  background: white;
+}
+.detail-ledger {
+  margin-top: 24px;
+}
+.audit-details {
+  margin-top: 20px;
+  border-top: 1px solid #dce3ed;
+  padding-top: 16px;
+}
+.audit-details summary {
+  cursor: pointer;
+  min-height: 44px;
+}
+.audit-details p {
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.records-panel + .records-panel {
+  margin-top: 24px;
+}
+@media (max-width: 700px) {
+  .record-filters {
+    padding: 0 16px 16px;
+  }
+  .record-filters label {
+    flex-basis: 100%;
+  }
+  .nav-submenu {
+    padding-left: 0;
+  }
+  .official-panel {
+    padding: 10px;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    backdrop-filter: none;
+    background: #f8fafc;
+  }
+}
+
+.table-scroll:focus-visible {
+  outline: 2px solid var(--accent, #2458d3);
+  outline-offset: 3px;
+}
+.history-categories {
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.sidebar nav > button .nav-label-short {
+  display: none;
+}
+@media (max-width: 720px) {
+  .sidebar nav > button {
+    width: auto;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .sidebar nav > button .nav-label {
+    display: none;
+  }
+  .sidebar nav > button .nav-label-short {
+    display: block;
+    white-space: nowrap;
+  }
+  .sidebar .nav-submenu {
+    position: absolute;
+    bottom: 74px;
+    left: 0;
+    right: 0;
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    border-radius: 16px;
+    background: #f7faff;
+    box-shadow: 0 6px 24px #294c8f20;
+    border: 1px solid #dce6f4;
+  }
+  .sidebar .nav-submenu button {
+    flex: 1;
+    padding: 8px 4px;
+    font-size: 11px;
+  }
+}

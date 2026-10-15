@@ -207,33 +207,37 @@ pub async fn settle_period(state: &AppState, id: &str) -> anyhow::Result<()> {
     let draw = p
         .draw
         .ok_or_else(|| anyhow::anyhow!("结算期次缺少开奖快照"))?;
-    let rows =
-        sqlx::query("SELECT id,atoms FROM bets WHERE period_id=? AND status='pending' FOR UPDATE")
-            .bind(id)
-            .fetch_all(&mut *tx)
-            .await?;
-    for row in rows {
-        let bet_id: String = row.try_get("id")?;
-        let atoms: Json<Vec<Atom>> = row.try_get("atoms")?;
-        let results = settle(&atoms, &draw);
-        let payout = checked_sum(results.iter().map(|r| r.payout)).map_err(anyhow::Error::msg)?;
-        let winning_stake = checked_sum(
-            atoms
+    // Both ledgers commit with the period, so reports never observe half a settlement.
+    for table in ["bets", "layoffs"] {
+        let rows = sqlx::query(&format!(
+            "SELECT id,atoms FROM {table} WHERE period_id=? AND status='pending' FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for row in rows {
+            let bet_id: String = row.try_get("id")?;
+            let atoms: Json<Vec<Atom>> = row.try_get("atoms")?;
+            let results = settle(&atoms, &draw);
+            let sum = |values: Vec<i64>| checked_sum(values).map_err(anyhow::Error::msg);
+            let payout = sum(results.iter().map(|r| r.payout).collect())?;
+            let rebate = sum(results.iter().map(|r| r.rebate).collect())?;
+            let winning = sum(atoms
                 .iter()
                 .zip(&results)
                 .filter(|(_, r)| r.won)
-                .map(|(a, _)| a.stake),
-        )
-        .map_err(anyhow::Error::msg)?;
-        sqlx::query(
-            "UPDATE bets SET status='settled',payout=?,winning_stake=?,results=? WHERE id=?",
-        )
-        .bind(payout)
-        .bind(winning_stake)
-        .bind(Json(results))
-        .bind(bet_id)
-        .execute(&mut *tx)
-        .await?;
+                .map(|(a, _)| a.stake)
+                .collect())?;
+            let refunded = sum(atoms
+                .iter()
+                .zip(&results)
+                .filter(|(_, r)| r.voided)
+                .map(|(a, _)| a.stake)
+                .collect())?;
+            let void_units = results.iter().filter(|r| r.voided).count() as i32;
+            sqlx::query(&format!("UPDATE {table} SET status='settled',payout=?,rebate=?,winning_stake=?,void_stake=?,void_units=?,results=? WHERE id=?"))
+                .bind(payout).bind(rebate).bind(winning).bind(refunded).bind(void_units).bind(Json(results)).bind(bet_id).execute(&mut *tx).await?;
+        }
     }
     sqlx::query("UPDATE periods SET state='settled',settled_at=UTC_TIMESTAMP(6) WHERE id=?")
         .bind(id)
@@ -261,7 +265,16 @@ pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
             .bind(&p.id)
             .fetch_all(&mut *tx)
             .await?;
-    let atoms: Vec<Atom> = rows.into_iter().flat_map(|j| j.0).collect();
+    let mut atoms: Vec<Atom> = rows.into_iter().flat_map(|j| j.0).collect();
+    let outgoing: Vec<Json<Vec<Atom>>> =
+        sqlx::query_scalar("SELECT atoms FROM layoffs WHERE period_id=? AND status='pending'")
+            .bind(&p.id)
+            .fetch_all(&mut *tx)
+            .await?;
+    atoms.extend(outgoing.into_iter().flat_map(|j| j.0).map(|mut a| {
+        a.position = -1;
+        a
+    }));
     sqlx::query("UPDATE periods SET risk_status='computing',risk_started_at=UTC_TIMESTAMP(6),risk_version=? WHERE id=?").bind(p.bet_version).bind(&p.id).execute(&mut *tx).await?;
     let cancel = Arc::new(AtomicBool::new(false));
     state

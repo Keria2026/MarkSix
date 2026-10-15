@@ -23,6 +23,33 @@ function Protect-Data {
     }
     Set-Acl -LiteralPath $DataDirectory -AclObject $acl
 }
+# MySQL's Windows option parser does not reliably accept Unicode paths. Expose
+# both runtime and persistent data through private, ASCII-only NTFS junctions.
+# No data is copied, renamed or deleted; old installations keep their data.
+function Initialize-AsciiPaths {
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $base = [Environment]::GetFolderPath('CommonApplicationData')
+    if ($base -match '[^\x20-\x7e]') { throw 'ProgramData must have an ASCII path for the MySQL compatibility bridge.' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $key = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($DataDirectory.ToUpperInvariant() + '|' + $package.ToUpperInvariant())))).Replace('-','').Substring(0,24) } finally { $sha.Dispose() }
+    $bridge = Join-Path (Join-Path (Join-Path $base 'MarkSix') $sid) $key
+    [IO.Directory]::CreateDirectory($bridge) | Out-Null
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($identity in @([Security.Principal.WindowsIdentity]::GetCurrent().User, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')))) {
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
+    }
+    Set-Acl -LiteralPath $bridge -AclObject $acl
+    foreach ($entry in @(@{name='data';target=$DataDirectory},@{name='runtime';target=(Join-Path $package 'mysql')})) {
+        $link = Join-Path $bridge $entry.name
+        if (Test-Path -LiteralPath $link) {
+            $item = Get-Item -LiteralPath $link -Force
+            if ($item.LinkType -ne 'Junction' -or [IO.Path]::GetFullPath([string]$item.Target[0]).TrimEnd('\') -ne $entry.target.TrimEnd('\')) { throw "Unexpected path at $link; refusing to replace it." }
+        } else { New-Item -ItemType Junction -Path $link -Target $entry.target | Out-Null }
+    }
+    $script:mysqlDataPath = Join-Path $bridge 'data'
+    $script:mysqlRuntimePath = Join-Path $bridge 'runtime'
+}
 function Random-Hex {
     $bytes = New-Object byte[] 24
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -35,7 +62,7 @@ function Decrypt-Text([string]$Value) {
     return (New-Object Net.NetworkCredential('', $secure)).Password
 }
 function Assert-Package {
-    $manifest = Get-Content -LiteralPath (Join-Path $package 'manifest.json') -Raw | ConvertFrom-Json
+    $manifest = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $package 'manifest.json') -Raw | ConvertFrom-Json
     foreach ($entry in $manifest.files) {
         $path = [IO.Path]::GetFullPath((Join-Path $package $entry.path))
         if (-not $path.StartsWith($package + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid manifest path.' }
@@ -45,7 +72,7 @@ function Assert-Package {
 function Get-OwnedProcess([string]$Name) {
     $recordPath = Join-Path $DataDirectory "$Name.process.json"
     if (-not (Test-Path -LiteralPath $recordPath)) { return $null }
-    $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+    $record = Get-Content -Encoding UTF8 -LiteralPath $recordPath -Raw | ConvertFrom-Json
     $process = Get-Process -Id $record.id -ErrorAction SilentlyContinue
     if ($null -eq $process) { return $null }
     if ($process.Path -ne $record.path -or $process.StartTime.ToUniversalTime().Ticks.ToString() -ne $record.started) { throw "Process identity changed ($Name); refusing to stop or reuse it." }
@@ -53,7 +80,7 @@ function Get-OwnedProcess([string]$Name) {
 }
 function Start-OwnedProcess([string]$Name, [string]$Exe, [string]$Arguments) {
     $process = Start-Process -FilePath $Exe -ArgumentList $Arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $DataDirectory "$Name.stdout.log") -RedirectStandardError (Join-Path $DataDirectory "$Name.stderr.log")
-    $record = @{ id = $process.Id; path = $Exe; started = $process.StartTime.ToUniversalTime().Ticks.ToString() }
+    $record = @{ id = $process.Id; path = $process.Path; started = $process.StartTime.ToUniversalTime().Ticks.ToString() }
     Write-PrivateText (Join-Path $DataDirectory "$Name.process.json") ($record | ConvertTo-Json)
     return $process
 }
@@ -62,7 +89,7 @@ function Assert-PortFree([int]$Port) {
     try { $listener.Start() } catch { throw "Local port $Port is in use. Stop the conflicting application first." } finally { $listener.Stop() }
 }
 function Invoke-Database([string]$Tool, [string[]]$ToolArguments) {
-    $clientPath = Join-Path $DataDirectory ('client-' + [guid]::NewGuid().ToString('N') + '.cnf')
+    $clientPath = Join-Path $script:mysqlDataPath ('client-' + [guid]::NewGuid().ToString('N') + '.cnf')
     Write-PrivateText $clientPath "[client]`r`nhost=127.0.0.1`r`nport=33306`r`nuser=root`r`npassword=$script:rootPassword`r`nprotocol=tcp`r`n"
     try {
         # Windows PowerShell 5.1 treats native stderr as ErrorRecord objects.
@@ -70,7 +97,7 @@ function Invoke-Database([string]$Tool, [string[]]$ToolArguments) {
         $savedPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            $output = & (Join-Path $package "mysql\bin\$Tool.exe") "--defaults-extra-file=$clientPath" @ToolArguments 2>&1
+            $output = & (Join-Path $script:mysqlRuntimePath "bin\$Tool.exe") "--defaults-extra-file=$clientPath" @ToolArguments 2>&1
             $nativeExit = $LASTEXITCODE
         } finally { $ErrorActionPreference = $savedPreference }
         if ($nativeExit -ne 0) {
@@ -90,15 +117,15 @@ function Stop-Native {
     }
 }
 function Start-Native {
-    $mysqlExe = Join-Path $package 'mysql\bin\mysqld.exe'
+    $mysqlExe = Join-Path $script:mysqlRuntimePath 'bin\mysqld.exe'
     $db = Get-OwnedProcess 'mysql'
     $app = Get-OwnedProcess 'app'
-    if (($null -ne $db -and $db.Path -ne $mysqlExe) -or ($null -ne $app -and $app.Path -ne (Join-Path $package 'marksix.exe'))) { throw 'An older package is running. Run its Stop.cmd before upgrading.' }
+    if (($null -ne $db -and $db.Path -ne $mysqlExe -and $db.Path -ne (Join-Path $package 'mysql\bin\mysqld.exe')) -or ($null -ne $app -and $app.Path -ne (Join-Path $package 'marksix.exe'))) { throw 'An older package is running. Run its Stop.cmd before upgrading.' }
     if ($null -eq $app) { Assert-PortFree 8088 }
-    $iniPath = Join-Path $DataDirectory 'mysql.ini'
-    $base = (Join-Path $package 'mysql').Replace('\','/')
-    $data = (Join-Path $DataDirectory 'mysql').Replace('\','/')
-    $log = (Join-Path $DataDirectory 'mysql-error.log').Replace('\','/')
+    $iniPath = Join-Path $script:mysqlDataPath 'mysql.ini'
+    $base = $script:mysqlRuntimePath.Replace('\','/')
+    $data = (Join-Path $script:mysqlDataPath 'mysql').Replace('\','/')
+    $log = (Join-Path $script:mysqlDataPath 'mysql-error.log').Replace('\','/')
     Write-PrivateText $iniPath "[mysqld]`r`nbasedir=`"$base`"`r`ndatadir=`"$data`"`r`nlog-error=`"$log`"`r`nbind-address=127.0.0.1`r`nport=33306`r`nmysqlx=0`r`nskip-name-resolve`r`nlocal-infile=0`r`nmax-connections=24`r`ninnodb-buffer-pool-size=96M`r`nperformance-schema=OFF`r`n"
     $initialized = Join-Path $DataDirectory 'mysql-initialized'
     $provisioned = Join-Path $DataDirectory 'mysql-provisioned'
@@ -112,7 +139,7 @@ function Start-Native {
         }
         $arguments = "--defaults-file=`"$iniPath`""
         if (-not (Test-Path -LiteralPath $provisioned)) {
-            $bootstrapPath = Join-Path $DataDirectory 'bootstrap.sql'
+            $bootstrapPath = Join-Path $script:mysqlDataPath 'bootstrap.sql'
             $sql = "ALTER USER 'root'@'localhost' IDENTIFIED BY '$script:rootPassword';`nCREATE DATABASE IF NOT EXISTS marksix CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`n"
             $sql += "CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '$script:rootPassword';`nGRANT ALL ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;`n"
             foreach ($hostName in @('localhost','127.0.0.1')) {
@@ -177,10 +204,11 @@ try {
         $plain = $null
     }
     if (-not (Test-Path -LiteralPath $configPath)) { throw 'Run Install.cmd first using this Windows user account.' }
-    $script:config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $script:config = Get-Content -Encoding UTF8 -LiteralPath $configPath -Raw | ConvertFrom-Json
     $script:rootPassword = Decrypt-Text $script:config.rootPassword
     $script:dbPassword = Decrypt-Text $script:config.dbPassword
     if ($script:rootPassword -notmatch '^[a-f0-9]{48}$' -or $script:dbPassword -notmatch '^[a-f0-9]{48}$') { throw 'Invalid database credentials in config.' }
+    Initialize-AsciiPaths
     switch ($Action) {
         'Install' { Start-Native }
         'Start' { Start-Native }
@@ -190,7 +218,7 @@ try {
             $backupDirectory = Join-Path $DataDirectory 'backups'
             [IO.Directory]::CreateDirectory($backupDirectory) | Out-Null
             $destination = Join-Path $backupDirectory ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N') + '.sql')
-            $temporary = $destination + '.partial'
+            $temporary = Join-Path (Join-Path $script:mysqlDataPath 'backups') ([IO.Path]::GetFileName($destination) + '.partial')
             Invoke-Database 'mysqldump' @('--single-transaction','--routines','--triggers','--hex-blob','--no-tablespaces','--set-gtid-purged=OFF',"--result-file=$temporary",'--databases','marksix') | Out-Null
             Move-Item -LiteralPath $temporary -Destination $destination
             Write-Host "Backup: $destination"
