@@ -15,6 +15,13 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
         .await
         .unwrap();
     for table in [
+        "hosted_sessions",
+        "hosted_codes",
+        "hosted_accounts",
+        "authority_sessions",
+        "authority_administrators",
+        "authority_audit",
+        "hosted_deletions",
         "client_license",
         "license_codes",
         "bet_mutations",

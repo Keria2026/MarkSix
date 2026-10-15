@@ -1,58 +1,7 @@
-# Ubuntu 部署与维护
+# Dev1.0 部署与维护
 
-## 使用 Actions 构建包
+当前入口为 [VPS / Actions / Docker / Nginx 指南](../deploy/vps/README.md)，包含首次配置、双域名 HTTPS、GitHub Secrets、更新、备份、恢复及失败处理。
 
-适用 Ubuntu 22.04／24.04 x64，需预先安装 Docker Engine、Docker Compose v2 和 Python 3；当前用户须能运行 Docker。运行目标 2 vCPU／1 GB，构建建议使用更大内存机器或 GitHub Actions。
+客户只访问网站。dev 验证后由运营方合并 master，Actions 成功才部署；不在 VPS 上现场构建。
 
-1. 在 dev 分支成功的 **CI** 工作流下载 `MarkSix-Ubuntu-x64` 并完整解压到固定目录。
-2. 运行 `bash install.sh`。脚本验证包内 SHA256，首次要求设置管理员账号和密码，生成私有 `.env`，导入包含 MySQL 的镜像并等待服务健康。
-3. 浏览器访问 `http://127.0.0.1:8088`，登录后粘贴一次性激活码（自动携带授权服务地址）。包不包含任何预置账号密码，见 [授权说明](LICENSING.md)。
-4. 日常启动 `bash start.sh`，停止 `bash stop.sh`。已启动服务通过 Docker 重启策略恢复。
-
-包内 `fixtures/customer-plays.json` 可在“玩法与配置”预览导入：33 条用户赔率表配置、统一 10% 反水。导入另建规则，不覆盖现有配置。
-
-默认仅绑定服务器本机。远程管理可使用 `ssh -L 8088:127.0.0.1:8088 user@server`，再在自己电脑访问该地址。不要直接公开数据库端口。
-
-## 从源码部署
-
-在仓库根目录执行：
-
-```bash
-python3 scripts/configure.py
-docker compose up -d --build --wait --wait-timeout 180
-```
-
-首次构建需要下载依赖。`.env` 已存在时配置脚本拒绝覆盖；修改环境变量不会重置数据库中的管理员密码。
-
-## 备份和恢复
-
-```bash
-bash scripts/backup.sh
-# 恢复会覆盖当前数据库，确认目标和备份后执行：
-CONFIRM_RESTORE=yes bash scripts/restore.sh /完整路径/marksix-时间.sql.gz
-# 也接受 Windows Native Backup.cmd 生成的 UTF-8 .sql 文件。
-```
-
-备份包含业务数据及账号密码哈希，应复制到其他存储并限制访问。恢复脚本会停止应用和前端，自动生成恢复前备份，再清空并导入 marksix 数据库；导入失败时应用保持停止，成功后等待健康启动。可跨 Ubuntu／Windows 迁移完整业务库，目标版本须相同或更新；新设备须重新激活。不要把旧库备份恢复到更旧版本程序。
-
-## 升级
-
-1. 先备份数据库、旧程序包及 `.env`。
-2. 停止旧应用，完整解压新版文件；保留 `.env`，不要删除 Docker 卷。
-3. 运行新包 `bash install.sh` 导入镜像并启动。原 Compose 项目名为 `marksix`，数据库卷沿用。
-4. 检查登录、历史记录和当期期次。v0.4 使用增量迁移，旧投注快照不变；旧投注人显示“未登记（旧记录）”。
-
-不要运行 `docker compose down -v`，它会删除数据库。迁移后回退旧程序，应同时恢复对应旧版数据库备份。
-
-## 日志和配置
-
-```bash
-docker compose ps
-docker compose logs --tail=100 backend db
-```
-
-网页端口由 `.env` 中 PORT 控制，默认 8088。应用与数据库只在 Compose 内部通信。开始／封盘时间在网页配置，需要再次验证管理员账号密码，下一期生效。
-
-运行服务需保留主机 `/etc/machine-id` 挂载，它用于设备绑定。重建容器不改变设备授权；换主机需要新码。
-
-开奖接口、官方频道和授权核验需要外网。运行服务不需要 GitHub 凭据；安装包不包含云开发环境的配置或密钥。
+旧本机工作台的 install.sh、8088 和设备激活流程见 [历史 Ubuntu 指南](legacy/RUNNING.md)，不适用于 Dev1.0。

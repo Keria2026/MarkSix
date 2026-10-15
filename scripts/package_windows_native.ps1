@@ -6,7 +6,7 @@ if (Test-Path -LiteralPath $destinationPath) { throw 'Package destination must n
 New-Item -ItemType Directory -Path $destinationPath | Out-Null
 Get-ChildItem deploy/windows-native -File | Where-Object { $_.Extension -in @('.cmd','.ps1','.md') } | Copy-Item -Destination $destinationPath
 Copy-Item backend/target/release/marksix.exe $destinationPath
-Copy-Item docs/LICENSING.md (Join-Path $destinationPath 'LICENSING.md')
+Copy-Item docs/legacy/LICENSING.md (Join-Path $destinationPath 'LICENSING.md')
 Copy-Item frontend/dist (Join-Path $destinationPath 'www') -Recurse
 New-Item -ItemType Directory -Path (Join-Path $destinationPath 'fixtures') | Out-Null
 Copy-Item fixtures/customer-plays.json (Join-Path $destinationPath 'fixtures/customer-plays.json')

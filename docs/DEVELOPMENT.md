@@ -6,7 +6,44 @@
 
 金额使用整数分和缩放整数赔率，乘法通过 i128 中间值防溢出，每基础注四舍五入后汇总。MySQL 中一条原始投注保存所有基础注与规则 JSON，事务原子提交；期次行锁串行化容量校验、撤销和结算。请求 UUID 实现幂等。会话只保存随机令牌的 SHA-256，密码用 Argon2。
 
-## 本机开发
+## Dev1.0 托管开发
+
+新增 `backend/src/hosted/`：accounts 处理凭据、会话和核销，management 提供 Web 管理 API，portal 验证客户会话后分发，tenancy 维护独立客户池和共享计算并发限制。`frontend/src/Management.svelte` 是管理后台，入口通过 `/api/site` 选择站点。
+
+生产容器和权限以 [VPS 指南](../deploy/vps/README.md) 为准。授权端先迁移控制库及所有 ready 客户库，再启动客户服务；客户服务不持有建库权限。新版本只追加迁移，不重写已发布迁移。Dev1.0 使用全新控制库，旧部署独立保留。
+
+本地分别设置私有环境变量后运行（命令不要粘贴真实密码到文档）：
+
+```bash
+# 授权端：CONTROL_DATABASE_URL、PROVISION_DATABASE_URL、AUTHORITY_ADMIN_USERNAME/PASSWORD
+# TENANT_DB_HOST / TENANT_DB_PORT 指向同一测试 MySQL
+BIND_ADDR=127.0.0.1:8090 cargo run --locked -- --hosted-authority
+# 客户端：CONTROL_DATABASE_URL；生产使用受限 portal 数据库账号
+BIND_ADDR=127.0.0.1:8080 cargo run --locked -- --hosted
+```
+
+前端 Vite 的 API_TARGET 指向要调试的服务。生产 Secure Cookie 使用 HTTPS；仅本地调试允许 SECURE_COOKIE=false。
+
+测试 MySQL 的 max_connections 至少设为 64；旧本机开发容器的 20 连接配置不足以运行托管连接池边界测试。
+
+真实托管集成测试会创建、授权并删除随机独立数据库及 MySQL 用户。仅对专用测试 MySQL 执行，TEST_DATABASE_URL 必须以 /marksix_test 结尾；另设置 TEST_PROVISION_DATABASE_URL 指向同一测试服务器的数据库管理连接，并配置 TENANT_DB_HOST/PORT：
+
+```bash
+cargo test --locked --lib hosted::tests -- --ignored
+```
+
+Docker 验收使用随机 Compose 项目和自签名测试证书，不接触旧系统。CI 以 root 执行，验证生产 UID 10001；非 root 本地运行只调整测试授权容器 UID 来匹配测试备份目录。
+
+```bash
+# 仓库根目录；先构建 marksix-backend:dev1-test / marksix-frontend:dev1-test
+python3 scripts/hosted_acceptance.py --browser --bun /完整路径/bun
+# 容量目标，必须记录失败、延迟及资源信息，不能只看在线会话数
+python3 scripts/hosted_acceptance.py --users 200 --load-seconds 60
+```
+
+本机 Playwright 浏览器缓存可用 --browser-cache 指定。容器测试结果写入 test-results/hosted-acceptance.json，不包含密码和激活码。其他浏览器测试使用下方原有 e2e_server，不要与会重置 marksix_test 的测试同时运行。
+
+## 业务引擎及历史本机调试
 
 自行创建开发数据库及专用账号，在当前终端设置 `DATABASE_URL`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`，不要把密码写入仓库。然后：
 

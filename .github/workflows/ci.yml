@@ -22,6 +22,7 @@ jobs:
           MYSQL_DATABASE: marksix_test
           MYSQL_USER: marksix
           MYSQL_PASSWORD: disposable-ci-password
+          MYSQL_ROOT_HOST: "%"
         ports: ['3306:3306']
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1"
@@ -29,6 +30,9 @@ jobs:
     env:
       TEST_DATABASE_URL: mysql://marksix:disposable-ci-password@127.0.0.1:3306/marksix_test
       TEST_ADMIN_PASSWORD: disposable-browser-password
+      TEST_PROVISION_DATABASE_URL: mysql://root:disposable-ci-root@127.0.0.1:3306/marksix_test
+      TENANT_DB_HOST: 127.0.0.1
+      TENANT_DB_PORT: "3306"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
@@ -50,6 +54,7 @@ jobs:
           cargo test --locked --test workflow -- --ignored
           cargo test --locked --lib license::tests::online_activation -- --ignored
           cargo test --locked --test license_cli -- --ignored
+          cargo test --locked --lib hosted::tests -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
       - name: Customer rules runtime accounting acceptance
@@ -171,6 +176,25 @@ jobs:
           docker compose -f ubuntu-package/license-authority/compose.yaml stop --timeout 60
           rm ubuntu-package/license-authority/signing-key.hex
           python3 ubuntu-package/verify.py
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Prepare hosted browser acceptance
+        working-directory: frontend
+        run: |
+          bun install --frozen-lockfile
+          bun x playwright install --with-deps chromium
+      - name: Hosted Nginx TLS, accounts and lifecycle acceptance
+        env:
+          BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
+          FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
+        run: sudo python3 scripts/hosted_acceptance.py --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE" --browser --bun "$(command -v bun)" --browser-cache "$HOME/.cache/ms-playwright"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-acceptance
+          path: test-results/hosted-acceptance.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         id: ubuntu-package
         with:
@@ -183,7 +207,7 @@ jobs:
         env:
           PACKAGE_URL: ${{ steps.ubuntu-package.outputs.artifact-url }}
         run: |
-          printf 'Ubuntu x64 deployment: [Download ZIP](%s). Extract all files and run bash install.sh.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Ubuntu x64 deployment: [Download ZIP](%s). For Dev1.0 follow hosted/README.md; root install.sh is legacy local deployment.\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Publish tested images
         if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:
@@ -193,3 +217,55 @@ jobs:
           docker push "$BACKEND_IMAGE"
           docker push "$FRONTEND_IMAGE"
           printf 'Backend: `%s`\nFrontend: `%s`\n' "$BACKEND_IMAGE" "$FRONTEND_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+  deploy:
+    name: Deploy Dev1.0 to VPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [verify, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    concurrency:
+      group: marksix-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MarkSix-Ubuntu-x64
+          path: tested-release
+      - name: Transfer and deploy the tested artifact
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_PORT: ${{ vars.VPS_PORT }}
+          VPS_KNOWN_HOSTS: ${{ vars.VPS_KNOWN_HOSTS }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$VPS_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]]
+          (( VPS_PORT >= 1 && VPS_PORT <= 65535 ))
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ -n "$VPS_KNOWN_HOSTS" && -n "$VPS_SSH_KEY" ]]
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/marksix"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/marksix" "$HOME/.ssh/known_hosts"
+          trap 'rm -f "$HOME/.ssh/marksix"' EXIT
+          ssh_options=(-i "$HOME/.ssh/marksix" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "sudo -n install -d -m 755 -o $VPS_USER /opt/marksix/releases/$GITHUB_SHA"
+          tar -cf tested-release.tar -C tested-release .
+          scp "${ssh_options[@]}" -P "$VPS_PORT" tested-release.tar "$VPS_USER@$VPS_HOST:/opt/marksix/releases/$GITHUB_SHA/package.tar"
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "tar -xf /opt/marksix/releases/$GITHUB_SHA/package.tar -C /opt/marksix/releases/$GITHUB_SHA && sudo -n systemd-run --unit=marksix-deploy-$GITHUB_SHA --collect --wait --pipe /bin/bash /opt/marksix/releases/$GITHUB_SHA/hosted/release.sh $GITHUB_SHA $VPS_USER"
+      - name: Verify public domain routing
+        env:
+          PUBLIC_APP_URL: ${{ vars.APP_URL || 'https://3801.win' }}
+          PUBLIC_ADMIN_URL: ${{ vars.ADMIN_URL || 'https://admin.3801.win' }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_APP_URL%/}/api/site" | python3 -c 'import json,sys; assert json.load(sys.stdin)["mode"]=="hosted"'
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_ADMIN_URL%/}/api/site" | python3 -c 'import json,sys; assert json.load(sys.stdin)["mode"]=="authority"'
+          printf 'Dev1.0 production commit: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

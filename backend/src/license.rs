@@ -286,6 +286,9 @@ async fn check(state: &AppState, force: bool) -> ApiResult<Claims> {
     Ok(updated)
 }
 pub async fn require(state: &AppState) -> ApiResult<()> {
+    if let Some(policy) = &state.hosted {
+        return crate::hosted::allowed(policy).await;
+    }
     if state.license.is_some() {
         check(state, false).await?;
     }

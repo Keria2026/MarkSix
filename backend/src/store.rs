@@ -3,13 +3,19 @@ use anyhow::Context;
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, MySqlPool, Row, mysql::MySqlPoolOptions, types::Json};
+use sqlx::{
+    ConnectOptions, FromRow, MySqlPool, Row,
+    mysql::{MySqlConnectOptions, MySqlPoolOptions},
+    types::Json,
+};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
 use tokio::sync::{Mutex, Semaphore};
+
+pub(crate) type DrawCache = Arc<Mutex<Option<(Instant, Result<Vec<serde_json::Value>, String>)>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -25,10 +31,19 @@ pub struct AppState {
     pub auth_gate: Arc<Semaphore>,
     pub cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub login_attempts: Arc<Mutex<VecDeque<Instant>>>,
+    pub(crate) hosted: Option<crate::hosted::Policy>,
+    pub(crate) draw_cache: Option<DrawCache>,
 }
 impl AppState {
     pub fn new(pool: MySqlPool) -> anyhow::Result<Self> {
-        Ok(Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("MarkSix/Dev1.0 (+hosted statistics)")
+            .build()?;
+        Ok(Self::with_client(pool, client))
+    }
+    pub(crate) fn with_client(pool: MySqlPool, client: reqwest::Client) -> Self {
+        Self {
             pool,
             license: None,
             shutdown: Arc::default(),
@@ -38,17 +53,16 @@ impl AppState {
                     .with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
                     .naive_local()
             }),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .user_agent("MarkSix/0.4 (+local statistics)")
-                .build()?,
+            client,
             draw_url: "https://macaumarksix.com/api/macaujc2.com".into(),
             secure_cookie: false,
             risk_gate: Arc::new(Semaphore::new(1)),
             auth_gate: Arc::new(Semaphore::new(1)),
             cancellations: Arc::default(),
             login_attempts: Arc::default(),
-        })
+            hosted: None,
+            draw_cache: None,
+        }
     }
     pub fn now(&self) -> NaiveDateTime {
         (self.clock)()
@@ -69,7 +83,10 @@ pub async fn connect(url: &str) -> anyhow::Result<MySqlPool> {
                 Ok(())
             })
         })
-        .connect(url)
+        .connect_with(
+            url.parse::<MySqlConnectOptions>()?
+                .disable_statement_logging(),
+        )
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)

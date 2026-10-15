@@ -29,20 +29,34 @@ pub async fn run(state: AppState) {
     }
 }
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
-    if crate::license::require(state).await.is_err() {
+    let active = crate::license::require(state).await.is_ok();
+    if !active {
         for flag in state.cancellations.lock().await.values() {
             flag.store(true, Ordering::Relaxed);
         }
+        if state.hosted.is_none() {
+            return Ok(());
+        }
+    }
+    if let Some(policy) = &state.hosted
+        && !crate::hosted::background_allowed(policy)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.1))?
+    {
         return Ok(());
     }
-    ensure_period(state, state.now().date()).await?;
+    if active {
+        ensure_period(state, state.now().date()).await?;
+    }
     let settling: Vec<String> = sqlx::query_scalar("SELECT id FROM periods WHERE state='settling'")
         .fetch_all(&state.pool)
         .await?;
     for id in settling {
         settle_period(state, &id).await?;
     }
-    start_risk(state).await?;
+    if active {
+        start_risk(state).await?;
+    }
     let now = state.now();
     let periods: Vec<Period> =
         sqlx::query_as("SELECT * FROM periods WHERE state='pending' ORDER BY business_date")
@@ -90,6 +104,20 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 async fn fetch(state: &AppState) -> anyhow::Result<Vec<Value>> {
+    if let Some(cache) = &state.draw_cache {
+        let mut cache = cache.lock().await;
+        if let Some((time, values)) = cache.as_ref()
+            && time.elapsed() < Duration::from_secs(30)
+        {
+            return values.clone().map_err(anyhow::Error::msg);
+        }
+        let values = fetch_uncached(state).await.map_err(|e| e.to_string());
+        *cache = Some((std::time::Instant::now(), values.clone()));
+        return values.map_err(anyhow::Error::msg);
+    }
+    fetch_uncached(state).await
+}
+async fn fetch_uncached(state: &AppState) -> anyhow::Result<Vec<Value>> {
     let mut response = state
         .client
         .get(&state.draw_url)
@@ -318,4 +346,40 @@ pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod hosted_fetch_tests {
+    use super::*;
+    #[tokio::test]
+    async fn shared_failure_cache_prevents_per_customer_retry_storms() {
+        use axum::{Router, http::StatusCode, routing::get};
+        use std::sync::atomic::AtomicUsize;
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let app = Router::new().route(
+            "/draw",
+            get(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_lazy("mysql://unused:unused@127.0.0.1/unused")
+            .unwrap();
+        let mut state = AppState::new(pool).unwrap();
+        state.draw_url = format!("http://{address}/draw");
+        state.client = reqwest::Client::builder().no_proxy().build().unwrap();
+        state.draw_cache = Some(Arc::default());
+        let (a, b) = tokio::join!(fetch(&state), fetch(&state));
+        assert!(a.is_err() && b.is_err());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
 }

@@ -84,6 +84,7 @@
     | "settings"
     | "statistics"
     | "official";
+  const hosted = document.documentElement.dataset.mode === "hosted";
   const amountPattern = /^\d+$/;
   let tab = $state<Tab>("overview");
   let boot = $state<Bootstrap | null>(null);
@@ -91,7 +92,7 @@
     loading = $state(true),
     busy = $state(false),
     refreshing = $state(false);
-  let username = $state("admin"),
+  let username = $state(hosted ? "" : "admin"),
     password = $state(""),
     loginError = $state(""),
     globalError = $state("");
@@ -918,9 +919,11 @@
         <h1>每一期，<br />都清晰在握<span class="blue">。</span></h1>
         <p>从一笔投注，到整个盘口。<br />让记录有序，让每一个数字有据可循。</p>
         <div class="login-tags">
-          <span><ShieldCheck size={15} /> 本机私享</span><span
-            ><Layers3 size={15} /> 精确结算</span
-          ><span><Activity size={15} /> 风险洞察</span>
+          <span
+            ><ShieldCheck size={15} /> {hosted ? "独立账本" : "本机私享"}</span
+          ><span><Layers3 size={15} /> 精确结算</span><span
+            ><Activity size={15} /> 风险洞察</span
+          >
         </div>
       </div>
       <div class="login-art" aria-hidden="true">
@@ -938,15 +941,19 @@
     <section class="login-panel glass">
       <div class="login-icon"><LockKeyhole size={25} /></div>
       <h2>欢迎回来</h2>
-      <p>登录管理员账号，继续今天的工作。</p>
+      <p>
+        {hosted
+          ? "登录客户账号，继续今天的工作。"
+          : "登录管理员账号，继续今天的工作。"}
+      </p>
       <form onsubmit={signIn}>
         <label
-          >管理员账号<input
+          >{hosted ? "客户账号" : "管理员账号"}<input
             autocomplete="username"
             bind:value={username}
             required
             maxlength="80"
-            placeholder="输入管理员账号"
+            placeholder={hosted ? "输入客户账号" : "输入管理员账号"}
           /></label
         ><label
           >登录密码<input
@@ -1031,7 +1038,11 @@
       <div class="sidebar-bottom">
         <div class="private-card">
           <span class="private-icon"><ShieldCheck size={19} /></span>
-          <div><strong>本机私享空间</strong><small>数据由你掌控</small></div>
+          <div>
+            <strong>{hosted ? "独立账本空间" : "本机私享空间"}</strong><small
+              >数据由你掌控</small
+            >
+          </div>
         </div>
         <div class="account">
           <span class="avatar">A</span>
@@ -1787,23 +1798,33 @@
         {#if licenseStatus && !licenseStatus.testing}<section
             class="glass license-summary"
           >
-            <h2><ShieldCheck size={18} />客户端授权</h2>
+            <h2>
+              <ShieldCheck size={18} />{licenseStatus.hosted
+                ? "账号授权"
+                : "客户端授权"}
+            </h2>
             <p>
-              有效至 {licenseStatus.expires_at
-                ? new Intl.DateTimeFormat("zh-CN", {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                    timeZone: "Asia/Shanghai",
-                  }).format(licenseStatus.expires_at * 1000)
-                : "—"}（北京时间）
+              {licenseStatus.permanent ? "永久授权" : "有效至"}
+              {licenseStatus.permanent
+                ? ""
+                : licenseStatus.expires_at
+                  ? new Intl.DateTimeFormat("zh-CN", {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                      timeZone: "Asia/Shanghai",
+                    }).format(licenseStatus.expires_at * 1000)
+                  : "—"}（北京时间）
             </p>
             <p>
-              授权剩余 <LicenseCountdown
-                seconds={licenseStatus.remaining_seconds}
-              />
+              {#if licenseStatus.permanent}永久授权，业务规则照常生效{:else}授权剩余
+                <LicenseCountdown
+                  seconds={licenseStatus.remaining_seconds}
+                />{/if}
             </p>
             <p class="field-help">
-              到期后使用新授权码续期；时间来自授权服务器，运行期间每分钟联网复核。
+              {licenseStatus.hosted
+                ? "授权截止日当期可用，到期后使用新激活码续期；已有投注继续结算。"
+                : "到期后使用新授权码续期；时间来自授权服务器，运行期间每分钟联网复核。"}
             </p>
             {#if licenseStatus.license_id}<label
                 >授权编号<input

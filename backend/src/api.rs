@@ -28,7 +28,15 @@ impl IntoResponse for ApiError {
 }
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
-        tracing::error!(error=%e,"database operation failed");
+        if e.as_database_error()
+            .is_some_and(|d| d.is_unique_violation())
+        {
+            return Self(
+                StatusCode::CONFLICT,
+                "账号或记录已经存在，请刷新后检查，避免重复提交".into(),
+            );
+        }
+        tracing::error!(code=?e.as_database_error().and_then(|d|d.code()),"database operation failed");
         Self(
             StatusCode::INTERNAL_SERVER_ERROR,
             "数据库操作失败，请重试；如持续出现请检查服务日志".into(),
@@ -119,6 +127,7 @@ pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf
         private
             .route("/login", post(login))
             .route("/health", get(health))
+            .route("/site", get(|| async { Json(json!({"mode":"legacy"})) }))
             .route("/internal/shutdown", post(shutdown))
             .fallback(|| async { (StatusCode::NOT_FOUND, "Unknown API endpoint") }),
     )
@@ -129,10 +138,12 @@ pub fn router_with_frontend(state: AppState, frontend: Option<std::path::PathBuf
     .with_state(state)
 }
 async fn receive_time(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
-    req.extensions_mut().insert(ReceivedAt(state.now()));
+    if req.extensions().get::<ReceivedAt>().is_none() {
+        req.extensions_mut().insert(ReceivedAt(state.now()));
+    }
     next.run(req).await
 }
-async fn security_headers(req: Request, next: Next) -> Response {
+pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     if !matches!(
         *req.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS

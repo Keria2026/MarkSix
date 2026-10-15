@@ -2,6 +2,54 @@ use marksix::{api, license, store, worker};
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|s| s == "--hosted-healthcheck") {
+        let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+        let port: u16 = bind.rsplit(':').next().unwrap_or("8080").parse()?;
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/api/health"))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await?
+            .error_for_status()?;
+        return Ok(());
+    }
+    if args
+        .get(1)
+        .is_some_and(|s| s == "--hosted" || s == "--hosted-authority")
+    {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "marksix=info".into()),
+            )
+            .init();
+        let url = std::env::var("CONTROL_DATABASE_URL")?;
+        // Customer service has no schema creation or authority-administrator grants.
+        let pool = if args[1] == "--hosted-authority" {
+            store::connect(&url).await?
+        } else {
+            let pool = sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(4)
+                .connect(&url)
+                .await?;
+            let version: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(version),0) FROM _sqlx_migrations WHERE success=TRUE",
+            )
+            .fetch_one(&pool)
+            .await?;
+            anyhow::ensure!(
+                version >= 5,
+                "Start and migrate the hosted authority before the customer service"
+            );
+            pool
+        };
+        let address = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
+        return if args[1] == "--hosted" {
+            marksix::hosted::serve_portal(pool, &address).await
+        } else {
+            marksix::hosted::serve_management(pool, &address).await
+        };
+    }
     if args.get(1).is_some_and(|s| s == "--help" || s == "-h") {
         println!(
             "MarkSix {}\nServer: marksix [--serve]\nOwner: --license-keygen NEW_FILE | --license-public-key | --license-issue DAYS [--bind BINDING] | --license-until RFC3339 [--bind BINDING] | --license-route REVISION | --license-revoke LICENSE_ID | --license-authority\nAuthority requires AUTHORITY_DATABASE_URL and LICENSE_SIGNING_KEY_FILE. Never distribute the private key.",

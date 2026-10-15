@@ -1,0 +1,36 @@
+server {
+    listen 80 default_server;
+    server_name _;
+    location = /healthz { return 200 'ok'; }
+    location / { return 444; }
+}
+server {
+    listen 80;
+    server_name ${APP_DOMAIN} ${ADMIN_DOMAIN};
+    location = /healthz { return 200 'ok'; }
+    location ^~ /.well-known/acme-challenge/ { root /var/www/acme; }
+    location / { return 308 https://$host$request_uri; }
+}
+server {
+    listen 443 ssl default_server;
+    ssl_reject_handshake on;
+}
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${APP_DOMAIN};
+    ssl_certificate /etc/letsencrypt/live/marksix/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/marksix/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:TLS:2m;
+    include /etc/nginx/conf.d/customer.inc;
+}
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${ADMIN_DOMAIN};
+    ssl_certificate /etc/letsencrypt/live/marksix/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/marksix/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    include /etc/nginx/conf.d/authority.inc;
+}
