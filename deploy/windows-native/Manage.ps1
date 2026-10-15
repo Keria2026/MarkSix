@@ -74,7 +74,9 @@ function Assert-Package {
 function Get-OwnedProcess([string]$Name) {
     $recordPath = Join-Path $DataDirectory "$Name.process.json"
     if (-not (Test-Path -LiteralPath $recordPath)) { return $null }
-    $record = Get-Content -Encoding UTF8 -LiteralPath $recordPath -Raw | ConvertFrom-Json
+    try { $record = Get-Content -Encoding UTF8 -LiteralPath $recordPath -Raw | ConvertFrom-Json }
+    catch { Write-Warning "Unreadable process record ($Name); authenticated shutdown will be used."; return $null }
+    if ($null -eq $record.PSObject.Properties['id'] -or $null -eq $record.PSObject.Properties['path'] -or $null -eq $record.PSObject.Properties['started']) { Write-Warning "Incomplete process record ($Name)."; return $null }
     $process = Get-Process -Id $record.id -ErrorAction SilentlyContinue
     if ($null -eq $process) { Remove-Item -LiteralPath $recordPath -Force; return $null }
     if ($process.Path -ne $record.path -or $process.StartTime.ToUniversalTime().Ticks.ToString() -ne $record.started) {
@@ -147,12 +149,26 @@ function Stop-Application {
 function Stop-Native {
     Stop-Application
     $db = Get-OwnedProcess 'mysql'
+    if ($null -eq $db) {
+        # TCP can close before InnoDB finishes flushing. Recover a wait handle from
+        # the private data directory, so Stop never reports success prematurely.
+        $mysqlDirectory = Join-Path $DataDirectory 'mysql'
+        if (Test-Path -LiteralPath $mysqlDirectory) {
+            foreach ($pidFile in @(Get-ChildItem -LiteralPath $mysqlDirectory -Filter '*.pid' -File)) {
+                $dbProcessId = [IO.File]::ReadAllText($pidFile.FullName).Trim()
+                if ($dbProcessId -match '^[0-9]+$') {
+                    $candidate = Get-Process -Id ([int]$dbProcessId) -ErrorAction SilentlyContinue
+                    if ($null -ne $candidate -and $candidate.ProcessName -eq 'mysqld') { $db = $candidate; break }
+                }
+            }
+        }
+    }
     if (Test-LocalPort 33306) {
         # Authentication proves this is our database even when a PID record is stale.
         Invoke-Database 'mysqladmin' @('shutdown') | Out-Null
-        if ($null -ne $db -and -not $db.WaitForExit(60000)) { throw 'MySQL is still shutting down. Do not delete or move its data.' }
         for ($attempt=0; $attempt -lt 60 -and (Test-LocalPort 33306); $attempt++) { Start-Sleep -Seconds 1 }
     }
+    if ($null -ne $db -and -not $db.WaitForExit(60000)) { throw 'MySQL is still shutting down. Do not delete or move its data.' }
     if (Test-LocalPort 33306) { throw 'MySQL port 33306 remains open; stop was not completed.' }
     Remove-Item -LiteralPath (Join-Path $DataDirectory 'mysql.process.json') -Force -ErrorAction SilentlyContinue
 }
