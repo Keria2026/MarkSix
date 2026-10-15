@@ -20,7 +20,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-          cache-on-failure: true
+          cache-on-failure: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14

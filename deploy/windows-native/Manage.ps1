@@ -81,22 +81,49 @@ function Get-OwnedProcess([string]$Name) {
     if (-not [int]::TryParse([string]$record.id,[ref]$recordProcessId) -or $recordProcessId -le 0) { Write-Warning "Invalid process ID ($Name)."; return $null }
     $process = Get-Process -Id $recordProcessId -ErrorAction SilentlyContinue
     if ($null -eq $process) { Remove-Item -LiteralPath $recordPath -Force; return $null }
-    if ($process.Path -ne $record.path -or $process.StartTime.ToUniversalTime().Ticks.ToString() -ne $record.started) {
-        Write-Warning "Stale process record ($Name). The unrelated process will not be stopped."
+    $actualPath = [string]$process.Path
+    $sameStart = $process.StartTime.ToUniversalTime().Ticks.ToString() -eq [string]$record.started
+    $expectedName = if ($Name -eq 'app') { 'marksix' } else { 'mysqld' }
+    # Older Start-Process objects could expose an empty Path before the module
+    # loaded. Exact PID + start time + executable name safely recovers that record.
+    $samePath = $actualPath -eq [string]$record.path
+    if ([string]::IsNullOrWhiteSpace([string]$record.path) -and $process.ProcessName -eq $expectedName -and -not [string]::IsNullOrWhiteSpace($actualPath)) {
+        $samePath = $true
+    }
+    if (-not $sameStart -or -not $samePath) {
+        Write-Warning "Stale process record ($Name; path=$samePath, start=$sameStart). The unrelated process will not be stopped."
         Remove-Item -LiteralPath $recordPath -Force
         return $null
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$record.path)) {
+        $record.path = $actualPath
+        Write-PrivateText $recordPath ($record | ConvertTo-Json)
     }
     return $process
 }
 function Start-OwnedProcess([string]$Name, [string]$Exe, [string]$Arguments) {
     $process = Start-Process -FilePath $Exe -ArgumentList $Arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $DataDirectory "$Name.stdout.log") -RedirectStandardError (Join-Path $DataDirectory "$Name.stderr.log")
-    $record = @{ id = $process.Id; path = $process.Path; started = $process.StartTime.ToUniversalTime().Ticks.ToString() }
-    Write-PrivateText (Join-Path $DataDirectory "$Name.process.json") ($record | ConvertTo-Json)
-    return $process
+    # Query a fresh handle, rather than caching early/null Start-Process metadata.
+    for ($attempt=0; $attempt -lt 40; $attempt++) {
+        $observed = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
+        if ($null -ne $observed) {
+            try {
+                $observedPath = [string]$observed.Path
+                $started = $observed.StartTime.ToUniversalTime().Ticks.ToString()
+                if (-not [string]::IsNullOrWhiteSpace($observedPath)) {
+                    $record = @{ id = $observed.Id; path = $observedPath; started = $started }
+                    Write-PrivateText (Join-Path $DataDirectory "$Name.process.json") ($record | ConvertTo-Json)
+                    return $observed
+                }
+            } catch { }
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    throw "Could not record process identity ($Name). Inspect the application logs before retrying."
 }
 function Assert-PortFree([int]$Port) {
-    $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $Port)
-    try { $listener.Start() } catch { throw "Local port $Port is in use. Stop the conflicting application first." } finally { $listener.Stop() }
+    # A bind probe can falsely reject a stopped Windows service in TCP TIME_WAIT.
+    if (Test-LocalPort $Port) { throw "Local port $Port is in use. Stop the conflicting application first." }
 }
 function Invoke-Database([string]$Tool, [string[]]$ToolArguments) {
     $clientPath = Join-Path $script:mysqlDataPath ('client-' + [guid]::NewGuid().ToString('N') + '.cnf')

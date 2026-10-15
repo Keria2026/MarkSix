@@ -32,6 +32,11 @@ try {
     catch { if ($null -eq $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 402) { throw } }
     $before = Get-Content -LiteralPath (Join-Path $testData 'config.json') -Raw
     Assert (-not $before.Contains($password)) 'Plaintext password leaked into config.'
+    # Regression: old Start-Process records could have a null module path.
+    $appRecordPath=Join-Path $testData 'app.process.json'
+    $appRecord=Get-Content -Encoding UTF8 -LiteralPath $appRecordPath -Raw | ConvertFrom-Json
+    $appRecord.path=$null
+    $appRecord | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath $appRecordPath
     & $scriptPath -Action Start -DataDirectory $testData -NoBrowser
     & $scriptPath -Action Backup -DataDirectory $testData
     $backup = @(Get-ChildItem -LiteralPath (Join-Path $testData 'backups') -Filter '*.sql')

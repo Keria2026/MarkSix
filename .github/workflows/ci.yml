@@ -156,7 +156,8 @@ jobs:
           curl -fsS http://127.0.0.1:8090/health
           code=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-issue 1)
           test "${#code}" -eq 48
-          docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-public-key | rg '^[0-9a-f]{64}$'
+          public_key=$(docker compose -f ubuntu-package/license-authority/compose.yaml exec -T authority marksix --license-public-key)
+          [[ "$public_key" =~ ^[0-9a-f]{64}$ ]]
           docker compose -f ubuntu-package/license-authority/compose.yaml stop --timeout 60
           rm ubuntu-package/license-authority/signing-key.hex
           python3 ubuntu-package/verify.py
