@@ -16,6 +16,12 @@
   } = $props();
   let page = $state(1);
   const periodId = $derived(report.period);
+  const bettorCount = $derived(
+    report.bettors.filter((group) => group.totals.units > 0).length,
+  );
+  const receiverCount = $derived(
+    report.receivers.filter((group) => group.totals.units > 0).length,
+  );
   const groups = $derived(
     category === "receivers" ? report.receivers : report.bettors,
   );
@@ -28,38 +34,108 @@
 </script>
 
 {#if !compact}
-  <div class="stats-grid ledger-stats">
-    <article class="stat glass">
-      <div class="stat-label">全部受注本金</div>
-      <strong class="stat-value">{money(report.incoming.stake)}</strong>
-      <div class="stat-foot">
-        {report.incoming.units} 条有效基础注 · 和局退本 {money(
-          report.incoming.refunded,
-        )}
-      </div>
-    </article>
-    <article class="stat glass">
-      <div class="stat-label">飞出本金</div>
-      <strong class="stat-value">{money(report.outgoing.stake)}</strong>
-      <div class="stat-foot">
-        {report.receivers.length} 位受注方 · {report.outgoing.records} 条有效飞出
-      </div>
-    </article>
-    <article class="stat glass">
-      <div class="stat-label">自留本金</div>
-      <strong class="stat-value">{money(report.retained.stake)}</strong>
-      <div class="stat-foot">原受注本金扣除飞出本金</div>
-    </article>
-    <article class="stat glass">
-      <div class="stat-label">自留净盈亏</div>
-      <strong
-        class="stat-value"
-        class:positive={(report.retained.net ?? 0) > 0}
-        class:negative={(report.retained.net ?? 0) < 0}
-        >{signed(report.retained.net)}</strong
-      >
-      <div class="stat-foot">原受注净盈亏 ＋ 飞出净盈亏</div>
-    </article>
+  <div class="stats-grid ledger-stats" aria-label="分类统计摘要">
+    {#if category === "receivers"}
+      <article class="stat glass">
+        <div class="stat-label">飞出本金</div>
+        <strong class="stat-value">{money(report.outgoing.stake)}</strong>
+        <div class="stat-foot">
+          和局退本 {money(report.outgoing.refunded)} · 不计有效本金
+        </div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">飞出受注方</div>
+        <strong class="stat-value">{receiverCount} 人</strong>
+        <div class="stat-foot">本期有有效飞出的受注方</div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">有效飞出记录</div>
+        <strong class="stat-value">{report.outgoing.records} 条</strong>
+        <div class="stat-foot">
+          {report.outgoing.units} 条有效基础注 · 反水 {money(
+            report.outgoing.rebate,
+          )}
+        </div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">本方飞出净盈亏</div>
+        <strong
+          class="stat-value"
+          class:positive={(report.outgoing.net ?? 0) > 0}
+          class:negative={(report.outgoing.net ?? 0) < 0}
+          >{signed(report.outgoing.net)}</strong
+        >
+        <div class="stat-foot">飞出返还 ＋ 收到反水 − 飞出本金</div>
+      </article>
+    {:else if category === "bettors"}
+      <article class="stat glass">
+        <div class="stat-label">有效投注人数</div>
+        <strong class="stat-value">{bettorCount} 人</strong>
+        <div class="stat-foot">本期有有效投注的投注人</div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">投注人总本金</div>
+        <strong class="stat-value">{money(report.incoming.stake)}</strong>
+        <div class="stat-foot">
+          {report.incoming.records} 条有效记录 · {report.incoming.units} 条基础注
+        </div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">人均投注本金</div>
+        <strong class="stat-value"
+          >{money(
+            bettorCount ? Math.round(report.incoming.stake / bettorCount) : 0,
+          )}</strong
+        >
+        <div class="stat-foot">有效本金 ÷ 有效投注人数 · 四舍五入到分</div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">投注人总净输赢</div>
+        <strong
+          class="stat-value"
+          class:positive={report.incoming.net !== null &&
+            report.incoming.net < 0}
+          class:negative={report.incoming.net !== null &&
+            report.incoming.net > 0}
+          >{signed(
+            report.incoming.net === null ? null : -report.incoming.net,
+          )}</strong
+        >
+        <div class="stat-foot">投注人视角 · 含本返还 ＋ 反水 − 本金</div>
+      </article>
+    {:else}
+      <article class="stat glass">
+        <div class="stat-label">全部受注本金</div>
+        <strong class="stat-value">{money(report.incoming.stake)}</strong>
+        <div class="stat-foot">
+          {report.incoming.units} 条有效基础注 · 和局退本 {money(
+            report.incoming.refunded,
+          )}
+        </div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">飞出本金</div>
+        <strong class="stat-value">{money(report.outgoing.stake)}</strong>
+        <div class="stat-foot">
+          {receiverCount} 位受注方 · {report.outgoing.records} 条有效飞出
+        </div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">自留本金</div>
+        <strong class="stat-value">{money(report.retained.stake)}</strong>
+        <div class="stat-foot">原受注本金扣除飞出本金</div>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">自留净盈亏</div>
+        <strong
+          class="stat-value"
+          class:positive={(report.retained.net ?? 0) > 0}
+          class:negative={(report.retained.net ?? 0) < 0}
+          >{signed(report.retained.net)}</strong
+        >
+        <div class="stat-foot">原受注净盈亏 ＋ 飞出净盈亏</div>
+      </article>
+    {/if}
   </div>
 {/if}
 <section class="glass records-panel">
@@ -72,7 +148,9 @@
     class="table-scroll"
     role="region"
     tabindex="0"
-    aria-label="数据表格，可横向滚动"
+    aria-label={category === "receivers"
+      ? "飞出受注方统计，可横向滚动"
+      : "投注人分类统计，可横向滚动"}
   >
     <table>
       <thead
@@ -145,7 +223,7 @@
       class="table-scroll"
       role="region"
       tabindex="0"
-      aria-label="数据表格，可横向滚动"
+      aria-label="全部账目汇总，可横向滚动"
     >
       <table>
         <thead
@@ -170,7 +248,7 @@
       class="table-scroll"
       role="region"
       tabindex="0"
-      aria-label="数据表格，可横向滚动"
+      aria-label="飞出记录，可横向滚动"
     >
       <table>
         <thead

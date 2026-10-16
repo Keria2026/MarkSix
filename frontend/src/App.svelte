@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { glassNavigation, pageFade } from "./lib/navigation";
   import {
     LayoutDashboard,
     Plus,
@@ -135,6 +136,7 @@
       clearHistoryOpen = false;
       clearHistoryRequest = null;
       selectedPeriod = null;
+      historyTabs = [];
       detail = null;
       report = null;
       parties = { bettors: [], receivers: [] };
@@ -158,6 +160,45 @@
   let minAmount = $state("");
   let maxAmount = $state("");
   let report = $state<Statistics | null>(null);
+  let historyTabs = $state<Period[]>([]);
+  let submenuExpanded = $state({
+    statistics: true,
+    history: true,
+    official: true,
+  });
+  function hasSubmenu(id: Tab) {
+    return (
+      id === "statistics" ||
+      id === "official" ||
+      (id === "history" && historyTabs.length > 0)
+    );
+  }
+  function selectNavigation(next: Tab) {
+    if (next === tab && hasSubmenu(next)) {
+      const key = next as keyof typeof submenuExpanded;
+      submenuExpanded[key] = !submenuExpanded[key];
+      return;
+    }
+    if (hasSubmenu(next))
+      submenuExpanded[next as keyof typeof submenuExpanded] = true;
+    void navigate(next);
+  }
+  async function closeHistoryTab(id: string) {
+    const index = historyTabs.findIndex((p) => p.id === id);
+    historyTabs = historyTabs.filter((p) => p.id !== id);
+    if (selectedPeriod?.id === id) {
+      const next = historyTabs[Math.min(index, historyTabs.length - 1)];
+      if (next) await openPeriod(next);
+      else await navigate("history");
+    }
+    await tick();
+    const target = selectedPeriod
+      ? document.getElementById(`history-period-${selectedPeriod.id}`)
+      : document.querySelector<HTMLButtonElement>(
+          'nav > button[aria-label="历史统计"]',
+        );
+    target?.focus({ preventScroll: true });
+  }
   let historyCategory = $state<"all" | "bettors" | "receivers">("all");
   let statisticsCategory = $state<"all" | "bettors" | "receivers" | "records">(
     "all",
@@ -249,7 +290,7 @@
       short: "概览",
       icon: LayoutDashboard,
     },
-    { id: "bet" as Tab, label: "录入投注", short: "投注", icon: Plus },
+    { id: "bet" as Tab, label: "录入投注", short: "投注", icon: ReceiptText },
     {
       id: "statistics" as Tab,
       label: "本期统计",
@@ -367,6 +408,8 @@
     if (error instanceof ApiError && error.status === 401) {
       loggedIn = false;
       boot = null;
+      selectedPeriod = null;
+      historyTabs = [];
       password = "";
     }
     if (error instanceof ApiError && error.status === 402) {
@@ -491,6 +534,9 @@
     }
   }
   async function openPeriod(period: Period) {
+    if (!historyTabs.some((p) => p.id === period.id))
+      historyTabs = [...historyTabs, period];
+    submenuExpanded.history = true;
     selectedPeriod = period;
     selectedBettors = [];
     selectedPlays = [];
@@ -532,6 +578,7 @@
       boot = null;
       tab = "overview";
       selectedPeriod = null;
+      historyTabs = [];
     } catch (e) {
       notify(fail(e));
     }
@@ -1067,20 +1114,35 @@
         ><div class="brand-mark">M</div>
         <span>MarkSix<span class="brand-dot">.</span></span></a
       ><span class="sidebar-label">工作空间</span>
-      <nav aria-label="主要导航">
+      <nav aria-label="主要导航" use:glassNavigation={tab}>
+        <div class="nav-indicator" aria-hidden="true"></div>
         {#each nav as item}<button
             class:active={tab === item.id}
             aria-label={item.label}
             aria-current={tab === item.id ? "page" : undefined}
-            onclick={() => navigate(item.id)}
+            aria-expanded={hasSubmenu(item.id)
+              ? tab === item.id &&
+                submenuExpanded[item.id as keyof typeof submenuExpanded]
+              : undefined}
+            aria-controls={hasSubmenu(item.id)
+              ? `submenu-${item.id}`
+              : undefined}
+            onclick={() => selectNavigation(item.id)}
             ><item.icon size={19} strokeWidth={1.7} /><span class="nav-label"
               >{item.label}</span
             ><span class="nav-label-short" aria-hidden="true">{item.short}</span
-            >{#if item.id === "bet"}<span class="nav-plus">＋</span
-              >{/if}</button
+            >{#if hasSubmenu(item.id)}<ChevronDown
+                size={13}
+                class={tab === item.id &&
+                submenuExpanded[item.id as keyof typeof submenuExpanded]
+                  ? "nav-chevron expanded"
+                  : "nav-chevron"}
+              />{/if}</button
           >
-          {#if item.id === "statistics" && tab === "statistics"}<div
+          {#if item.id === "statistics" && tab === "statistics" && submenuExpanded.statistics}<div
               class="nav-submenu"
+              id="submenu-statistics"
+              aria-label="本期统计分类"
             >
               {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }] as sub}<button
                   class:active={statisticsCategory === sub.id}
@@ -1094,17 +1156,38 @@
                   }}>{sub.label}</button
                 >{/each}
             </div>{/if}
-          {#if item.id === "history" && tab === "history" && selectedPeriod}<div
-              class="nav-submenu"
+          {#if item.id === "history" && tab === "history" && historyTabs.length && submenuExpanded.history}<div
+              class="nav-submenu history-tabs"
+              id="submenu-history"
+              aria-label="已打开的历史期次"
             >
-              <button class="active" aria-current="page"
-                >第 {selectedPeriod.id} 期</button
-              >
+              {#each historyTabs as period (period.id)}
+                <div
+                  class="history-tab"
+                  class:active={selectedPeriod?.id === period.id}
+                >
+                  <button
+                    class:active={selectedPeriod?.id === period.id}
+                    aria-current={selectedPeriod?.id === period.id
+                      ? "location"
+                      : undefined}
+                    id={`history-period-${period.id}`}
+                    onclick={() => openPeriod(period)}>第 {period.id} 期</button
+                  >
+                  <button
+                    class="history-tab-close"
+                    aria-label={`关闭第 ${period.id} 期标签`}
+                    onclick={() => closeHistoryTab(period.id)}
+                    ><X size={14} /></button
+                  >
+                </div>
+              {/each}
             </div>{/if}
-          {#if item.id === "official" && tab === "official"}<div
+          {#if item.id === "official" && tab === "official" && submenuExpanded.official}<div
               class="nav-submenu"
+              id="submenu-official"
             >
-              <button class="active" aria-current="page">调码助手</button>
+              <button class="active" aria-current="location">调码助手</button>
             </div>{/if}
         {/each}
       </nav>
@@ -1128,7 +1211,11 @@
         <span class="version">MARKSIX <span>Dev1.0</span></span>
       </div>
     </aside>
-    <main class="main-content" id="main">
+    <main
+      class="main-content"
+      id="main"
+      use:pageFade={`${tab}:${selectedPeriod?.id ?? ""}:${statisticsCategory}:${historyCategory}`}
+    >
       <header class="topbar">
         <div class="breadcrumb">
           工作台 <ChevronRight size={13} /><span
@@ -1261,7 +1348,9 @@
             <div class="section-head">
               <div>
                 <span class="eyebrow">DRAW RESULTS</span>
-                <h2>{active.draw ? "当期开奖结果" : "静候开奖，数据就绪。"}</h2>
+                <h2>
+                  {active.draw ? "当期开奖结果" : "静候开奖，数据就绪。"}
+                </h2>
               </div>
               <span class="soft-chip"
                 ><Clock3 size={13} />{active.draw
@@ -1418,7 +1507,8 @@
             <span class="eyebrow">MAKE EVERY RECORD COUNT</span>
             <h1>录入投注</h1>
             <p>
-              第 <strong>{today.id}</strong> 期 <span class="separator">·</span>
+              第 <strong>{today.id}</strong> 期
+              <span class="separator">·</span>
               {today.close_time} 封盘
               <span class="status-badge" data-phase={today.phase}
                 ><i></i>{phases[today.phase]}</span
