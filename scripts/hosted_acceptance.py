@@ -475,6 +475,28 @@ def main():
             assert "predates customer history erasure" in str(error)
         else:
             raise AssertionError("Erased backup generation was accepted")
+        rejected = subprocess.run(
+            [
+                sys.executable,
+                str(release / "ops.py"),
+                "restore",
+                "--shared",
+                str(shared),
+                "--manifest",
+                manifest,
+                "--confirm-restore",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert rejected.returncode != 0
+        assert "predates customer history erasure" in rejected.stderr
+        assert ok(app, "/health")[0]["status"] == "ok"
+        assert ok(admin, "/health")[0]["status"] == "ok"
+        assert ok(app, "/bootstrap", cookie=clear_cookie)[0]["plays"]
+        checks.append("rejected_history_restore_keeps_services_healthy")
         checks.append(
             "customer_history_clear_proxy_backup_erasure_idempotency_and_restore_guard"
         )

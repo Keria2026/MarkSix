@@ -22,7 +22,11 @@ def main():
         if not path.is_relative_to(root) or not path.is_file():
             raise SystemExit("Missing or invalid package path")
         with path.open("rb") as stream:
-            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+            # Ubuntu 22.04's Python 3.10 has no hashlib.file_digest.
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+            actual = digest.hexdigest()
         if actual != expected:
             raise SystemExit(f"Checksum mismatch: {name}")
     print("Hosted release checksums verified")

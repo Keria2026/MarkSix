@@ -31,6 +31,8 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 真实数据库测试会重置专用 `marksix_test` 数据库，禁止指向业务库。TEST_DATABASE_URL 为专用测试连接，TEST_PROVISION_DATABASE_URL 为同一测试 MySQL 的建库管理连接，TENANT_DB_HOST/PORT 指向该实例。各套数据库测试顺序执行，不能与浏览器夹具共享数据库并行重置。
 
 ```bash
+# 仓库根目录，CI 使用最低支持版本 Python 3.10 执行
+python3 -m unittest discover -s scripts/tests -v
 cd backend
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings

@@ -104,9 +104,10 @@ def main():
         if not path.is_file():
             continue
         with path.open("rb") as stream:
-            hashes[str(path.relative_to(output))] = hashlib.file_digest(
-                stream, "sha256"
-            ).hexdigest()
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+            hashes[str(path.relative_to(output))] = digest.hexdigest()
     manifest = {
         "schema": 1,
         "version": args.version,

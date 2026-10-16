@@ -225,11 +225,18 @@ def restore(shared, manifest):
         return restore_data(shared, manifest)
 
 
-def restore_data(shared, manifest):
+class RestorePreflightError(RuntimeError):
+    """Restore was rejected before any destructive database operation."""
+
+
+def validate_restore(shared, manifest):
+    """Read-only checks, repeated under the backup lock before SQL restoration."""
     root = shared / "backups"
     data = json.loads(manifest.read_text())
     if data.get("schema") != 1 or not isinstance(data.get("files"), dict):
         raise RuntimeError("Invalid backup manifest")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", data.get("created_at", "")):
+        raise RuntimeError("Invalid backup timestamp")
     # Erasure receipts are outside SQL dumps and must never be rolled back.
     # Older complete generations can contain deliberately erased tenant history.
     stamp_time = data.get("created_at", "").split("-", 1)[0]
@@ -252,15 +259,28 @@ def restore_data(shared, manifest):
             raise RuntimeError("Backup is incomplete or contains an invalid path")
         if file_sha256(path) != expected:
             raise RuntimeError("Backup checksum mismatch")
+    stamp = data["created_at"]
+    if f"control/{stamp}.sql.gz" not in data["files"]:
+        raise RuntimeError("Missing control dump")
+    for account in accounts:
+        if f"tenants/{account}/{stamp}.sql.gz" not in data["files"]:
+            raise RuntimeError("Missing tenant dump")
+    return data
+
+
+def restore_data(shared, manifest):
+    # A rejection here is safe to recover from by restarting the applications.
+    # Once the first DROP/import is attempted, all failures must leave them stopped.
+    try:
+        data = validate_restore(shared, manifest)
+        deleted = set(mysql(shared, "SELECT account_id FROM hosted_deletions;"))
+        current = account_list(shared)
+    except Exception as error:
+        raise RestorePreflightError(str(error)) from error
+    root = shared / "backups"
     # Preserve current deletion receipts before restoring an older control dump.
-    deleted = set(mysql(shared, "SELECT account_id FROM hosted_deletions;"))
-    current = account_list(shared)
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", data["created_at"]):
-        raise RuntimeError("Invalid backup timestamp")
     stamp = data["created_at"]
     control = root / "control" / f"{stamp}.sql.gz"
-    if str(control.relative_to(root)) not in data["files"]:
-        raise RuntimeError("Missing control dump")
 
     # An import failure intentionally leaves the applications stopped.
     def load(path, database):
@@ -367,6 +387,12 @@ def main():
                 parser.error(
                     "Restore overwrites current data; supply --manifest and --confirm-restore"
                 )
+            if args.operation == "restore":
+                # Reject erased/incomplete generations while the site is still up.
+                # Release this lock before stopping authority: an in-flight erasure
+                # may need it to finish its graceful shutdown.
+                with lock(shared / "backups" / ".lock"):
+                    validate_restore(shared, args.manifest.resolve())
             compose(shared, "stop", "--timeout", "45", "backend", "authority")
             try:
                 preserve = None
@@ -392,8 +418,26 @@ def main():
                 )
                 raise
             if args.operation == "restore":
-                with lock(shared / "backups" / ".lock"):
-                    restore(shared, args.manifest.resolve())
+                try:
+                    with lock(shared / "backups" / ".lock"):
+                        restore(shared, args.manifest.resolve())
+                except RestorePreflightError:
+                    # History could have been cleared after the first validation
+                    # but before shutdown. No SQL was changed; restore service.
+                    compose(
+                        shared,
+                        "up",
+                        "-d",
+                        "--no-build",
+                        "--pull",
+                        "never",
+                        "--wait",
+                        "--wait-timeout",
+                        "180",
+                        "authority",
+                        "backend",
+                    )
+                    raise
             compose(
                 shared,
                 "up",

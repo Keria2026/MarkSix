@@ -101,6 +101,21 @@
   let clearHistoryConfirmation = $state("");
   let clearHistoryError = $state("");
   let clearHistoryRequest: string | null = null;
+  function openClearHistory() {
+    clearHistoryRequest = null;
+    clearHistoryPassword = "";
+    clearHistoryConfirmation = "";
+    clearHistoryError = "";
+    clearHistoryOpen = true;
+  }
+  function closeClearHistory() {
+    if (busy) return;
+    clearHistoryOpen = false;
+    clearHistoryRequest = null;
+    clearHistoryPassword = "";
+    clearHistoryConfirmation = "";
+    clearHistoryError = "";
+  }
   async function clearHistory(event: SubmitEvent) {
     event.preventDefault();
     busy = true;
@@ -2065,14 +2080,8 @@
               永久删除本账号本期之前的投注、飞出、结算和对应操作记录，并删除服务器托管的本账号历史备份。本期数据、玩法配置、账号及授权保留。此操作不可恢复。
             </p>
           </div>
-          <button
-            class="button danger"
-            onclick={() => {
-              clearHistoryPassword = "";
-              clearHistoryConfirmation = "";
-              clearHistoryError = "";
-              clearHistoryOpen = true;
-            }}>清空我的历史记录</button
+          <button class="button danger" onclick={openClearHistory}
+            >清空我的历史记录</button
           >
         </section>
       {/if}
@@ -2291,10 +2300,7 @@
   {#if clearHistoryOpen}<Modal
       title="永久清空历史记录"
       dismissible={!busy}
-      onclose={() => {
-        clearHistoryOpen = false;
-        clearHistoryPassword = "";
-      }}
+      onclose={closeClearHistory}
     >
       <form onsubmit={clearHistory} class="rule-form">
         <p class="inline-error">
@@ -2326,10 +2332,7 @@
             type="button"
             class="button secondary"
             disabled={busy}
-            onclick={() => {
-              clearHistoryOpen = false;
-              clearHistoryPassword = "";
-            }}>取消</button
+            onclick={closeClearHistory}>取消</button
           ><button
             class="button danger"
             disabled={busy || clearHistoryConfirmation !== "永久清空历史记录"}
