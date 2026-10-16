@@ -1296,9 +1296,11 @@ details[open] > summary svg {
     0 2px 6px #5182e91a,
     inset 0 1px 0 #fff;
 }
-.option:hover {
-  border-color: #9bb5de;
-  background: #eff5ff;
+/* Touch browsers can retain :hover after a tap. Selection alone controls fill. */
+@media (hover: hover) and (pointer: fine) {
+  .option:not(.selected):hover {
+    border-color: #9bb5de;
+  }
 }
 .number-option[data-wave="0"],
 .mini-number[data-wave="0"] {
