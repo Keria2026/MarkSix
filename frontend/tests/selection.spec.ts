@@ -162,8 +162,14 @@ test("typed selections share grid limits, keep partial input, and preserve hard-
   expect(pair.ok()).toBe(true);
   const id = (await pair.json()).id;
   try {
-    await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+    const refresh = page.getByRole("button", { name: "刷新数据", exact: true });
+    await refresh.click();
+    // The new rule must reach the form before name matching can select it.
+    await expect(refresh).toBeEnabled();
     await page.getByLabel("搜索玩法名称").fill("文本特碰验收");
+    await expect(page.locator(".play-picker button.selected")).toContainText(
+      "文本特碰验收",
+    );
     await input.fill("45，06");
     await expect(
       page.getByText("当前：特码 45 → 平码 06", { exact: false }),

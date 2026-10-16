@@ -453,7 +453,8 @@ details[open] > summary svg {
   font-size: 12px;
   font-weight: 500;
   color: #4b5566;
-  transition: all 0.2s;
+  /* Route selection is immediate; the shared glass surface supplies the motion. */
+  transition: background-color 0.2s;
   min-height: 47px;
 }
 .sidebar .nav-link:hover {
