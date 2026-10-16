@@ -20,9 +20,6 @@ pub(crate) type DrawCache = Arc<Mutex<Option<(Instant, Result<Vec<serde_json::Va
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
-    pub license: Option<crate::license::Client>,
-    pub shutdown: Arc<tokio::sync::Notify>,
-    pub shutdown_token: Option<String>,
     pub clock: Arc<dyn Fn() -> NaiveDateTime + Send + Sync>,
     pub client: reqwest::Client,
     pub draw_url: String,
@@ -45,9 +42,6 @@ impl AppState {
     pub(crate) fn with_client(pool: MySqlPool, client: reqwest::Client) -> Self {
         Self {
             pool,
-            license: None,
-            shutdown: Arc::default(),
-            shutdown_token: None,
             clock: Arc::new(|| {
                 Utc::now()
                     .with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())

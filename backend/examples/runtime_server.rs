@@ -112,23 +112,33 @@ async fn main() -> anyhow::Result<()> {
         .route("/fixture/control", post(control))
         .with_state(f);
     println!("Runtime fixture ready on localhost:8082 (disposable database only)");
-    axum::serve(listener, api::router(app.clone()).merge(routes))
-        .with_graceful_shutdown(async move {
-            #[cfg(unix)]
-            {
-                let mut terminate =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                        .expect("SIGTERM");
-                tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = tokio::signal::ctrl_c().await;
-            }
-            for flag in app.cancellations.lock().await.values() {
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        })
-        .await?;
+    axum::serve(
+        listener,
+        api::router(app.clone())
+            .route(
+                "/api/license",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"active":true,"testing":true,"hosted":true}))
+                }),
+            )
+            .merge(routes),
+    )
+    .with_graceful_shutdown(async move {
+        #[cfg(unix)]
+        {
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("SIGTERM");
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        for flag in app.cancellations.lock().await.values() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    })
+    .await?;
     Ok(())
 }

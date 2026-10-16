@@ -13,7 +13,7 @@ test("administrator records compound bets, cancels atomically, configures rules,
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
-  await page.getByLabel("管理员账号").fill("test-admin");
+  await page.getByLabel("客户账号").fill("test-admin");
   await page.getByLabel("登录密码").fill(password);
   await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(
@@ -96,6 +96,8 @@ test("administrator records compound bets, cancels atomically, configures rules,
   await page.getByLabel("命中条件").selectOption("any");
   await page.getByLabel("含本赔率", { exact: true }).fill("3.1234");
   await page.getByLabel("最多可选数量（留空允许普通多选）").fill("1");
+  await page.getByLabel("启用 0 尾特殊赔率").check();
+  await page.getByLabel("0 尾含本赔率").fill("4.1234");
   await page.getByRole("button", { name: "保存玩法" }).click();
   await expect(
     page.getByRole("heading", { name: "尾数验收玩法" }),
@@ -125,6 +127,7 @@ test("administrator records compound bets, cancels atomically, configures rules,
   const portable = JSON.parse(await readFile((await file.path())!, "utf8"));
   expect(portable.plays).toHaveLength(1);
   expect(portable.plays[0].rule.selection_limit).toBe(1);
+  expect(portable.plays[0].rule.zero_tail_odds).toBe("4.1234");
   expect(portable.plays[0]).not.toHaveProperty("id");
   portable.plays[0].rule.name = "共享导入验收";
   await page.keyboard.press("Escape");
@@ -277,9 +280,8 @@ test("activation and expiry keep business screens inaccessible until renewed", a
     route.fulfill({
       json: {
         active,
-        server_url: "https://license.example.com",
-        binding: "a".repeat(64),
-        message: "请激活此设备",
+        hosted: true,
+        message: "请激活此账号",
         expires_at: 1800000000,
         remaining_seconds: 120,
       },
@@ -287,8 +289,7 @@ test("activation and expiry keep business screens inaccessible until renewed", a
   );
   await page.route("**/api/license/activate", async (route) => {
     expect(route.request().postDataJSON()).toMatchObject({
-      server_url: "https://license.example.com",
-      code: "MSX1.test-code.signature",
+      code: "MSH1-" + "a".repeat(64),
     });
     expect(route.request().postDataJSON().request_id).toMatch(
       /^[0-9a-f-]{36}$/,
@@ -297,7 +298,7 @@ test("activation and expiry keep business screens inaccessible until renewed", a
     await route.fulfill({ json: { active: true } });
   });
   await page.goto("/");
-  await page.getByLabel("管理员账号").fill("test-admin");
+  await page.getByLabel("客户账号").fill("test-admin");
   await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
   await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(page.getByRole("heading", { name: "激活工作台" })).toBeVisible();
@@ -307,7 +308,7 @@ test("activation and expiry keep business screens inaccessible until renewed", a
     .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
     .analyze();
   expect(accessibility.violations.map((v) => v.id)).toEqual([]);
-  await page.getByLabel("一次性授权码").fill("MSX1.test-code.signature");
+  await page.getByLabel("一次性授权码").fill("MSH1-" + "a".repeat(64));
   await page.getByRole("button", { name: "激活并进入" }).click();
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
@@ -324,28 +325,89 @@ test("activation and expiry keep business screens inaccessible until renewed", a
   active = false;
   await page.getByRole("button", { name: "刷新数据", exact: true }).click();
   await expect(page.getByRole("heading", { name: "激活工作台" })).toBeVisible();
-  await page.route("**/api/license/migrate", async (route) => {
-    expect(route.request().postDataJSON()).toEqual({
-      migration: { payload: "signed-fixture", signature: "a".repeat(128) },
-    });
-    active = true;
-    await route.fulfill({ json: { active: true } });
-  });
-  await page.getByText("旧码与服务迁移", { exact: true }).click();
-  await page.getByLabel("签名迁移文件").setInputFiles({
-    name: "route.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(
-      JSON.stringify({
-        payload: "signed-fixture",
-        signature: "a".repeat(128),
-      }),
-    ),
-  });
-  await page.getByRole("button", { name: "更新服务地址并重新核验" }).click();
+  await expect(page.getByText("旧码与服务迁移", { exact: true })).toHaveCount(
+    0,
+  );
+  await page.getByLabel("一次性授权码").fill("MSH1-" + "a".repeat(64));
+  await page.getByRole("button", { name: "激活并进入" }).click();
   await expect(
     page.getByRole("heading", { name: "玩法与配置", exact: true }),
   ).toBeVisible();
+});
+
+test("statistics lists current bets with multiple filters, stable amount ordering and live refresh", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByLabel("客户账号").fill("test-admin");
+  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
+  await page.getByRole("button", { name: "进入工作台" }).click();
+  await expect(
+    page.getByRole("heading", { name: "本期概览", exact: true }),
+  ).toBeVisible();
+  const boot = await (await page.request.get("/api/bootstrap")).json();
+  const play = boot.plays.find(
+    (p: { rule: { kind: string; quantity: number } }) =>
+      p.rule.kind === "number" && p.rule.quantity === 1,
+  );
+  async function add(bettor: string, amount: string) {
+    const response = await page.request.post("/api/bets", {
+      headers: { "X-MarkSix": "1" },
+      data: {
+        period: boot.today.id,
+        play_id: play.id,
+        play_version: play.version,
+        selections: [6],
+        compound: false,
+        bettor,
+        amount,
+        request_id: crypto.randomUUID(),
+      },
+    });
+    expect(response.status()).toBe(200);
+  }
+  await add("筛选客户甲", "30");
+  await add("筛选客户乙", "10");
+  await add("筛选客户甲", "20");
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await nav.getByRole("button", { name: "投注记录", exact: true }).click();
+  const picker = page
+    .locator(".record-picker")
+    .filter({ hasText: "投注人多选" });
+  await picker.locator("summary").click();
+  await picker
+    .getByRole("checkbox", { name: "筛选客户甲", exact: true })
+    .check();
+  await picker
+    .getByRole("checkbox", { name: "筛选客户乙", exact: true })
+    .check();
+  const rows = page.locator(".records-panel tbody tr");
+  await expect(rows).toHaveCount(3);
+  await page.getByLabel("记录排序").selectOption("amount_asc");
+  await expect(rows.first()).toContainText("¥ 10.00");
+  await expect(rows.last()).toContainText("¥ 30.00");
+  const plays = page.locator(".record-picker").filter({ hasText: "玩法多选" });
+  await plays.locator("summary").click();
+  await plays
+    .getByRole("checkbox", { name: play.rule.name, exact: true })
+    .check();
+  await picker
+    .getByRole("checkbox", { name: "筛选客户乙", exact: true })
+    .uncheck();
+  await expect(rows).toHaveCount(2);
+  await page.getByLabel("记录排序").selectOption("amount_desc");
+  await expect(rows.first()).toContainText("¥ 30.00");
+  await add("筛选客户甲", "5");
+  await expect(rows).toHaveCount(3, { timeout: 10000 });
+  await expect(rows.last()).toContainText("¥ 5.00");
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
 });
 
 test("narrow mobile navigation retains readable labels and touch targets", async ({
@@ -353,7 +415,7 @@ test("narrow mobile navigation retains readable labels and touch targets", async
 }) => {
   await page.setViewportSize({ width: 320, height: 740 });
   await page.goto("/");
-  await page.getByLabel("管理员账号").fill("test-admin");
+  await page.getByLabel("客户账号").fill("test-admin");
   await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
   await page.getByRole("button", { name: "进入工作台" }).click();
   const nav = page.getByRole("navigation", { name: "主要导航" });

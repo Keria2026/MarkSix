@@ -22,6 +22,7 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
         "authority_administrators",
         "authority_audit",
         "hosted_deletions",
+        "history_clear_requests",
         "client_license",
         "license_codes",
         "bet_mutations",

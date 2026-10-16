@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn new_rules_and_outgoing_positions_match_exhaustive_settlement() {
         let m = Mapping::default();
-        let universe = vec![1, 2, 6, 13, 24, 25, 37, 45, 48, 49];
+        let universe = vec![1, 2, 6, 10, 13, 24, 25, 37, 45, 48, 49];
         for scenario in 0..9 {
             let mut atoms = Vec::new();
             for (i, scope) in [Scope::Regular, Scope::Special, Scope::All]
@@ -741,6 +741,17 @@ mod tests {
             pair.special_hit_odds = Some("2.5".into());
             pair.position = if scenario % 3 == 0 { -1 } else { 1 };
             atoms.push(pair);
+            let mut tail = defaults()[0].clone();
+            tail.kind = Kind::Tail;
+            tail.scope = Scope::All;
+            tail.odds = "1.8".into();
+            tail.zero_tail_odds = Some("2.1234".into());
+            tail.special_odds = Some("1.7".into());
+            let input: BetInput = serde_json::from_value(serde_json::json!({"period":"2026287","play_id":1,"play_version":1,"selections":[0,1],"compound":false,"amount":"1","request_id":"risk-fixture","bettor":"risk"})).unwrap();
+            for mut atom in plan(&tail, &input, &m).unwrap().atoms {
+                atom.position = if scenario.is_multiple_of(2) { -1 } else { 1 };
+                atoms.push(atom);
+            }
             let result = solve_universe(
                 &atoms,
                 &m,

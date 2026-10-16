@@ -98,6 +98,8 @@ pub struct Rule {
     pub rebate_percent: String,
     pub special_odds: Option<String>,
     #[serde(default)]
+    pub zero_tail_odds: Option<String>,
+    #[serde(default)]
     pub special_rebate_percent: Option<String>,
     #[serde(default)]
     pub zodiac_count: Option<u8>,
@@ -206,6 +208,12 @@ impl Rule {
             let odds = scaled(value, 4)?;
             if odds == 0 || odds > 100_000_000_000 {
                 return Err("特殊赔率须大于 0，且不超过 10000000".into());
+            }
+        }
+        if let Some(value) = &self.zero_tail_odds {
+            let odds = scaled(value, 4)?;
+            if self.kind != Kind::Tail || odds == 0 || odds > 100_000_000_000 {
+                return Err("0 尾特殊赔率仅适用于尾数玩法，须大于 0 且不超过 10000000".into());
             }
         }
         Ok(())
@@ -458,7 +466,9 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
                 })
         });
         let natal = rule.kind != Kind::Wave && mask & mapping.natal_options(rule.kind) != 0;
-        let odds = if natal {
+        let odds = if rule.kind == Kind::Tail && mask & 1 != 0 && rule.zero_tail_odds.is_some() {
+            rule.zero_tail_odds.as_ref().unwrap()
+        } else if natal {
             rule.special_odds.as_ref().unwrap_or(&rule.odds)
         } else {
             &rule.odds
@@ -754,6 +764,7 @@ pub fn defaults() -> Vec<Rule> {
             odds: "43".into(),
             rebate_percent: "2".into(),
             special_odds: None,
+            zero_tail_odds: None,
             special_rebate_percent: None,
             zodiac_count: None,
             special_hit_odds: None,
@@ -772,6 +783,7 @@ pub fn defaults() -> Vec<Rule> {
             odds: "2".into(),
             rebate_percent: "5".into(),
             special_odds: None,
+            zero_tail_odds: None,
             special_rebate_percent: None,
             zodiac_count: None,
             special_hit_odds: None,
@@ -790,6 +802,7 @@ pub fn defaults() -> Vec<Rule> {
             odds: "10".into(),
             rebate_percent: "2".into(),
             special_odds: Some("8".into()),
+            zero_tail_odds: None,
             special_rebate_percent: None,
             zodiac_count: None,
             special_hit_odds: None,
@@ -800,6 +813,47 @@ pub fn defaults() -> Vec<Rule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn zero_tail_rates_are_snapshotted_per_combination_and_validated() {
+        let mapping = Mapping::default();
+        let mut rule = defaults()[0].clone();
+        rule.kind = Kind::Tail;
+        rule.scope = Scope::All;
+        rule.quantity = 2;
+        rule.combination_size = 2;
+        rule.compound_enabled = true;
+        rule.odds = "3".into();
+        rule.special_odds = Some("2.5".into());
+        rule.zero_tail_odds = Some("3.3333".into());
+        rule.rebate_percent = "10".into();
+        let plan = plan(&rule, &input(vec![0, 1, 2], true), &mapping).unwrap();
+        assert_eq!(
+            plan.atoms
+                .iter()
+                .map(|a| a.odds.as_str())
+                .collect::<Vec<_>>(),
+            vec!["3.3333", "3.3333", "2.5"]
+        );
+        assert_eq!(plan.atoms[0].payout, 33333);
+        let draw = Draw::predicted([10, 11, 12, 13, 14, 15, 16], &mapping);
+        assert_eq!(
+            settle(&plan.atoms, &draw)
+                .iter()
+                .map(|r| r.payout)
+                .sum::<i64>(),
+            91666
+        );
+        // New configuration never rewrites the old atomic rates.
+        rule.zero_tail_odds = Some("99".into());
+        assert_eq!(settle(&plan.atoms, &draw)[0].payout, 33333);
+        rule.kind = Kind::Number;
+        assert!(rule.validate().is_err());
+        rule.kind = Kind::Tail;
+        for value in ["0", "-1", "1.00001", "10000001", "NaN"] {
+            rule.zero_tail_odds = Some(value.into());
+            assert!(rule.validate().is_err(), "{value}");
+        }
+    }
     fn input(selections: Vec<u8>, compound: bool) -> BetInput {
         BetInput {
             period: "2026287".into(),

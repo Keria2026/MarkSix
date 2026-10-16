@@ -1,4 +1,7 @@
-target
-tests
-examples
-.env
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!migrations/
+!migrations/**

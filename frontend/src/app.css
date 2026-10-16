@@ -2966,7 +2966,7 @@ td {
   }
 }
 
-/* v0.2: API wave colors and comfortable ledger controls. */
+/* Draw wave colors and ledger controls. */
 .ball[data-wave="0"] {
   background: linear-gradient(145deg, #d93647, #ae2032);
   color: #fff;
@@ -3193,4 +3193,58 @@ td {
     line-height: 28px;
     margin: 0;
   }
+}
+/* Native details/checkboxes keep multi-selection usable with touch and keyboard. */
+.record-multifilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 0 24px 20px;
+}
+.record-multifilters > * {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.record-multifilters > label {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+.record-picker {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.45);
+}
+.record-picker summary {
+  padding: 14px;
+  cursor: pointer;
+  min-height: 44px;
+}
+.record-picker-options {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 0 14px 12px;
+  display: grid;
+  gap: 8px;
+}
+.record-picker-options .checkbox-label {
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+
+.history-erasure-panel {
+  margin-top: 24px;
+  padding: 24px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.history-erasure-panel > div {
+  flex: 1 1 300px;
+}
+.history-erasure-panel h2 {
+  font-size: 18px;
+  margin: 0 0 10px;
 }

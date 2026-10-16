@@ -50,7 +50,7 @@ fn payload(period: &str, play_id: i64, version: i64) -> Value {
 #[ignore = "requires TEST_DATABASE_URL ending in /marksix_test; see docs/DEVELOPMENT.md"]
 async fn transactional_workflow_and_recovery() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("error")
+        .with_max_level(tracing::Level::ERROR)
         .try_init();
     let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL required");
     assert!(

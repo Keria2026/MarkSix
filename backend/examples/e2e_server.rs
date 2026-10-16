@@ -37,6 +37,15 @@ async fn main() -> anyhow::Result<()> {
     });
     tokio::spawn(worker::run(state.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8081").await?;
-    axum::serve(listener, api::router(state)).await?;
+    axum::serve(
+        listener,
+        api::router(state).route(
+            "/api/license",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"active":true,"testing":true,"hosted":true}))
+            }),
+        ),
+    )
+    .await?;
     Ok(())
 }

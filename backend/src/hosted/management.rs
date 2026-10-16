@@ -126,6 +126,7 @@ pub(super) fn router(c: Control) -> Router {
                     get(|| async { Json(json!({"mode":"authority","version":"Dev1.0"})) }),
                 )
                 .route("/login", post(login))
+                .route("/customer/history/clear", post(super::history::clear))
                 .route("/health", get(health)),
         )
         .layer(axum::extract::DefaultBodyLimit::max(16384))
@@ -277,7 +278,7 @@ async fn provision(c: &Control, id: &str) -> ApiResult<()> {
     }
     Ok(())
 }
-fn identifiers(a: &Account) -> anyhow::Result<()> {
+pub(super) fn identifiers(a: &Account) -> anyhow::Result<()> {
     let id = uuid::Uuid::parse_str(&a.id)?;
     anyhow::ensure!(
         a.database_name == format!("marksix_t_{}", id.simple())
@@ -530,7 +531,7 @@ async fn audit(State(c): State<Control>) -> ApiResult<Json<Value>> {
 }
 // The same lock file is used by backup/restore. Blocking filesystem work never
 // runs on an async executor thread. The descriptor holds flock until drop.
-async fn backup_lock(root: PathBuf) -> anyhow::Result<Arc<std::fs::File>> {
+pub(super) async fn backup_lock(root: PathBuf) -> anyhow::Result<Arc<std::fs::File>> {
     tokio::task::spawn_blocking(move || {
         std::fs::create_dir_all(&root)?;
         let file = std::fs::OpenOptions::new()
@@ -554,7 +555,7 @@ async fn backup_lock(root: PathBuf) -> anyhow::Result<Arc<std::fs::File>> {
     })
     .await?
 }
-async fn remove_tree(path: &FsPath) -> anyhow::Result<()> {
+pub(super) async fn remove_tree(path: &FsPath) -> anyhow::Result<()> {
     if tokio::fs::try_exists(path).await? {
         tokio::fs::remove_dir_all(path).await?;
     }

@@ -83,6 +83,27 @@ test("hosted manager creates and activates customer, replaces session and perman
     await expect(
       customer.getByRole("button", { name: "进入工作台" }),
     ).toBeVisible({ timeout: 15000 });
+    await replacement
+      .getByRole("navigation", { name: "主要导航" })
+      .getByRole("button", { name: "玩法与配置" })
+      .click();
+    await replacement.getByRole("button", { name: "清空我的历史记录" }).click();
+    const erasure = replacement.getByRole("dialog", {
+      name: "永久清空历史记录",
+    });
+    await expect(erasure).toContainText("不可恢复");
+    await expect(
+      erasure.getByRole("button", { name: "确认永久清空" }),
+    ).toBeDisabled();
+    await erasure.getByLabel("当前账号登录密码").fill(password);
+    await erasure
+      .getByLabel("输入“永久清空历史记录”确认")
+      .fill("永久清空历史记录");
+    await erasure.getByRole("button", { name: "确认永久清空" }).click();
+    await expect(erasure).toHaveCount(0);
+    await expect(replacement.getByRole("status")).toContainText(
+      "历史记录已永久清空",
+    );
     expect(
       (await new AxeBuilder({ page: manager }).analyze()).violations,
     ).toEqual([]);
