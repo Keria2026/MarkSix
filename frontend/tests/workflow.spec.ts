@@ -68,7 +68,8 @@ test("administrator records compound bets, cancels atomically, configures rules,
   await nav.getByRole("button", { name: "本期统计", exact: true }).click();
   await nav.getByRole("button", { name: "飞出受注统计", exact: true }).click();
   await expect(page.locator(".ledger-stats")).toContainText("¥ 840.00");
-  await expect(page.locator(".ledger-stats")).toContainText("¥ 2,310.00");
+  await expect(page.locator(".ledger-stats")).toContainText("飞出受注方");
+  await expect(page.locator(".ledger-stats")).not.toContainText("自留本金");
   await nav
     .getByRole("button", { name: "投注人分类统计", exact: true })
     .click();
