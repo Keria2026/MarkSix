@@ -110,6 +110,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/plays/export", get(crate::configuration::export))
         .route("/plays/import", post(crate::configuration::import))
+        .route("/plays/batch", post(crate::configuration::batch))
         .route("/settings", get(settings))
         .route("/settings/closing", put(update_closing))
         .route("/settings/mapping", put(update_mapping))

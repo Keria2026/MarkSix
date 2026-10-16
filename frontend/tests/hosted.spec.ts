@@ -87,6 +87,9 @@ test("hosted manager creates and activates customer, replaces session and perman
       .getByRole("navigation", { name: "主要导航" })
       .getByRole("button", { name: "玩法与配置" })
       .click();
+    await replacement
+      .getByRole("button", { name: "配置设置", exact: false })
+      .click();
     await replacement.getByRole("button", { name: "清空我的历史记录" }).click();
     const erasure = replacement.getByRole("dialog", {
       name: "永久清空历史记录",

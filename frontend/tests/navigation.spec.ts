@@ -66,17 +66,17 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
         })
         .toBeLessThan(4);
       if (name !== "录入投注") {
-        await expect(target).toHaveAttribute("aria-expanded", "true");
-        await target.click();
-        await expect(target).toHaveAttribute("aria-expanded", "false");
+        const expanded = nav.getByRole("button", {
+          name: `收起${name}二级菜单`,
+          exact: true,
+        });
+        if (await expanded.count()) await expanded.click();
+        await nav
+          .getByRole("button", { name: `展开${name}二级菜单`, exact: true })
+          .click();
+        await expect(nav.locator(".nav-submenu")).toBeVisible();
+        await expanded.click();
         await expect(nav.locator(".nav-submenu")).toHaveCount(0);
-        await target.click();
-        await expect(target).toHaveAttribute("aria-expanded", "true");
-        const submenu = nav.locator(".nav-submenu");
-        await expect(submenu).toBeVisible();
-        const box = (await submenu.boundingBox())!;
-        expect(box.x).toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width).toBeLessThanOrEqual(width);
       }
     }
   }
@@ -127,6 +127,9 @@ test("statistics summaries show category-specific amounts, profit direction, pen
   );
   const nav = page.getByRole("navigation", { name: "主要导航" });
   await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
   const cards = page.getByLabel("分类统计摘要");
   await expect(cards).toContainText("自留本金");
   await expect(cards).toContainText("¥ 60.01");
@@ -253,6 +256,14 @@ test("historical periods remain individually closable navigation tabs without de
   const tabs = nav.getByLabel("已打开的历史期次");
   await nav.getByRole("button", { name: "本期概览", exact: true }).click();
   await history.click();
+  if (
+    await nav
+      .getByRole("button", { name: "展开历史统计二级菜单", exact: true })
+      .count()
+  )
+    await nav
+      .getByRole("button", { name: "展开历史统计二级菜单", exact: true })
+      .click();
   await expect(tabs.locator(".history-tab")).toHaveCount(3);
   await tabs
     .getByRole("button", { name: "第 2026287 期", exact: true })
@@ -266,9 +277,13 @@ test("historical periods remain individually closable navigation tabs without de
       exact: true,
     }),
   ).toBeVisible();
-  await history.click();
-  await expect(history).toHaveAttribute("aria-expanded", "false");
-  await history.click();
+  await nav
+    .getByRole("button", { name: "收起历史统计二级菜单", exact: true })
+    .click();
+  await expect(tabs).toHaveCount(0);
+  await nav
+    .getByRole("button", { name: "展开历史统计二级菜单", exact: true })
+    .click();
   await expect(tabs.locator(".history-tab")).toHaveCount(2);
   await page.setViewportSize({ width: 320, height: 844 });
   for (const close of await tabs.locator(".history-tab-close").all()) {

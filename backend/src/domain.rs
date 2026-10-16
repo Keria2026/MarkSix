@@ -748,6 +748,7 @@ pub fn parse_draw(value: &serde_json::Value) -> RuleResult<Draw> {
     })
 }
 
+/// Stable calculation fixtures; customer defaults use configuration::bundled.
 pub fn defaults() -> Vec<Rule> {
     vec![
         Rule {

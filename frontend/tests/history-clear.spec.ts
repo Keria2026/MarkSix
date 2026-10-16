@@ -17,6 +17,8 @@ test("history erasure retries keep their ID, but closing and reopening starts a 
     .getByRole("button", { name: "玩法与配置" })
     .click();
 
+  await page.getByRole("button", { name: "配置设置", exact: false }).click();
+
   // Intercept only erasure: simulate a server commit followed by a lost reply.
   // Login, settings and the rest of the page still use the real test backend.
   const ids: string[] = [];

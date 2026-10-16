@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { pageFade } from "./lib/navigation";
   import {
     Users,
     KeyRound,
@@ -298,7 +299,7 @@
 
 <svelte:head
   ><title
-    >{loggedIn ? tabs.find((t) => t.id === tab)?.label : "登录"} · MarkSix 授权管理</title
+    >{loggedIn ? tabs.find((t) => t.id === tab)?.label : "登录"} · auth 管理端</title
   ></svelte:head
 >
 
@@ -308,8 +309,8 @@
 {:else if !loggedIn}<main class="owner-login">
     <section class="glass">
       <div class="brand-mark">M</div>
-      <p class="eyebrow">MARKSIX · DEV1.0</p>
-      <h1>授权管理后台</h1>
+      <p class="eyebrow">AUTH · DEV1.0</p>
+      <h1>auth 管理端</h1>
       <p class="owner-muted">管理客户、授权与激活码</p>
       <form onsubmit={login}>
         <label
@@ -341,7 +342,8 @@
 {:else}<div class="owner-layout">
     <aside class="glass">
       <a class="owner-brand" href="/"
-        >M <span>MarkSix <small>授权管理</small></span></a
+        ><div class="brand-mark">a</div>
+        <span>auth <small>管理端</small></span></a
       >
       <nav aria-label="管理导航">
         {#each tabs as item}<button
@@ -363,10 +365,10 @@
         >
       </div>
     </aside>
-    <main class="owner-main">
+    <main class="owner-main" use:pageFade={tab}>
       <header>
         <div>
-          <p class="eyebrow">MARKSIX · DEV1.0</p>
+          <p class="eyebrow">AUTH · DEV1.0</p>
           <h1>{tabs.find((t) => t.id === tab)?.label}</h1>
         </div>
         <button class="button secondary" disabled={busy} onclick={refresh}
@@ -812,6 +814,7 @@
   }
   .owner-search {
     display: flex;
+    flex-direction: row;
     align-items: center;
     gap: 10px;
     max-width: 360px;
@@ -967,6 +970,66 @@
     }
     .owner-toolbar > .button {
       width: 100%;
+    }
+  }
+  .owner-main header > div,
+  .owner-toolbar > *,
+  .owner-form,
+  .owner-form label {
+    min-width: 0;
+  }
+  .owner-form input:not([type="checkbox"]),
+  .owner-search input,
+  .owner-code textarea {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .owner-actions .button {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .owner-form .owner-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .owner-form .owner-actions .button {
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+  }
+  @media (max-width: 600px) {
+    .owner-main header {
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .owner-main header > div {
+      flex: 1 1 180px;
+    }
+    .owner-search {
+      flex-basis: 100%;
+      max-width: none;
+    }
+    .owner-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      width: 100%;
+    }
+    .owner-actions .button {
+      width: 100%;
+      padding: 10px 8px;
+    }
+    .owner-card-head .soft-chip {
+      max-width: 100%;
+      white-space: normal;
+    }
+    .owner-login {
+      padding: 16px;
+    }
+    .owner-login section {
+      padding: 24px;
+      width: min(430px, calc(100vw - 32px));
     }
   }
 </style>

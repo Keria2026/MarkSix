@@ -162,26 +162,41 @@
   let report = $state<Statistics | null>(null);
   let historyTabs = $state<Period[]>([]);
   let submenuExpanded = $state({
-    statistics: true,
-    history: true,
-    official: true,
+    statistics: false,
+    history: false,
+    official: false,
   });
+  function loadNavigationPreferences() {
+    submenuExpanded = { statistics: false, history: false, official: false };
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem(`marksix:menus:${encodeURIComponent(username)}`) ??
+          "{}",
+      );
+      for (const key of ["statistics", "history", "official"] as const)
+        if (typeof saved[key] === "boolean") submenuExpanded[key] = saved[key];
+    } catch {
+      /* Storage can be unavailable in private browsers. */
+    }
+  }
+  function toggleSubmenu(id: Tab) {
+    const key = id as keyof typeof submenuExpanded;
+    submenuExpanded[key] = !submenuExpanded[key];
+    try {
+      localStorage.setItem(
+        `marksix:menus:${encodeURIComponent(username)}`,
+        JSON.stringify(submenuExpanded),
+      );
+    } catch {
+      /* Keep this session's choice. */
+    }
+  }
   function hasSubmenu(id: Tab) {
     return (
       id === "statistics" ||
       id === "official" ||
       (id === "history" && historyTabs.length > 0)
     );
-  }
-  function selectNavigation(next: Tab) {
-    if (next === tab && hasSubmenu(next)) {
-      const key = next as keyof typeof submenuExpanded;
-      submenuExpanded[key] = !submenuExpanded[key];
-      return;
-    }
-    if (hasSubmenu(next))
-      submenuExpanded[next as keyof typeof submenuExpanded] = true;
-    void navigate(next);
   }
   async function closeHistoryTab(id: string) {
     const index = historyTabs.findIndex((p) => p.id === id);
@@ -257,6 +272,71 @@
     editError = $state("");
   let rule = $state<Rule>(newRule());
   let playSearch = $state("");
+  let pickerExpanded = $state(false);
+  let settingsSection = $state<"plays" | "system">("plays");
+  let settingsSearch = $state("");
+  let selectedPlayIds = $state<number[]>([]);
+  let batchOpen = $state<"update" | "delete" | null>(null);
+  let batchOdds = $state("");
+  let batchRebate = $state("");
+  let batchEnabled = $state("");
+  let batchError = $state("");
+  let batchTargets = $state<{ id: number; version: number }[]>([]);
+  const settingsPlays = $derived(
+    boot?.plays.filter((p) =>
+      p.rule.name
+        .toLocaleLowerCase()
+        .includes(settingsSearch.trim().toLocaleLowerCase()),
+    ) ?? [],
+  );
+  const selectedConfigurations = $derived(
+    boot?.plays.filter((p) => selectedPlayIds.includes(p.id)) ?? [],
+  );
+  async function saveBatch(event: SubmitEvent) {
+    event.preventDefault();
+    batchError = "";
+    if (!batchTargets.length) return;
+    busy = true;
+    try {
+      const change =
+        batchOpen === "delete"
+          ? { action: "delete" }
+          : {
+              action: "update",
+              odds: batchOdds.trim() || null,
+              rebate_percent: batchRebate.trim() || null,
+              enabled: batchEnabled === "" ? null : batchEnabled === "true",
+            };
+      await api("/plays/batch", {
+        method: "POST",
+        body: JSON.stringify({
+          targets: batchTargets,
+          ...change,
+        }),
+      });
+      batchOpen = null;
+      selectedPlayIds = [];
+      selections = [];
+      await refresh();
+      notify("所选玩法已更新，历史投注快照保留");
+    } catch (e) {
+      batchError = fail(e);
+    } finally {
+      busy = false;
+    }
+  }
+  function openBatch(action: "update" | "delete") {
+    batchTargets = selectedConfigurations.map((p) => ({
+      id: p.id,
+      version: p.version,
+    }));
+    batchOpen = action;
+    batchOdds = "";
+    batchRebate = "";
+    batchEnabled = "";
+    batchError = "";
+  }
+
   let selectionError = $state("");
   let deletePlayTarget = $state<Play | null>(null);
   let importFile = $state<{
@@ -536,7 +616,6 @@
   async function openPeriod(period: Period) {
     if (!historyTabs.some((p) => p.id === period.id))
       historyTabs = [...historyTabs, period];
-    submenuExpanded.history = true;
     selectedPeriod = period;
     selectedBettors = [];
     selectedPlays = [];
@@ -562,6 +641,7 @@
         body: JSON.stringify({ username, password }),
       });
       password = "";
+      loadNavigationPreferences();
       loggedIn = true;
       await refresh();
     } catch (e) {
@@ -674,12 +754,17 @@
     if (!importFile) return;
     busy = true;
     try {
-      const result = await api<{ imported: number }>("/plays/import", {
+      const result = await api<{
+        imported: number;
+        created: number;
+        updated: number;
+      }>("/plays/import", {
         method: "POST",
         body: JSON.stringify(importFile),
       });
       importFile = null;
-      notify(`已新增 ${result.imported} 条玩法`);
+      selectedPlayIds = [];
+      notify(`已新增 ${result.created} 条、更新 ${result.updated} 条同名玩法`);
       await refresh();
     } catch (e) {
       importError = fail(e);
@@ -989,6 +1074,7 @@
         const session = await api<{ username: string }>("/session");
         if (!alive) return;
         username = session.username;
+        loadNavigationPreferences();
         loggedIn = true;
         await refresh();
       } catch (e) {
@@ -1120,25 +1206,35 @@
             class:active={tab === item.id}
             aria-label={item.label}
             aria-current={tab === item.id ? "page" : undefined}
-            aria-expanded={hasSubmenu(item.id)
-              ? tab === item.id &&
-                submenuExpanded[item.id as keyof typeof submenuExpanded]
-              : undefined}
-            aria-controls={hasSubmenu(item.id)
-              ? `submenu-${item.id}`
-              : undefined}
-            onclick={() => selectNavigation(item.id)}
+            onclick={() => navigate(item.id)}
             ><item.icon size={19} strokeWidth={1.7} /><span class="nav-label"
               >{item.label}</span
             ><span class="nav-label-short" aria-hidden="true">{item.short}</span
-            >{#if hasSubmenu(item.id)}<ChevronDown
-                size={13}
-                class={tab === item.id &&
-                submenuExpanded[item.id as keyof typeof submenuExpanded]
-                  ? "nav-chevron expanded"
-                  : "nav-chevron"}
-              />{/if}</button
+            ></button
           >
+          {#if tab === item.id && hasSubmenu(item.id)}
+            <div class="nav-disclosure">
+              <button
+                aria-label={`${submenuExpanded[item.id as keyof typeof submenuExpanded] ? "收起" : "展开"}${item.label}二级菜单`}
+                aria-expanded={submenuExpanded[
+                  item.id as keyof typeof submenuExpanded
+                ]}
+                aria-controls={`submenu-${item.id}`}
+                onclick={() => toggleSubmenu(item.id)}
+              >
+                {submenuExpanded[item.id as keyof typeof submenuExpanded]
+                  ? "收起"
+                  : "展开"}菜单 <ChevronDown
+                  size={14}
+                  class={submenuExpanded[
+                    item.id as keyof typeof submenuExpanded
+                  ]
+                    ? "expanded"
+                    : ""}
+                />
+              </button>
+            </div>
+          {/if}
           {#if item.id === "statistics" && tab === "statistics" && submenuExpanded.statistics}<div
               class="nav-submenu"
               id="submenu-statistics"
@@ -1546,7 +1642,7 @@
                 没有匹配的玩法，请检查名称或在配置页创建。
               </p>{/if}
             <div class="play-picker">
-              {#each matchingPlays as play}<button
+              {#each pickerExpanded || playSearch.trim() ? matchingPlays : matchingPlays.slice(0, 6) as play}<button
                   class:selected={currentPlay?.id === play.id}
                   onclick={() => selectPlay(play.id)}
                   ><span>{play.rule.name}</span><small
@@ -1556,6 +1652,21 @@
                     />{/if}</button
                 >{/each}
             </div>
+            {#if matchingPlays.length > 6 && !playSearch.trim()}<button
+                class="text-button picker-toggle"
+                aria-expanded={pickerExpanded}
+                onclick={() => (pickerExpanded = !pickerExpanded)}
+                >{pickerExpanded
+                  ? "收起玩法列表"
+                  : `展开全部 ${matchingPlays.length} 个玩法`}<ChevronDown
+                  size={15}
+                /></button
+              >{/if}
+            {#if currentPlay && !pickerExpanded && !playSearch.trim() && !matchingPlays
+                .slice(0, 6)
+                .some((p) => p.id === currentPlay.id)}<p class="field-help">
+                当前玩法：{currentPlay.rule.name}
+              </p>{/if}
             {#if !currentPlay}<div class="empty-state">
                 <p>尚未配置可用玩法。</p>
                 <button
@@ -1942,241 +2053,312 @@
             <h1>玩法与配置</h1>
             <p>配置玩法与生效时间，已记录的投注始终保留原始规则。</p>
           </div>
-          <div class="configuration-actions">
-            <input
-              type="file"
-              accept=".json,application/json"
-              bind:this={importInput}
-              onchange={readImport}
-              hidden
-              aria-label="选择玩法文件"
-            />
-            <button
-              class="button secondary"
-              onclick={() => importInput?.click()}>导入玩法</button
-            >
-            <button
-              class="button secondary"
-              disabled={!boot?.plays.length}
-              onclick={() => exportPlays()}>导出全部</button
-            >
-            <button class="button primary" onclick={() => openEditor()}
-              ><Plus size={17} /> 新建玩法</button
-            >
-          </div>
+          {#if settingsSection === "plays"}<div class="configuration-actions">
+              <input
+                type="file"
+                accept=".json,application/json"
+                bind:this={importInput}
+                onchange={readImport}
+                hidden
+                aria-label="选择玩法文件"
+              />
+              <button
+                class="button secondary"
+                onclick={() => importInput?.click()}>导入玩法</button
+              >
+              <button
+                class="button secondary"
+                disabled={!boot?.plays.length}
+                onclick={() => exportPlays()}>导出全部</button
+              >
+              <button class="button primary" onclick={() => openEditor()}
+                ><Plus size={17} /> 新建玩法</button
+              >
+            </div>{/if}
         </section>
-        {#if licenseStatus && !licenseStatus.testing}<section
-            class="glass license-summary"
+        <section class="glass settings-switcher" aria-label="配置分区">
+          <button
+            class:active={settingsSection === "plays"}
+            aria-pressed={settingsSection === "plays"}
+            onclick={() => (settingsSection = "plays")}
+            ><Layers3 size={20} /><span
+              >玩法设置<small>导入、导出与批量管理</small></span
+            ></button
+          ><button
+            class:active={settingsSection === "system"}
+            aria-pressed={settingsSection === "system"}
+            onclick={() => (settingsSection = "system")}
+            ><Settings2 size={20} /><span
+              >配置设置<small>投注时间、生肖及账号授权</small></span
+            ></button
           >
-            <h2>
-              <ShieldCheck size={18} />{"账号授权"}
-            </h2>
-            <p>
-              {licenseStatus.permanent ? "永久授权" : "有效至"}
-              {licenseStatus.permanent
-                ? ""
-                : licenseStatus.expires_at
-                  ? new Intl.DateTimeFormat("zh-CN", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                      timeZone: "Asia/Shanghai",
-                    }).format(licenseStatus.expires_at * 1000)
-                  : "—"}（北京时间）
-            </p>
-            <p>
-              {#if licenseStatus.permanent}永久授权，业务规则照常生效{:else}授权剩余
-                <LicenseCountdown
-                  seconds={licenseStatus.remaining_seconds}
-                />{/if}
-            </p>
-            <p class="field-help">
-              授权截止日当期可用，到期后使用新激活码续期；已有投注继续结算。
-            </p>
-          </section>{/if}
-        <section class="glass plays-panel">
-          <div class="section-head">
-            <h2>
-              玩法配置 <span class="count-badge">{boot?.plays.length ?? 0}</span
-              >
-            </h2>
-            <span class="soft-chip"><ShieldCheck size={13} /> 版本留存</span>
-          </div>
-          <div class="play-settings-grid">
-            {#each boot?.plays ?? [] as play}<button
-                class="play-setting"
-                class:disabled-play={!play.enabled}
-                onclick={() => openEditor(play)}
-                ><div>
-                  <span class="play-symbol"><Layers3 size={21} /></span><span
-                    class="version-chip">V{play.version}</span
-                  >
-                </div>
-                <h3>
-                  {play.rule.name}
-                  {#if !play.enabled}<small>已停用</small>{/if}
-                </h3>
-                <p>
-                  {kinds[play.rule.kind]} · {scopes[play.rule.scope]} · {conditions[
-                    play.rule.condition
-                  ]}
-                </p>
-                <div class="play-rate">
-                  <span
-                    >含本赔率<strong>{play.rule.odds}<small>×</small></strong
-                    ></span
-                  ><span
-                    >反水<strong
-                      >{play.rule.rebate_percent}<small>%</small></strong
-                    ></span
-                  ><span class="edit-link">编辑 <ArrowUpRight size={15} /></span
-                  >
-                </div></button
-              >{/each}
-          </div>
-          <div class="panel-note">
-            <Info size={15} /> 初始玩法为说明书中的示例配置，正式录入前请核对赔率及反水。
-          </div>
         </section>
-        <div class="settings-grid">
-          <section class="glass closing-panel">
+        {#if settingsSection === "plays"}
+          <section class="glass plays-panel">
             <div class="section-head">
-              <h2><Clock3 size={19} /> 投注时间</h2>
+              <h2>
+                玩法配置 <span class="count-badge"
+                  >{boot?.plays.length ?? 0}</span
+                >
+              </h2>
+              <span class="soft-chip"><ShieldCheck size={13} /> 版本留存</span>
             </div>
-            <div class="schedule-rail">
-              <span>{today.open_time}<small>开始投注</small></span>
-              <div></div>
-              <span>{today.close_time}<small>本期封盘</small></span>
-              <div></div>
-              <span>21:34<small>获取开奖</small></span>
+            <div class="play-management-toolbar">
+              <label
+                >搜索配置玩法<input
+                  type="search"
+                  bind:value={settingsSearch}
+                  placeholder="按名称查找"
+                /></label
+              ><label class="checkbox-line"
+                ><input
+                  type="checkbox"
+                  checked={settingsPlays.length > 0 &&
+                    settingsPlays.every((p) => selectedPlayIds.includes(p.id))}
+                  onchange={(e) =>
+                    (selectedPlayIds = e.currentTarget.checked
+                      ? [
+                          ...new Set([
+                            ...selectedPlayIds,
+                            ...settingsPlays.map((p) => p.id),
+                          ]),
+                        ]
+                      : selectedPlayIds.filter(
+                          (id) => !settingsPlays.some((p) => p.id === id),
+                        ))}
+                />选择当前结果</label
+              ><span>已选 {selectedConfigurations.length} 项</span><button
+                class="button secondary"
+                disabled={!selectedConfigurations.length}
+                onclick={() => openBatch("update")}>批量调整</button
+              ><button
+                class="button danger"
+                disabled={!selectedConfigurations.length}
+                onclick={() => openBatch("delete")}>批量删除</button
+              ><button
+                class="text-button"
+                onclick={() => (selectedPlayIds = [])}>取消选择</button
+              >
             </div>
-            <form onsubmit={saveClosing}>
-              <label
-                >新的开始时间<input
-                  type="time"
-                  bind:value={openTime}
-                  required
-                /></label
-              >
-              <label
-                >新的封盘时间<input
-                  type="time"
-                  bind:value={closeTime}
-                  required
-                /></label
-              >
-              <p class="field-help">
-                从下一期生效，当前期不会重新开放。保存前请验证管理员身份。
-              </p>
-              <label
-                >验证账号<input
-                  bind:value={settingsUsername}
-                  autocomplete="username"
-                  required
-                  maxlength="80"
-                /></label
-              >
-              <label
-                >验证密码<input
-                  type="password"
-                  bind:value={settingsPassword}
-                  autocomplete="current-password"
-                  required
-                  maxlength="256"
-                /></label
-              >
-              <button class="button secondary" disabled={busy}
-                >保存时间 <ArrowRight size={15} /></button
-              >
-            </form>
-            {#if config}<div class="scheduled-list">
-                {#each config.closing.filter((c) => c.effective_date >= today!.business_date) as c}<span
-                    >{c.effective_date} 生效
-                    <strong>{c.open_time} – {c.close_time}</strong></span
-                  >{/each}
-              </div>{/if}
+            <div class="play-settings-grid">
+              {#each settingsPlays as play}<div class="play-management-item">
+                  <label class="play-select checkbox-line"
+                    ><input
+                      type="checkbox"
+                      aria-label={`选择玩法 ${play.rule.name}`}
+                      checked={selectedPlayIds.includes(play.id)}
+                      onchange={(e) =>
+                        (selectedPlayIds = e.currentTarget.checked
+                          ? [...selectedPlayIds, play.id]
+                          : selectedPlayIds.filter((id) => id !== play.id))}
+                    />选择</label
+                  ><button
+                    class="play-setting"
+                    class:disabled-play={!play.enabled}
+                    onclick={() => openEditor(play)}
+                    ><div>
+                      <span class="play-symbol"><Layers3 size={21} /></span
+                      ><span class="version-chip">V{play.version}</span>
+                    </div>
+                    <h3>
+                      {play.rule.name}
+                      {#if !play.enabled}<small>已停用</small>{/if}
+                    </h3>
+                    <p>
+                      {kinds[play.rule.kind]} · {scopes[play.rule.scope]} · {conditions[
+                        play.rule.condition
+                      ]}
+                    </p>
+                    <div class="play-rate">
+                      <span
+                        >含本赔率<strong
+                          >{play.rule.odds}<small>×</small></strong
+                        ></span
+                      ><span
+                        >反水<strong
+                          >{play.rule.rebate_percent}<small>%</small></strong
+                        ></span
+                      ><span class="edit-link"
+                        >编辑 <ArrowUpRight size={15} /></span
+                      >
+                    </div></button
+                  >
+                </div>{/each}
+            </div>
+            <div class="panel-note">
+              <Info size={15} /> 默认采用 plays-prop 配置；同名导入会更新当前规则，正式录入前请核对赔率及反水。
+            </div>
           </section>
-          <section class="glass mapping-panel">
-            <div class="section-head">
-              <h2><CalendarDays size={19} /> 生肖映射</h2>
-              <span class="soft-chip"
-                >本期本命 · {zodiacs[today.mapping.natal]}</span
-              >
-            </div>
-            <p class="field-help">
-              每年 1 月 1 日自动换肖，01、13、25、37、49
-              对应当年本命肖；每期映射固定，实际结算以接口为准。
-            </p>
-            <form onsubmit={saveMapping}>
-              <div class="form-two">
+        {:else}
+          {#if licenseStatus && !licenseStatus.testing}<section
+              class="glass license-summary"
+            >
+              <h2>
+                <ShieldCheck size={18} />{"账号授权"}
+              </h2>
+              <p>
+                {licenseStatus.permanent ? "永久授权" : "有效至"}
+                {licenseStatus.permanent
+                  ? ""
+                  : licenseStatus.expires_at
+                    ? new Intl.DateTimeFormat("zh-CN", {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                        timeZone: "Asia/Shanghai",
+                      }).format(licenseStatus.expires_at * 1000)
+                    : "—"}（北京时间）
+              </p>
+              <p>
+                {#if licenseStatus.permanent}永久授权，业务规则照常生效{:else}授权剩余
+                  <LicenseCountdown
+                    seconds={licenseStatus.remaining_seconds}
+                  />{/if}
+              </p>
+              <p class="field-help">
+                授权截止日当期可用，到期后使用新激活码续期；已有投注继续结算。
+              </p>
+            </section>{/if}
+          <div class="settings-grid">
+            <section class="glass closing-panel">
+              <div class="section-head">
+                <h2><Clock3 size={19} /> 投注时间</h2>
+              </div>
+              <div class="schedule-rail">
+                <span>{today.open_time}<small>开始投注</small></span>
+                <div></div>
+                <span>{today.close_time}<small>本期封盘</small></span>
+                <div></div>
+                <span>21:34<small>获取开奖</small></span>
+              </div>
+              <form onsubmit={saveClosing}>
                 <label
-                  >生效日期<input
-                    type="date"
-                    bind:value={effectiveDate}
-                    onchange={() =>
-                      (mapping = annualMapping(
-                        Number(effectiveDate.slice(0, 4)),
-                      ))}
-                    min={config?.tomorrow}
+                  >新的开始时间<input
+                    type="time"
+                    bind:value={openTime}
                     required
                   /></label
-                ><label
-                  >本命生肖<select
-                    bind:value={mapping.natal}
-                    onchange={() =>
-                      (mapping.zodiac = Array.from(
-                        { length: 49 },
-                        (_, i) => (mapping.natal - (i % 12) + 12) % 12,
-                      ))}
-                    >{#each zodiacs as zodiac, i}<option value={i}
-                        >{zodiac}</option
-                      >{/each}</select
-                  ></label
+                >
+                <label
+                  >新的封盘时间<input
+                    type="time"
+                    bind:value={closeTime}
+                    required
+                  /></label
+                >
+                <p class="field-help">
+                  从下一期生效，当前期不会重新开放。保存前请验证管理员身份。
+                </p>
+                <label
+                  >验证账号<input
+                    bind:value={settingsUsername}
+                    autocomplete="username"
+                    required
+                    maxlength="80"
+                  /></label
+                >
+                <label
+                  >验证密码<input
+                    type="password"
+                    bind:value={settingsPassword}
+                    autocomplete="current-password"
+                    required
+                    maxlength="256"
+                  /></label
+                >
+                <button class="button secondary" disabled={busy}
+                  >保存时间 <ArrowRight size={15} /></button
+                >
+              </form>
+              {#if config}<div class="scheduled-list">
+                  {#each config.closing.filter((c) => c.effective_date >= today!.business_date) as c}<span
+                      >{c.effective_date} 生效
+                      <strong>{c.open_time} – {c.close_time}</strong></span
+                    >{/each}
+                </div>{/if}
+            </section>
+            <section class="glass mapping-panel">
+              <div class="section-head">
+                <h2><CalendarDays size={19} /> 生肖映射</h2>
+                <span class="soft-chip"
+                  >本期本命 · {zodiacs[today.mapping.natal]}</span
                 >
               </div>
-              <details class="mapping-editor">
-                <summary
-                  >编辑 49 个号码对应的生肖 <ChevronDown size={15} /></summary
-                >
-                <div class="mapping-grid">
-                  {#each mapping.zodiac as _, i}<label
-                      ><span class="mini-number" data-wave={wave(i + 1)}
-                        >{String(i + 1).padStart(2, "0")}</span
-                      ><select
-                        aria-label={`${String(i + 1).padStart(2, "0")} 生肖`}
-                        bind:value={mapping.zodiac[i]}
-                        >{#each zodiacs as z, index}<option value={index}
-                            >{z}</option
-                          >{/each}</select
-                      ></label
-                    >{/each}
-                </div>
-              </details>
               <p class="field-help">
-                指定日期 00:00 生效，整期固定；实际结算以接口为准。
+                每年 1 月 1 日自动换肖，01、13、25、37、49
+                对应当年本命肖；每期映射固定，实际结算以接口为准。
               </p>
-              <button class="button secondary" disabled={busy}
-                >安排生效 <ArrowRight size={15} /></button
-              >
-            </form>
-            {#if config}<div class="scheduled-list">
-                {#each config.mappings.filter((c) => c.effective_date >= today!.business_date) as c}<span
-                    >{c.effective_date} 生效
-                    <strong>本命 {zodiacs[c.mapping.natal]}</strong></span
-                  >{/each}
-              </div>{/if}
-          </section>
-        </div>
-        <section class="glass history-erasure-panel">
-          <div>
-            <h2>清空历史记录</h2>
-            <p class="field-help">
-              永久删除本账号本期之前的投注、飞出、结算和对应操作记录，并删除服务器托管的本账号历史备份。本期数据、玩法配置、账号及授权保留。此操作不可恢复。
-            </p>
+              <form onsubmit={saveMapping}>
+                <div class="form-two">
+                  <label
+                    >生效日期<input
+                      type="date"
+                      bind:value={effectiveDate}
+                      onchange={() =>
+                        (mapping = annualMapping(
+                          Number(effectiveDate.slice(0, 4)),
+                        ))}
+                      min={config?.tomorrow}
+                      required
+                    /></label
+                  ><label
+                    >本命生肖<select
+                      bind:value={mapping.natal}
+                      onchange={() =>
+                        (mapping.zodiac = Array.from(
+                          { length: 49 },
+                          (_, i) => (mapping.natal - (i % 12) + 12) % 12,
+                        ))}
+                      >{#each zodiacs as zodiac, i}<option value={i}
+                          >{zodiac}</option
+                        >{/each}</select
+                    ></label
+                  >
+                </div>
+                <details class="mapping-editor">
+                  <summary
+                    >编辑 49 个号码对应的生肖 <ChevronDown size={15} /></summary
+                  >
+                  <div class="mapping-grid">
+                    {#each mapping.zodiac as _, i}<label
+                        ><span class="mini-number" data-wave={wave(i + 1)}
+                          >{String(i + 1).padStart(2, "0")}</span
+                        ><select
+                          aria-label={`${String(i + 1).padStart(2, "0")} 生肖`}
+                          bind:value={mapping.zodiac[i]}
+                          >{#each zodiacs as z, index}<option value={index}
+                              >{z}</option
+                            >{/each}</select
+                        ></label
+                      >{/each}
+                  </div>
+                </details>
+                <p class="field-help">
+                  指定日期 00:00 生效，整期固定；实际结算以接口为准。
+                </p>
+                <button class="button secondary" disabled={busy}
+                  >安排生效 <ArrowRight size={15} /></button
+                >
+              </form>
+              {#if config}<div class="scheduled-list">
+                  {#each config.mappings.filter((c) => c.effective_date >= today!.business_date) as c}<span
+                      >{c.effective_date} 生效
+                      <strong>本命 {zodiacs[c.mapping.natal]}</strong></span
+                    >{/each}
+                </div>{/if}
+            </section>
           </div>
-          <button class="button danger" onclick={openClearHistory}
-            >清空我的历史记录</button
-          >
-        </section>
+          <section class="glass history-erasure-panel">
+            <div>
+              <h2>清空历史记录</h2>
+              <p class="field-help">
+                永久删除本账号本期之前的投注、飞出、结算和对应操作记录，并删除服务器托管的本账号历史备份。本期数据、玩法配置、账号及授权保留。此操作不可恢复。
+              </p>
+            </div>
+            <button class="button danger" onclick={openClearHistory}
+              >清空我的历史记录</button
+            >
+          </section>
+        {/if}
       {/if}
       <footer class="page-footer">
         <span>MarkSix · 清晰记录，从容掌控</span><span
@@ -2996,7 +3178,7 @@
     onclose={() => (importFile = null)}
   >
     <p class="modal-description">
-      将新增 {importFile.plays.length} 条玩法，不覆盖现有配置。同名玩法也会另建一条，请核对后导入。
+      将导入 {importFile.plays.length} 条玩法：同名默认覆盖当前配置，不同名新增。已有投注沿用原规则快照。若现有名称重名，整批拒绝，请先整理重名项。
     </p>
     <ul class="import-preview">
       {#each importFile.plays as item}<li>
@@ -3018,3 +3200,54 @@
       >
     </div>
   </Modal>{/if}
+
+{#if batchOpen}<Modal
+    title={batchOpen === "delete" ? "批量删除玩法" : "批量调整玩法"}
+    onclose={() => {
+      if (!busy) batchOpen = null;
+    }}
+    ><form class="rule-form" onsubmit={saveBatch}>
+      <p class="modal-description">
+        已选择 {batchTargets.length} 条玩法。整批校验后保存；已有投注使用原快照。
+      </p>
+      {#if batchOpen === "delete"}<p class="inline-error">
+          这些玩法将停止录入，历史投注及统计保留。
+        </p>{:else}<label
+          >批量含本赔率<input
+            bind:value={batchOdds}
+            inputmode="decimal"
+            placeholder="留空不修改"
+          /></label
+        ><label
+          >批量反水比例（%）<input
+            bind:value={batchRebate}
+            inputmode="decimal"
+            placeholder="留空不修改"
+          /></label
+        ><label
+          >批量启用状态<select bind:value={batchEnabled}
+            ><option value="">保持原状</option><option value="true"
+              >全部启用</option
+            ><option value="false">全部停用</option></select
+          ></label
+        >
+        <p class="field-help">
+          仅修改普通赔率和普通反水；本命生肖、0
+          尾及一特一平特殊配置保留。留空字段不修改。
+        </p>{/if}{#if batchError}<p class="inline-error" role="alert">
+          {batchError}
+        </p>{/if}
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="button secondary"
+          disabled={busy}
+          onclick={() => (batchOpen = null)}>取消</button
+        ><button
+          class={batchOpen === "delete" ? "button danger" : "button primary"}
+          disabled={busy || !batchTargets.length}
+          >{batchOpen === "delete" ? "确认批量删除" : "保存批量调整"}</button
+        >
+      </div>
+    </form></Modal
+  >{/if}

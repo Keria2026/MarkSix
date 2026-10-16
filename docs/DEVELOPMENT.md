@@ -6,13 +6,13 @@
 
 - `domain.rs`：定点金额、规则校验、拆注和结算；`risk.rs`：同一合法开奖下的精确极值。
 - `store.rs`：业务库、期次快照；`api.rs`：业务 API 与事务；`ledger.rs`：金额纠正、飞出和统计；`configuration.rs`：玩法导入导出及逻辑删除。
-- `hosted/accounts.rs`：中央账号、会话与激活；`management.rs`：管理后台；`portal.rs`：按验证会话选择客户；`tenancy.rs`：独立客户数据库池及并发预算；`history.rs`：客户历史清空及备份删除。
+- `hosted/accounts.rs`：中央账号、会话与激活；`management.rs`：auth 管理端；`portal.rs`：按验证会话选择客户；`tenancy.rs`：独立客户数据库池及并发预算；`history.rs`：客户历史清空及备份删除。
 - `worker.rs`：开奖抓取、结算和风险任务；`logging.rs`：固定 error 级运行日志。财务审计不是运行日志，继续保存于业务库。
 - 前端 `App.svelte` 为客户工作台，`Management.svelte` 为运营后台，按 `/api/site` 选择入口。
 
 ## 开发环境
 
-使用已有 checkout，不需创建额外 worktree。MySQL 测试实例 max_connections 至少 64。凭据只放私有环境配置，不写入 Git。授权端需要 CONTROL_DATABASE_URL、PROVISION_DATABASE_URL、AUTHORITY_ADMIN_USERNAME、AUTHORITY_ADMIN_PASSWORD、TENANT_DB_HOST/PORT、BACKUP_ROOT；客户服务使用受限 portal 数据库连接。
+使用已有 checkout，不需创建额外 worktree。MySQL 测试实例 max_connections 至少 64。凭据只放私有环境配置，不写入 Git。auth 管理端需要 CONTROL_DATABASE_URL、PROVISION_DATABASE_URL、AUTHORITY_ADMIN_USERNAME、AUTHORITY_ADMIN_PASSWORD、TENANT_DB_HOST/PORT、BACKUP_ROOT；客户服务使用受限 portal 数据库连接。
 
 ```bash
 cd backend
@@ -78,13 +78,21 @@ python3 scripts/hosted_acceptance.py --users 200 --load-seconds 60
 
 多选查询通过 POST /api/bets/search 传入参数化 JSON 数组，避免大量姓名超过代理的 URL 长度上限；GET /api/bets 仍供现有查询工具使用。排序参数只允许 newest / amount_asc / amount_desc。金额排序指整条投注总本金 stake；稳定并列顺序为创建时间和记录 ID。候选列表来自当期投注快照，删除玩法后仍可筛选历史记录。
 
-历史清空在授权端执行，客户服务没有备份目录访问权。验证当前会话、密码、确认文字并锁定账号，使用客户自身数据库权限；锁顺序为备份文件锁 → 账号 → 期次。删除本期之前的期次、投注、飞出、金额变更及相关财务审计，保留本期、规则、映射、配置、账号及授权。请求 ID 重试不会扩大清空范围。清除客户托管备份，持久化非实名清空凭据，恢复工具拒绝清空前的全量备份。
+历史清空在auth 管理端执行，客户服务没有备份目录访问权。验证当前会话、密码、确认文字并锁定账号，使用客户自身数据库权限；锁顺序为备份文件锁 → 账号 → 期次。删除本期之前的期次、投注、飞出、金额变更及相关财务审计，保留本期、规则、映射、配置、账号及授权。请求 ID 重试不会扩大清空范围。清除客户托管备份，持久化非实名清空凭据，恢复工具拒绝清空前的全量备份。
 
 生产已存在的迁移文件不得改写。新增字段保留 serde 默认值，以读取已上线的规则和投注快照；这是必要的数据升级保障。0006 增加清空幂等凭据；0007 移除托管库中已停用的设备授权表。Windows 安装脚本、旧独立授权服务、签名 CLI 和本机部署模式不再编译或交付。
 
+## 玩法配置管理
+
+新客户初始化从 `backend/src/default-plays.json` 嵌入用户的 plays-prop；与可分享文件 `fixtures/customer-plays.json` 必须保持逐字段一致，单元及数据库测试校验这项约束。已有客户配置不会在启动或升级时被替换。domain::defaults 仅供计算测试夹具，不再用于客户初始化。
+
+导入按去除首尾空白后的名称精确匹配，同名更新保留 ID、递增版本并写入 play_versions；不同名新增。文件内重复名称或现有重名歧义均整批拒绝。POST /api/plays/batch 接收 targets（id/version）及 delete 或 update（可选 odds、rebate_percent、enabled）；按 ID 顺序锁定，所有修改在同一事务完成，任一无效或版本冲突全部回滚。批量编辑仅改普通费率，保留特殊费率；弹窗固定打开时的目标版本，不随后台刷新偷偷更新。已有投注快照不变。
+
+产品统一称 MarkSix 服务端与 auth 管理端；为兼容已部署服务，内部 authority 标识、现有环境变量／启动参数和 admin 域名继续沿用。
+
 ## 前端导航与分类统计
 
-主要导航使用单个玻璃高亮层随当前按钮移动，页面仅做轻微透明度切换；系统开启减少动态效果时关闭这些动画。再次点击当前带子菜单的导航可展开／收起。历史期次以会话内标签保留，关闭标签不删除服务端数据；关闭当前标签切换到相邻期次，最后一个关闭后回到历史列表。退出登录、会话失效或清空历史时移除标签。
+主要导航使用单个玻璃高亮层随当前按钮移动，页面仅做轻微透明度切换；系统开启减少动态效果时关闭这些动画。主导航负责进入页面或返回历史总览，独立的“展开／收起菜单”按钮控制二级菜单。首次默认收起；按账号保存到当前浏览器 localStorage，页面跳转和刷新均沿用最后一次手动选择，不自动展开。历史期次以会话内标签保留，关闭标签不删除服务端数据；关闭当前标签切换到相邻期次，最后一个关闭后回到历史列表。退出登录、会话失效或清空历史时移除标签。
 
 分类统计直接使用现有 statistics 响应，不额外请求或修改账目。全部受注显示原有总账摘要；飞出统计显示有效飞出本金、受注方人数、记录数和本方飞出净盈亏；投注人统计显示有效人数、总本金、人均本金及投注人视角的总净输赢。人均金额仅供展示，四舍五入到分；投注人净输赢是本方原受注净盈亏取反，未结算显示待结算。
 
