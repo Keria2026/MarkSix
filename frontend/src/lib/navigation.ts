@@ -60,8 +60,8 @@ export function pageFade(node: HTMLElement, key: string) {
       stop();
       if (!reduced.matches)
         animation = node.animate(
-          [{ opacity: 1 }, { opacity: 0.86, offset: 0.3 }, { opacity: 1 }],
-          { duration: 180, easing: "ease-out" },
+          [{ opacity: 1 }, { opacity: 0.58, offset: 0.3 }, { opacity: 1 }],
+          { duration: 260, easing: "ease-out" },
         );
     },
     destroy() {

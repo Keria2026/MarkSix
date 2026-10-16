@@ -1,4 +1,6 @@
 //! Test-only executable. Never compiled into the production image.
+#[path = "../test_support/seed.rs"]
+mod seed;
 use marksix::{api, store, worker};
 use std::sync::Arc;
 #[tokio::main]
@@ -28,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let password = std::env::var("TEST_ADMIN_PASSWORD")?;
     store::initialize(&pool, "test-admin", Some(&password)).await?;
+    seed::calculation_rules(&pool).await?;
     let mut state = store::AppState::new(pool)?;
     state.clock = Arc::new(|| {
         chrono::NaiveDate::from_ymd_opt(2026, 10, 14)

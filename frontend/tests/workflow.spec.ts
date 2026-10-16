@@ -66,6 +66,9 @@ test("administrator records compound bets, cancels atomically, configures rules,
   ).toContainText("李四");
   await page.keyboard.press("Escape");
   await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
   await nav.getByRole("button", { name: "飞出受注统计", exact: true }).click();
   await expect(page.locator(".ledger-stats")).toContainText("¥ 840.00");
   await expect(page.locator(".ledger-stats")).toContainText("飞出受注方");
@@ -318,6 +321,7 @@ test("activation and expiry keep business screens inaccessible until renewed", a
     .getByRole("navigation", { name: "主要导航" })
     .getByRole("button", { name: "玩法与配置" })
     .click();
+  await page.getByRole("button", { name: "配置设置", exact: false }).click();
   await expect(page.locator(".license-countdown")).toContainText("0 天");
   await page.evaluate(() => {
     Date.now = () => -2208988800000;
@@ -372,6 +376,9 @@ test("statistics lists current bets with multiple filters, stable amount orderin
   await add("筛选客户甲", "20");
   const nav = page.getByRole("navigation", { name: "主要导航" });
   await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
   await nav.getByRole("button", { name: "投注记录", exact: true }).click();
   const picker = page
     .locator(".record-picker")

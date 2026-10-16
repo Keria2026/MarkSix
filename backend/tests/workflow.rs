@@ -1,4 +1,6 @@
 //! Run only against a disposable database named marksix_test.
+#[path = "../test_support/seed.rs"]
+mod seed;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -80,7 +82,22 @@ async fn transactional_workflow_and_recovery() {
     initialize(&pool, "test-admin", Some(&password))
         .await
         .unwrap();
-    // Explicit fixture: production defaults remain compound-disabled.
+    let seeded: Vec<(Json<Rule>, bool)> =
+        sqlx::query_as("SELECT rule,enabled FROM plays ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let bundled = marksix::configuration::bundled().unwrap();
+    assert_eq!(seeded.len(), bundled.plays.len());
+    for ((rule, enabled), expected) in seeded.iter().zip(&bundled.plays) {
+        assert_eq!(
+            serde_json::to_value(&rule.0).unwrap(),
+            serde_json::to_value(&expected.rule).unwrap()
+        );
+        assert_eq!(*enabled, expected.enabled);
+    }
+    // Stable calculation fixtures are independent of customer-facing presets.
+    seed::calculation_rules(&pool).await.unwrap();
     sqlx::query("UPDATE plays SET rule=JSON_SET(rule,'$.compound_enabled',true)")
         .execute(&pool)
         .await
@@ -397,6 +414,7 @@ async fn transactional_workflow_and_recovery() {
     *clock.write().unwrap() = ledger_date.and_hms_opt(12, 0, 0).unwrap();
     let ledger_period = ensure_period(&state, ledger_date).await.unwrap().id;
     let mut rule = defaults()[0].clone();
+    rule.name = "账本测试特码".into();
     rule.odds = "2".into();
     rule.rebate_percent = "2".into();
     let created = request(&app, Method::POST, "/api/plays", json!(rule), &cookie).await;
@@ -757,7 +775,7 @@ async fn transactional_workflow_and_recovery() {
             .await
             .unwrap();
     assert_eq!(units, 10000);
-    // Portable configuration import is all-or-nothing and never overwrites original IDs.
+    // Portable import is atomic, updates same-name IDs and preserves bet snapshots.
     let exported = request(&app, Method::GET, "/api/plays/export", Value::Null, &cookie).await;
     assert_eq!(exported.0, StatusCode::OK);
     let mut invalid = exported.1.clone();
@@ -779,6 +797,23 @@ async fn transactional_workflow_and_recovery() {
             .unwrap(),
         old_count
     );
+    let mut duplicate_file = exported.1.clone();
+    duplicate_file["plays"] = json!([
+        exported.1["plays"][0].clone(),
+        exported.1["plays"][0].clone()
+    ]);
+    assert_eq!(
+        request(
+            &app,
+            Method::POST,
+            "/api/plays/import",
+            duplicate_file,
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     let imported = request(
         &app,
         Method::POST,
@@ -789,6 +824,96 @@ async fn transactional_workflow_and_recovery() {
     .await;
     assert_eq!(imported.0, StatusCode::OK, "{}", imported.1);
     let imported_id = imported.1["ids"][0].as_i64().unwrap();
+    assert_eq!(imported.1["created"], 0);
+    assert_eq!(
+        imported.1["updated"],
+        exported.1["plays"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM plays")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        old_count
+    );
+    let imported_version: i64 = sqlx::query_scalar("SELECT version FROM plays WHERE id=?")
+        .bind(imported_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let original_snapshot: Value =
+        sqlx::query_scalar::<_, Json<Value>>("SELECT rule FROM bets WHERE id=?")
+            .bind(bet_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0;
+    assert_ne!(original_snapshot["odds"], "12");
+    let target_version: i64 = sqlx::query_scalar("SELECT version FROM plays WHERE id=?")
+        .bind(play_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let batch_targets = json!([{"id":imported_id,"version":imported_version},{"id":play_id,"version":target_version}]);
+    let invalid_batch = request(
+        &app,
+        Method::POST,
+        "/api/plays/batch",
+        json!({"targets":batch_targets,"action":"update","odds":"bad"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        invalid_batch.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        invalid_batch.1
+    );
+    let updated_batch=request(&app,Method::POST,"/api/plays/batch",json!({"targets":batch_targets,"action":"update","odds":"44","rebate_percent":"8","enabled":false}),&cookie).await;
+    assert_eq!(updated_batch.0, StatusCode::OK, "{}", updated_batch.1);
+    assert_eq!(
+        request(
+            &app,
+            Method::POST,
+            "/api/plays/batch",
+            json!({"targets":batch_targets,"action":"delete"}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Json<Value>>("SELECT rule FROM bets WHERE id=?")
+            .bind(bet_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0,
+        original_snapshot
+    );
+    let mixed_stale = json!([{"id":imported_id,"version":imported_version+1},{"id":play_id,"version":target_version}]);
+    assert_eq!(
+        request(
+            &app,
+            Method::POST,
+            "/api/plays/batch",
+            json!({"targets":mixed_stale,"action":"update","odds":"45"}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT version FROM plays WHERE id=?")
+            .bind(imported_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        imported_version + 1
+    );
+    let imported_version = imported_version + 1;
     let deletion = request(
         &app,
         Method::DELETE,
@@ -803,7 +928,7 @@ async fn transactional_workflow_and_recovery() {
             &app,
             Method::DELETE,
             &format!("/api/plays/{imported_id}"),
-            json!({"version":1}),
+            json!({"version":imported_version}),
             &cookie
         )
         .await

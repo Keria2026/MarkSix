@@ -1,17 +1,17 @@
-//! Portable rule-only configuration. Import is additive and atomic; history is immutable.
+//! Versioned rule configuration. Imports and batch changes are atomic; bet snapshots are immutable.
 use crate::{
-    api::{ApiError, ApiResult, conflict, missing},
+    api::{ApiResult, conflict, missing},
     domain::Rule,
     store::{AppState, Play, audit},
 };
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::types::Json as DbJson;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,14 +27,18 @@ pub struct PlayFile {
     pub plays: Vec<PortablePlay>,
 }
 impl PlayFile {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.format != "marksix-play-rules" || self.schema != 1 {
-            return Err("不是支持的 MarkSix 玩法文件（schema 1）".into());
+            return Err(String::from("不是支持的 MarkSix 玩法文件（schema 1）"));
         }
         if self.plays.is_empty() || self.plays.len() > 1000 {
-            return Err("每个文件须包含 1–1000 条玩法".into());
+            return Err(String::from("每个文件须包含 1–1000 条玩法"));
         }
+        let mut names = HashSet::new();
         for (i, p) in self.plays.iter().enumerate() {
+            if !names.insert(p.rule.name.trim()) {
+                return Err(format!("文件包含重复玩法名称：{}", p.rule.name.trim()));
+            }
             p.rule
                 .validate()
                 .map_err(|e| format!("第 {} 条玩法：{e}", i + 1))?;
@@ -77,40 +81,188 @@ pub async fn import(
     sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plays WHERE deleted_at IS NULL")
-        .fetch_one(&mut *tx)
-        .await?;
-    if count + file.plays.len() as i64 > 1000 {
-        return Err(ApiError(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "玩法总数不能超过 1000 条".into(),
-        ));
+    let existing: Vec<Play> = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut by_name: HashMap<String, Vec<&Play>> = HashMap::new();
+    for play in &existing {
+        by_name
+            .entry(play.rule.name.trim().to_string())
+            .or_default()
+            .push(play);
+    }
+    let added = file
+        .plays
+        .iter()
+        .filter(|p| !by_name.contains_key(p.rule.name.trim()))
+        .count();
+    if existing.len() + added > 1000 {
+        return Err(String::from("玩法总数不能超过 1000 条").into());
     }
     let mut ids = vec![];
+    let mut updated = 0;
     for p in file.plays {
-        let result = sqlx::query("INSERT INTO plays(version,rule,enabled) VALUES(1,?,?)")
-            .bind(DbJson(&p.rule))
-            .bind(p.enabled)
-            .execute(&mut *tx)
+        if let Some(matches) = by_name.get(p.rule.name.trim()) {
+            if matches.len() != 1 {
+                return Err(conflict(&format!(
+                    "现有玩法「{}」重名，请先重命名或删除重复项后导入",
+                    p.rule.name
+                )));
+            }
+            let play = matches[0];
+            let version = play.version + 1;
+            sqlx::query("UPDATE plays SET version=?,rule=?,enabled=?,updated_at=UTC_TIMESTAMP(6) WHERE id=?")
+                .bind(version).bind(DbJson(&p.rule)).bind(p.enabled).bind(play.id).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,?,?)")
+                .bind(play.id)
+                .bind(version)
+                .bind(DbJson(&p.rule))
+                .execute(&mut *tx)
+                .await?;
+            audit(
+                &mut tx,
+                None,
+                "play_import_updated",
+                json!({"id":play.id,"version":version,"rule":p.rule,"enabled":p.enabled}),
+            )
             .await?;
-        let id = result.last_insert_id() as i64;
-        sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,1,?)")
-            .bind(id)
-            .bind(DbJson(&p.rule))
-            .execute(&mut *tx)
+            ids.push(play.id);
+            updated += 1;
+        } else {
+            let result = sqlx::query("INSERT INTO plays(version,rule,enabled) VALUES(1,?,?)")
+                .bind(DbJson(&p.rule))
+                .bind(p.enabled)
+                .execute(&mut *tx)
+                .await?;
+            let id = result.last_insert_id() as i64;
+            sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,1,?)")
+                .bind(id)
+                .bind(DbJson(&p.rule))
+                .execute(&mut *tx)
+                .await?;
+            audit(
+                &mut tx,
+                None,
+                "play_imported",
+                json!({"id":id,"rule":p.rule,"enabled":p.enabled}),
+            )
             .await?;
-        audit(
-            &mut tx,
-            None,
-            "play_imported",
-            json!({"id":id,"rule":p.rule,"enabled":p.enabled}),
-        )
-        .await?;
-        ids.push(id);
+            ids.push(id);
+        }
     }
     tx.commit().await?;
-    Ok(Json(json!({"ids":ids,"imported":ids.len()})))
+    Ok(Json(
+        json!({"ids":ids,"imported":ids.len(),"created":added,"updated":updated}),
+    ))
 }
+
+pub fn bundled() -> Result<PlayFile, String> {
+    let file: PlayFile =
+        serde_json::from_str(include_str!("default-plays.json")).map_err(|e| e.to_string())?;
+    file.validate()?;
+    Ok(file)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchTarget {
+    id: i64,
+    version: i64,
+}
+#[derive(Deserialize)]
+pub struct BatchInput {
+    targets: Vec<BatchTarget>,
+    #[serde(flatten)]
+    change: BatchChange,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BatchChange {
+    Delete,
+    Update {
+        odds: Option<String>,
+        rebate_percent: Option<String>,
+        enabled: Option<bool>,
+    },
+}
+pub async fn batch(
+    State(state): State<AppState>,
+    Json(input): Json<BatchInput>,
+) -> ApiResult<Json<Value>> {
+    if input.targets.is_empty() || input.targets.len() > 1000 {
+        return Err(String::from("请选择 1–1000 条玩法").into());
+    }
+    let mut targets = input.targets;
+    targets.sort_by_key(|p| p.id);
+    if targets.windows(2).any(|p| p[0].id == p[1].id) {
+        return Err(String::from("批量操作包含重复玩法").into());
+    }
+    if let BatchChange::Update {
+        odds: None,
+        rebate_percent: None,
+        enabled: None,
+    } = &input.change
+    {
+        return Err(String::from("请至少设置一个批量修改字段").into());
+    }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    for target in &targets {
+        let mut play: Play = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE")
+            .bind(target.id).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
+        if play.version != target.version {
+            return Err(conflict("所选玩法已变化，请刷新后重新选择；整批尚未保存"));
+        }
+        match &input.change {
+            BatchChange::Delete => {
+                sqlx::query(
+                    "UPDATE plays SET deleted_at=UTC_TIMESTAMP(6),enabled=false WHERE id=?",
+                )
+                .bind(play.id)
+                .execute(&mut *tx)
+                .await?;
+                audit(
+                    &mut tx,
+                    None,
+                    "play_deleted",
+                    json!({"id":play.id,"version":play.version,"batch":true}),
+                )
+                .await?;
+            }
+            BatchChange::Update {
+                odds,
+                rebate_percent,
+                enabled,
+            } => {
+                if let Some(value) = odds {
+                    play.rule.odds = value.clone();
+                }
+                if let Some(value) = rebate_percent {
+                    play.rule.rebate_percent = value.clone();
+                }
+                play.rule.validate()?;
+                let version = play.version + 1;
+                let enabled = enabled.unwrap_or(play.enabled);
+                sqlx::query("UPDATE plays SET version=?,rule=?,enabled=?,updated_at=UTC_TIMESTAMP(6) WHERE id=?")
+                    .bind(version).bind(DbJson(&play.rule.0)).bind(enabled).bind(play.id).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,?,?)")
+                    .bind(play.id)
+                    .bind(version)
+                    .bind(DbJson(&play.rule.0))
+                    .execute(&mut *tx)
+                    .await?;
+                audit(&mut tx,None,"play_updated",json!({"id":play.id,"version":version,"rule":play.rule.0,"enabled":enabled,"batch":true})).await?;
+            }
+        }
+    }
+    tx.commit().await?;
+    Ok(Json(json!({"changed":targets.len()})))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeletePlay {
@@ -145,4 +297,29 @@ pub async fn delete(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn supplied_defaults_are_valid_and_exact() {
+        assert_eq!(
+            serde_json::from_str::<Value>(include_str!("default-plays.json")).unwrap(),
+            serde_json::from_str::<Value>(include_str!("../../fixtures/customer-plays.json"))
+                .unwrap()
+        );
+        let file = bundled().unwrap();
+        assert_eq!(file.plays.len(), 33);
+        let single = file.plays.iter().find(|p| p.rule.name == "一肖中").unwrap();
+        assert_eq!(single.rule.rebate_percent, "5");
+        assert!(
+            file.plays
+                .iter()
+                .find(|p| p.rule.name == "五有")
+                .unwrap()
+                .rule
+                .compound_enabled
+        );
+    }
 }

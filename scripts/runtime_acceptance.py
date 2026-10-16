@@ -710,7 +710,6 @@ class Acceptance:
         for options, compound in [
             ([0, 1, 2, 3], False),
             (list(range(7)), False),
-            (list(range(7)), True),
         ]:
             self.request(
                 "POST", "/api/bets", self.payload(strict, options, compound), 422
@@ -735,7 +734,7 @@ class Acceptance:
             q = self.request(
                 "POST",
                 "/api/quote",
-                self.payload(self.plays["四肖亮"], [4], amount="1"),
+                self.payload(self.plays["四肖量"], [4], amount="1"),
             )
             self.equal(q["max_return"], 1500, "exact count quote max")
             self.equal(

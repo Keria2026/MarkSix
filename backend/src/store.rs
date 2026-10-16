@@ -136,9 +136,14 @@ pub async fn initialize(
         .fetch_one(&mut *tx)
         .await?;
     if n == 0 {
-        for rule in defaults() {
-            let result = sqlx::query("INSERT INTO plays(version,rule) VALUES(1,?)")
+        for play in crate::configuration::bundled()
+            .map_err(anyhow::Error::msg)?
+            .plays
+        {
+            let rule = play.rule;
+            let result = sqlx::query("INSERT INTO plays(version,rule,enabled) VALUES(1,?,?)")
                 .bind(Json(&rule))
+                .bind(play.enabled)
                 .execute(&mut *tx)
                 .await?;
             sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,1,?)")

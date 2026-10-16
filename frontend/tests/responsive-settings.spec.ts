@@ -17,6 +17,9 @@ test("statistics submenu highlights only the current section on mobile and deskt
 }) => {
   const nav = page.getByRole("navigation", { name: "主要导航" });
   await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
   const submenu = nav.locator(".nav-submenu");
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 844 });
