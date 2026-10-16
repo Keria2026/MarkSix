@@ -38,7 +38,7 @@ pub(super) fn router(r: Registry) -> Router {
     Router::new()
         .route(
             "/api/site",
-            get(|| async { Json(json!({"mode":"hosted","version":"Dev1.0"})) }),
+            get(|| async { Json(crate::build_info("hosted")) }),
         )
         .route("/api/health", get(health))
         .route("/api/login", post(login))
@@ -61,7 +61,9 @@ async fn received_at(State(r): State<Registry>, mut request: Request, next: Next
 }
 async fn health(State(r): State<Registry>) -> ApiResult<Json<Value>> {
     sqlx::query("SELECT 1").execute(&r.control.pool).await?;
-    Ok(Json(json!({"status":"ok","version":"Dev1.0"})))
+    Ok(Json(
+        json!({"status":"ok","version":env!("CARGO_PKG_VERSION"),"commit":option_env!("MARKSIX_REVISION").unwrap_or("development")}),
+    ))
 }
 async fn login(State(r): State<Registry>, Json(input): Json<Login>) -> ApiResult<Response> {
     username(&input.username)?;
@@ -205,7 +207,7 @@ async fn activate(
     let a = customer(&r.control, &headers).await?;
     Ok(Json(license_status(&a)))
 }
-async fn dispatch(State(r): State<Registry>, request: Request) -> ApiResult<Response> {
+async fn dispatch(State(r): State<Registry>, mut request: Request) -> ApiResult<Response> {
     let path = request.uri().path();
     if !path.starts_with("/api/")
         || path.starts_with("/api/internal/")
@@ -230,7 +232,12 @@ async fn dispatch(State(r): State<Registry>, request: Request) -> ApiResult<Resp
         })?
         .map_err(anyhow::Error::from)?;
     let state = r.lease(&a).await?;
-    Ok(crate::api::router((*state).clone())
+    request
+        .extensions_mut()
+        .insert(super::ValidatedCustomer(a.id));
+    Ok(state
+        .router
+        .clone()
         .oneshot(request)
         .await
         .unwrap_or_else(|never| match never {}))

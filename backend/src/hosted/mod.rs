@@ -11,6 +11,10 @@ pub use portal::serve as serve_portal;
 #[cfg(test)]
 mod tests;
 
+// Constructed only after central session/account validation; never from headers.
+#[derive(Clone)]
+pub(crate) struct ValidatedCustomer(pub(crate) String);
+
 #[derive(Clone)]
 pub(crate) struct Policy {
     pub pool: sqlx::MySqlPool,

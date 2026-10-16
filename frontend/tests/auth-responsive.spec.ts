@@ -77,3 +77,43 @@ test("auth customer actions and dialogs fit mobile glass layouts", async ({
   }
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
+
+test("auth session expiry clears management dialogs and private drafts", async ({
+  page,
+}) => {
+  let authenticated = true;
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/site")
+      return route.fulfill({ json: { mode: "authority", version: "1.0.0" } });
+    if (path === "/api/session")
+      return route.fulfill({ json: { username: "owner" } });
+    if (path === "/api/login") {
+      authenticated = true;
+      return route.fulfill({ json: { ok: true } });
+    }
+    if (route.request().method() === "POST" && path === "/api/accounts")
+      authenticated = false;
+    if (!authenticated)
+      return route.fulfill({ status: 401, json: { error: "Session expired" } });
+    return route.fulfill({ json: { items: [] } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "新增客户", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "新增客户", exact: true });
+  await dialog
+    .getByLabel("账号", { exact: true })
+    .fill("private-customer-draft");
+  await dialog
+    .getByLabel("初始密码", { exact: true })
+    .fill("private-customer-password");
+  await dialog.getByRole("button", { name: "确认", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByLabel("管理员账号").click({ trial: true });
+  await page.getByLabel("管理员账号").fill("owner-B");
+  await page.getByLabel("密码", { exact: true }).fill("other-owner-password");
+  await page.getByRole("button", { name: "登录管理后台", exact: true }).click();
+  await page.getByRole("button", { name: "新增客户", exact: true }).click();
+  await expect(dialog.getByLabel("账号", { exact: true })).toHaveValue("");
+  await expect(dialog.getByLabel("初始密码", { exact: true })).toHaveValue("");
+});

@@ -15,7 +15,7 @@ use std::{
 };
 
 pub async fn recover(state: &AppState) -> anyhow::Result<()> {
-    sqlx::query("UPDATE periods SET risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE risk_status='computing' AND state='pending'").execute(&state.pool).await?;
+    sqlx::query("UPDATE periods SET risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL,risk_task_id=NULL WHERE risk_status='computing' AND state='pending'").execute(&state.pool).await?;
     Ok(())
 }
 pub async fn run(state: AppState) {
@@ -54,6 +54,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     for id in settling {
         settle_period(state, &id).await?;
     }
+    recover_risk_tasks(state).await?;
     if active {
         start_risk(state).await?;
     }
@@ -294,6 +295,53 @@ pub async fn settle_period(state: &AppState, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+// A missing in-memory owner can result from a panic or exhausted persistence
+// retries. Never publish its result; converge to a visible failure on the next tick.
+async fn recover_risk_tasks(state: &AppState) -> anyhow::Result<()> {
+    let rows: Vec<(String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT id,risk_task_id,COALESCE(risk_started_at < DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 75 SECOND),TRUE) AS expired FROM periods WHERE risk_status='computing' AND state='pending'",
+    ).fetch_all(&state.pool).await?;
+    for (id, task, expired) in rows {
+        let owned = {
+            let flags = state.cancellations.lock().await;
+            if expired && let Some(flag) = flags.get(&id) {
+                flag.store(true, Ordering::Relaxed);
+            }
+            flags.contains_key(&id)
+        };
+        if !owned || expired {
+            sqlx::query("UPDATE periods SET risk_status='failed',risk_result=NULL,risk_error='计算任务中断或结果保存失败，请重新计算',risk_finished_at=UTC_TIMESTAMP(6),risk_task_id=NULL WHERE id=? AND risk_task_id <=> ? AND risk_status='computing' AND state='pending'")
+                .bind(&id).bind(task).execute(&state.pool).await?;
+        }
+    }
+    Ok(())
+}
+
+struct RiskWrite<'a> {
+    period: &'a str,
+    version: i64,
+    task_id: &'a str,
+    status: &'a str,
+    data: Option<&'a Json<risk::RiskResult>>,
+    error: Option<&'a str>,
+}
+async fn persist_risk(state: &AppState, write: RiskWrite<'_>) -> bool {
+    for retry in 0..3 {
+        let saved = sqlx::query("UPDATE periods SET risk_status=?,risk_result=?,risk_error=?,risk_finished_at=UTC_TIMESTAMP(6),risk_task_id=NULL WHERE id=? AND bet_version=? AND risk_task_id=? AND state='pending' AND risk_status='computing'")
+                .bind(write.status).bind(write.data).bind(write.error).bind(write.period).bind(write.version).bind(write.task_id).execute(&state.pool).await;
+        match saved {
+            Ok(result) => return result.rows_affected() == 1,
+            Err(e) => {
+                tracing::error!(error=%e,attempt=retry+1,"risk persistence failed");
+                if retry < 2 {
+                    tokio::time::sleep(Duration::from_millis(250 * (retry + 1))).await;
+                }
+            }
+        }
+    }
+    false
+}
+
 pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
     let Ok(permit) = state.risk_gate.clone().try_acquire_owned() else {
         return Ok(());
@@ -315,14 +363,14 @@ pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
         a.position = -1;
         a
     }));
-    sqlx::query("UPDATE periods SET risk_status='computing',risk_started_at=UTC_TIMESTAMP(6),risk_version=? WHERE id=?").bind(p.bet_version).bind(&p.id).execute(&mut *tx).await?;
+    let task_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query("UPDATE periods SET risk_status='computing',risk_started_at=UTC_TIMESTAMP(6),risk_version=?,risk_task_id=? WHERE id=?").bind(p.bet_version).bind(&task_id).bind(&p.id).execute(&mut *tx).await?;
     let cancel = Arc::new(AtomicBool::new(false));
-    state
-        .cancellations
-        .lock()
-        .await
-        .insert(p.id.clone(), cancel.clone());
+    // Commit and register under the same owner lock used by the watchdog.
+    let mut owners = state.cancellations.lock().await;
     tx.commit().await?;
+    owners.insert(p.id.clone(), cancel.clone());
+    drop(owners);
     let state = state.clone();
     tokio::spawn(async move {
         let elapsed = (Utc::now().naive_utc() - p.risk_requested_at)
@@ -345,7 +393,18 @@ pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
             Ok(Err(e)) => ("failed", None, Some(e.to_string())),
             Err(e) => ("failed", None, Some(format!("计算任务异常：{e}"))),
         };
-        if let Err(e)=sqlx::query("UPDATE periods SET risk_status=?,risk_result=?,risk_error=?,risk_finished_at=UTC_TIMESTAMP(6) WHERE id=? AND bet_version=? AND state='pending' AND risk_status='computing'").bind(status).bind(data).bind(error).bind(&p.id).bind(p.bet_version).execute(&state.pool).await {tracing::error!(error=%e,"risk persistence failed");}
+        persist_risk(
+            &state,
+            RiskWrite {
+                period: &p.id,
+                version: p.bet_version,
+                task_id: &task_id,
+                status,
+                data: data.as_ref(),
+                error: error.as_deref(),
+            },
+        )
+        .await;
         let mut flags = state.cancellations.lock().await;
         if flags.get(&p.id).is_some_and(|f| Arc::ptr_eq(f, &cancel)) {
             flags.remove(&p.id);
@@ -387,5 +446,136 @@ mod hosted_fetch_tests {
         assert!(a.is_err() && b.is_err());
         assert_eq!(requests.load(Ordering::SeqCst), 1);
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    async fn wait_idle(state: &AppState) -> Result<(), tokio::time::error::Elapsed> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !state.cancellations.lock().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable TEST_DATABASE_URL and TEST_PROVISION_DATABASE_URL ending in /marksix_test"]
+    async fn risk_persistence_failure_orphan_timeout_and_fencing() {
+        let url = std::env::var("TEST_DATABASE_URL").unwrap();
+        assert!(url.ends_with("/marksix_test"));
+        let pool = connect(&url).await.unwrap();
+        let ddl_url = std::env::var("TEST_PROVISION_DATABASE_URL").unwrap();
+        assert!(ddl_url.ends_with("/marksix_test"));
+        let ddl = sqlx::mysql::MySqlPoolOptions::new()
+            .max_connections(1)
+            .connect(&ddl_url)
+            .await
+            .unwrap();
+        initialize(&pool, "test-admin", Some("disposable-test-password"))
+            .await
+            .unwrap();
+        let mut state = AppState::new(pool.clone()).unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2040, 11, 16).unwrap();
+        state.clock = Arc::new(move || date.and_hms_opt(12, 0, 0).unwrap());
+        let period = ensure_period(&state, date).await.unwrap();
+        let id = period.id;
+        // Isolate the pending fixture from older test periods.
+        sqlx::query("UPDATE periods SET risk_status='stale' WHERE id<>?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE periods SET risk_status='queued',state='pending',risk_requested_at=UTC_TIMESTAMP(6),bet_version=1 WHERE id=?").bind(&id).execute(&pool).await.unwrap();
+        sqlx::raw_sql("DROP TRIGGER IF EXISTS marksix_test_risk_failure")
+            .execute(&ddl)
+            .await
+            .unwrap();
+        sqlx::raw_sql("CREATE TRIGGER marksix_test_risk_failure BEFORE UPDATE ON periods FOR EACH ROW BEGIN IF OLD.risk_status='computing' AND NEW.risk_status='complete' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected result write failure'; END IF; END").execute(&ddl).await.unwrap();
+        let started = start_risk(&state).await;
+        let completed = wait_idle(&state).await;
+        // Remove the fault before assertions, so retries never poison later tests.
+        sqlx::raw_sql("DROP TRIGGER marksix_test_risk_failure")
+            .execute(&ddl)
+            .await
+            .unwrap();
+        started.unwrap();
+        completed.unwrap();
+        recover_risk_tasks(&state).await.unwrap();
+        let failed: (String, Option<String>) =
+            sqlx::query_as("SELECT risk_status,risk_error FROM periods WHERE id=?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(failed.0, "failed");
+        assert!(failed.1.unwrap().contains("保存失败"));
+        // A fresh calculation succeeds after the storage fault has been removed.
+        sqlx::query(
+            "UPDATE periods SET risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6) WHERE id=?",
+        )
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        start_risk(&state).await.unwrap();
+        wait_idle(&state).await.unwrap();
+        let complete: String = sqlx::query_scalar("SELECT risk_status FROM periods WHERE id=?")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(complete, "complete");
+        // A hung owner is bounded independently of its in-memory presence.
+        let flag = Arc::new(AtomicBool::new(false));
+        state
+            .cancellations
+            .lock()
+            .await
+            .insert(id.clone(), flag.clone());
+        sqlx::query("UPDATE periods SET risk_status='computing',risk_task_id='orphan',risk_started_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 76 SECOND) WHERE id=?").bind(&id).execute(&pool).await.unwrap();
+        recover_risk_tasks(&state).await.unwrap();
+        assert!(flag.load(Ordering::Relaxed));
+        // A result from an older task ID cannot overwrite a new same-version task.
+        sqlx::query("UPDATE periods SET risk_status='computing',risk_task_id='new',risk_started_at=UTC_TIMESTAMP(6) WHERE id=?").bind(&id).execute(&pool).await.unwrap();
+        let changed = persist_risk(
+            &state,
+            RiskWrite {
+                period: &id,
+                version: 1,
+                task_id: "orphan",
+                status: "complete",
+                data: None,
+                error: None,
+            },
+        )
+        .await;
+        assert!(!changed);
+        let task: Option<String> =
+            sqlx::query_scalar("SELECT risk_task_id FROM periods WHERE id=?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(task.as_deref(), Some("new"));
+        // Restart recovery discards task identity and queues an exact recomputation.
+        recover(&state).await.unwrap();
+        let recovered: (String, Option<String>) =
+            sqlx::query_as("SELECT risk_status,risk_task_id FROM periods WHERE id=?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(recovered, ("queued".into(), None));
+        state.cancellations.lock().await.clear();
+        sqlx::query("UPDATE periods SET risk_status='stale' WHERE id=?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
     }
 }

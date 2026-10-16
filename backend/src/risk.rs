@@ -18,10 +18,8 @@ pub struct RiskResult {
     pub nodes: u64,
     pub elapsed_ms: u64,
     pub strategy: String,
-    #[serde(default)]
-    pub min_net: Option<i64>,
-    #[serde(default)]
-    pub max_net: Option<i64>,
+    pub min_net: i64,
+    pub max_net: i64,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RiskError {
@@ -88,8 +86,8 @@ fn finish(mut result: RiskResult, atoms: &[Atom]) -> Result<RiskResult, RiskErro
             .map(|a| (a.stake - a.rebate) * i64::from(a.position)),
     )
     .map_err(|_| RiskError::Invalid)?;
-    result.min_net = Some(checked_sum([base, -result.max_payout]).map_err(|_| RiskError::Invalid)?);
-    result.max_net = Some(checked_sum([base, -result.min_payout]).map_err(|_| RiskError::Invalid)?);
+    result.min_net = checked_sum([base, -result.max_payout]).map_err(|_| RiskError::Invalid)?;
+    result.max_net = checked_sum([base, -result.min_payout]).map_err(|_| RiskError::Invalid)?;
     if result.min_payout.abs() > MONEY_LIMIT || result.max_payout.abs() > MONEY_LIMIT {
         return Err(RiskError::Invalid);
     }
@@ -165,8 +163,8 @@ fn solve_universe(
         nodes: 0,
         elapsed_ms: 0,
         strategy: "branch_and_bound".into(),
-        min_net: None,
-        max_net: None,
+        min_net: 0,
+        max_net: 0,
     };
     // Linear number bets and arbitrary special-only bets have a direct exact solution.
     if atoms.iter().all(|a| {
@@ -782,7 +780,7 @@ mod tests {
             }
             assert_eq!(
                 (result.min_net, result.max_net),
-                (Some(min), Some(max)),
+                (min, max),
                 "scenario {scenario}"
             );
             for (draw, expected) in [(result.best_draw, max), (result.worst_draw, min)] {
@@ -824,7 +822,7 @@ mod tests {
             a
         });
         let result = solve(&atoms, &m, Duration::from_secs(5), &AtomicBool::new(false)).unwrap();
-        assert_eq!((result.min_net, result.max_net), (Some(-1140), Some(360)));
+        assert_eq!((result.min_net, result.max_net), (-1140, 360));
         assert_eq!(
             Draw::predicted(result.worst_draw, &m)
                 .zodiac

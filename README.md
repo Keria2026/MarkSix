@@ -1,21 +1,10 @@
-# MarkSix · Dev1.0
+# MarkSix · V1.0
 
-由运营方托管的盘口统计网站。客户登录网站手工录注，各自拥有独立的投注、玩法、配置和账本；运营方通过独立后台创建账号、签发一次性激活码和管理授权。
+面向盘口方的托管统计系统。客户手工录注，各自拥有独立玩法、投注和账本；运营方通过 auth 管理账号与授权，不提供投注人自助下注或支付。
 
-客户网站：`https://3801.win`；auth 管理端：`https://admin.3801.win`。Dev1.0 已完成首次上线；dev 后续改动仍须测试并由运营方合并 master 后发布。
+客户：`https://3801.win`；auth：`https://admin.3801.win`。仅支持 Ubuntu Docker 托管部署。Rust / Axum / MySQL 8.4，Svelte 5 / TypeScript，前端采用 Liquid Glass。
 
-## 架构与发布
-
-Rust 1.90 / Axum / MySQL 8.4，Svelte 5 / TypeScript / Bun 1.3.14。前端保持系统字体、Liquid Glass 风格、键盘操作与触摸目标。
-
-Docker Compose 运行 Nginx、MarkSix 服务端、auth 管理端和一个 MySQL 服务。Nginx 按域名转发；每个客户使用独立业务库及数据库权限。应用与数据库端口不对公网开放。
-
-```text
-Codex → dev → Actions 验证 → 人工验收并合并 master
-      → Actions 测试和构建 → 传输同一构建工件 → 备份、迁移、更新、健康检查
-```
-
-dev 不更新生产。生产密码、SSH 私钥和证书不进入 Git、镜像或工件。VPS 无需安装 Rust、Node 或客户安装包。
+Codex 提交 dev，Actions 验证；运营方验收后合并 master，由 Actions 发布同一次构建工件。dev 不部署生产，密码和密钥不进入 Git 或工件。
 
 ## 业务功能
 
@@ -34,12 +23,10 @@ dev 不更新生产。生产密码、SSH 私钥和证书不进入 Git、镜像�
 
 ## 文档
 
-- [Dev1.0 设计与已确认边界](docs/DEV1_ARCHITECTURE.md)
-- [业务开发规范](docs/SPECIFICATION.md) · [领域术语](CONTEXT.md)
-- [开发与测试](docs/DEVELOPMENT.md) · [验证范围](docs/TESTING.md)
-- [Dev1.0 实际验收记录与未验证范围](docs/DEV1_ACCEPTANCE.md)
-- [VPS / Actions / Docker / Nginx 部署](deploy/vps/README.md)
+- [业务规范](docs/SPECIFICATION.md) · [领域术语](CONTEXT.md)
+- [架构](docs/ARCHITECTURE.md) · [开发环境与质量命令](docs/DEVELOPMENT.md)
+- [测试门槛](docs/TESTING.md) · [本版验收证据与限制](docs/ACCEPTANCE.md)
+- [部署、备份与恢复](deploy/vps/README.md)
 - [账号、激活与续期](docs/LICENSING.md)
-- [赔率表运行核对](docs/RUNTIME_ACCEPTANCE.md)
 
-当前仅交付 Ubuntu VPS Docker 托管版。Windows / 本机安装及旧设备授权实现已退役，资料可从 Git 历史查阅；已有旧系统和备份不受本仓库清理影响。运行日志仅记录 error，财务操作审计独立保存在数据库。
+源码中的版本以 backend/Cargo.toml 为准；站点通过 /api/site 展示实际版本和构建提交。旧安装方式与历史验收记录由 Git 历史保存。

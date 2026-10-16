@@ -123,7 +123,7 @@ pub(super) fn router(c: Control) -> Router {
             protected
                 .route(
                     "/site",
-                    get(|| async { Json(json!({"mode":"authority","version":"Dev1.0"})) }),
+                    get(|| async { Json(crate::build_info("authority")) }),
                 )
                 .route("/login", post(login))
                 .route("/customer/history/clear", post(super::history::clear))
@@ -205,7 +205,9 @@ async fn session(
 }
 async fn health(State(c): State<Control>) -> ApiResult<Json<Value>> {
     sqlx::query("SELECT 1").execute(&c.pool).await?;
-    Ok(Json(json!({"status":"ok","version":"Dev1.0"})))
+    Ok(Json(
+        json!({"status":"ok","version":env!("CARGO_PKG_VERSION"),"commit":option_env!("MARKSIX_REVISION").unwrap_or("development")}),
+    ))
 }
 async fn accounts(State(c): State<Control>) -> ApiResult<Json<Value>> {
     let rows = sqlx::query_as::<_, Account>(

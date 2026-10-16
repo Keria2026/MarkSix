@@ -70,6 +70,9 @@ def main():
         "configure.py",
         "ops.py",
         "deploy.py",
+        "releases.py",
+        "receive.py",
+        "rollback.py",
         "deploy.sh",
         "renew.sh",
         "install-timers.sh",
@@ -84,10 +87,13 @@ def main():
         ROOT / "fixtures/customer-plays.json", output / "fixtures/customer-plays.json"
     )
     archive = output / "images.tar.gz"
+    image_bytes = 0
     with subprocess.Popen(["docker", "save", *tags], stdout=subprocess.PIPE) as process:
         try:
             with gzip.open(archive, "wb", compresslevel=6) as destination:
-                shutil.copyfileobj(process.stdout, destination, length=1024 * 1024)
+                while chunk := process.stdout.read(1024 * 1024):
+                    image_bytes += len(chunk)
+                    destination.write(chunk)
         except BaseException:
             process.kill()
             raise
@@ -111,6 +117,13 @@ def main():
     manifest = {
         "schema": 1,
         "version": args.version,
+        "image_unpacked_bytes": image_bytes,
+        "database_contract": {
+            str(p.relative_to(ROOT / "backend")): hashlib.sha256(
+                p.read_bytes()
+            ).hexdigest()
+            for p in sorted((ROOT / "backend/migrations").glob("*.sql"))
+        },
         "platform": "linux/amd64",
         "target": "ubuntu",
         "built_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),

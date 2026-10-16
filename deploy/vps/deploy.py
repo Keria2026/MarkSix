@@ -9,19 +9,16 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import shutil
 
 import ops
+import releases
 
 
 def record(shared, data):
-    path = shared / "deployment.json"
-    temporary = path.with_suffix(".partial")
-    temporary.write_text(json.dumps(data, indent=2) + "\n")
-    temporary.replace(path)
+    releases.atomic_json(shared / "deployment.json", data)
 
 
-def health(shared):
+def health(shared, expected_sha=None):
     config = ops.configuration(shared)
     for host, expected in (
         (config["APP_DOMAIN"], "hosted"),
@@ -48,8 +45,13 @@ def health(shared):
                 text=True,
                 stdout=subprocess.PIPE,
             )
-            if json.loads(result.stdout).get(key) != value:
+            data = json.loads(result.stdout)
+            if data.get(key) != value:
                 raise RuntimeError(f"Unexpected origin response for {host}{path}")
+            if expected_sha is not None and data.get("commit") != expected_sha:
+                raise RuntimeError(
+                    f"Origin build does not match expected commit: {host}{path}"
+                )
 
 
 def certificate(shared):
@@ -143,6 +145,8 @@ def certificate(shared):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sha", required=True)
+    parser.add_argument("--sequence", type=int, required=True)
+    parser.add_argument("--attempt", type=int, required=True)
     parser.add_argument("--shared", type=Path, default=Path("/opt/marksix/shared"))
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha):
@@ -169,17 +173,27 @@ def main():
         f"BACKEND_IMAGE=marksix-backend:{args.sha}\nFRONTEND_IMAGE=marksix-frontend:{args.sha}\nMYSQL_IMAGE=marksix-mysql:{args.sha}\n"
     )
     current = shared.parent / "current"
-    previous = current.resolve() if current.is_symlink() else None
     state = {
         "sha": args.sha,
-        "previous": str(previous) if previous else None,
+        "sequence": args.sequence,
+        "attempt": args.attempt,
         "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "preparing",
     }
     with ops.lock(shared / ".operations.lock"):
-        if shutil.disk_usage(shared).free < 2 * 1024**3:
-            raise RuntimeError("Less than 2 GiB free disk; deployment was not started")
+        order = releases.check_order(shared, args.sha, args.sequence, args.attempt)
+        releases.cleanup(shared, candidate=package)
+        releases.require_space(
+            shared, manifest["image_unpacked_bytes"] + releases.RESERVE
+        )
+        previous = current.resolve() if current.is_symlink() else None
+        state["previous"] = str(previous) if previous else None
+        releases.atomic_json(shared / "release-order.json", order)
         record(shared, state)
+        releases.atomic_json(
+            package / ".managed.json",
+            {"sha": args.sha, "completed_at": state["started_at"]},
+        )
         subprocess.run(
             ["docker", "load", "--input", str(package / "images.tar.gz")], check=True
         )
@@ -227,15 +241,20 @@ def main():
                 "240",
             )
             ops.compose(shared, "exec", "-T", "nginx", "nginx", "-t")
-            health(shared)
-            temporary = current.with_name("current.next")
-            temporary.unlink(missing_ok=True)
-            temporary.symlink_to(ops.RELEASE)
-            temporary.replace(current)
+            health(shared, args.sha)
+            releases.switch_current(current, ops.RELEASE)
             state["status"] = "healthy"
             state["completed_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             record(shared, state)
-            print(f"Dev1.0 deployed and origin health verified: {args.sha}")
+            releases.atomic_json(package / ".deployed.json", state)
+            try:
+                releases.cleanup(shared)
+            except Exception as e:
+                print(
+                    f"Release retention failed; deployment remains healthy: {type(e).__name__}",
+                    file=sys.stderr,
+                )
+            print(f"MarkSix deployed and origin health verified: {args.sha}")
         except BaseException:
             state["status"] = "failed"
             record(shared, state)

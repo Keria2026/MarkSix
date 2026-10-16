@@ -1,6 +1,7 @@
 pub mod domain;
 
 pub mod api;
+mod queries;
 pub mod risk;
 pub mod store;
 pub mod worker;
@@ -24,4 +25,10 @@ pub async fn shutdown_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+/// Public build metadata contains no deployment secrets.
+pub fn build_info(mode: &str) -> serde_json::Value {
+    serde_json::json!({"mode": mode, "version": env!("CARGO_PKG_VERSION"),
+        "commit": option_env!("MARKSIX_REVISION").unwrap_or("development")})
 }

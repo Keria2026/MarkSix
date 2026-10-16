@@ -8,6 +8,7 @@ use axum::{
 };
 use chrono::NaiveDate;
 use marksix::{api, domain::*, store::*, worker};
+include!("../test_support/rules.rs");
 use serde_json::{Value, json};
 use sqlx::types::Json;
 use std::sync::{Arc, RwLock};
@@ -571,9 +572,9 @@ async fn transactional_workflow_and_recovery() {
     assert_eq!(size_fly.0, StatusCode::OK);
     let filtered = request(
         &app,
-        Method::GET,
-        &format!("/api/bets?period={ledger_period}&min_amount=120&max_amount=180"),
-        Value::Null,
+        Method::POST,
+        "/api/bets/search",
+        json!({"period":ledger_period,"min_amount":"120","max_amount":"180"}),
         &cookie,
     )
     .await;

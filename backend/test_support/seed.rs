@@ -1,10 +1,13 @@
 //! Small stable calculation fixtures, independent of customer-facing defaults.
+use marksix::domain::*;
+include!("rules.rs");
+
 pub async fn calculation_rules(pool: &sqlx::MySqlPool) -> anyhow::Result<()> {
     sqlx::query("DELETE FROM play_versions")
         .execute(pool)
         .await?;
     sqlx::query("DELETE FROM plays").execute(pool).await?;
-    for rule in marksix::domain::defaults() {
+    for rule in defaults() {
         let id = sqlx::query("INSERT INTO plays(version,rule) VALUES(1,?)")
             .bind(sqlx::types::Json(&rule))
             .execute(pool)

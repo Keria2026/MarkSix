@@ -336,7 +336,7 @@ test("activation and expiry keep business screens inaccessible until renewed", a
   await page.getByLabel("一次性授权码").fill("MSH1-" + "a".repeat(64));
   await page.getByRole("button", { name: "激活并进入" }).click();
   await expect(
-    page.getByRole("heading", { name: "玩法与配置", exact: true }),
+    page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
 });
 
