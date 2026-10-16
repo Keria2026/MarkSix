@@ -2,7 +2,7 @@ use crate::{domain::*, risk, store::*};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -90,15 +90,19 @@ pub fn router(state: AppState) -> Router {
         .route("/session", get(session))
         .route("/logout", post(logout))
         .route("/bootstrap", get(bootstrap))
-        .route("/periods", get(periods))
-        .route("/periods/{id}", get(period))
-        .route("/bets", get(bets).post(create_bet))
-        .route("/bets/search", post(search_bets))
+        .route("/periods", get(crate::queries::periods))
+        .route("/periods/{id}", get(crate::queries::period))
+        .route("/bets", post(create_bet))
+        .route("/bets/search", post(crate::queries::search_bets))
+        .route("/periods/{id}/risk", post(retry_risk))
         .route("/bets/{id}/amount", put(crate::ledger::change_amount))
         .route("/bets/{id}/layoffs", post(crate::ledger::fly_out))
         .route("/layoffs/{id}/cancel", post(crate::ledger::cancel_layoff))
         .route("/periods/{id}/statistics", get(crate::ledger::statistics))
-        .route("/periods/{id}/bet-filters", get(bet_filters))
+        .route(
+            "/periods/{id}/bet-filters",
+            get(crate::queries::bet_filters),
+        )
         .route("/parties", get(crate::ledger::parties))
         .route("/bets/{id}", get(bet_detail))
         .route("/bets/{id}/cancel", post(cancel_bet))
@@ -168,6 +172,15 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     response
 }
 async fn authenticate(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    // Reuse central validation within this request, after checking tenant binding.
+    // Standalone test servers retain their independent session implementation.
+    if let (Some(policy), Some(validated)) = (
+        &state.hosted,
+        req.extensions().get::<crate::hosted::ValidatedCustomer>(),
+    ) && policy.account_id == validated.0
+    {
+        return next.run(req).await;
+    }
     let valid = if let Some(value) = token(req.headers()).filter(|v| v.len() == 64) {
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sessions WHERE token_hash=? AND expires_at>UTC_TIMESTAMP(6)",
@@ -295,163 +308,32 @@ async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
         json!({"today":view(&state,today).await?,"plays":plays,"zodiacs":ZODIACS}),
     ))
 }
-#[derive(Deserialize, Default)]
-struct Page {
-    page: Option<u32>,
-    search: Option<String>,
-    period: Option<String>,
-    play_id: Option<i64>,
-    bettor: Option<String>,
-    unassigned: Option<bool>,
-    min_amount: Option<String>,
-    max_amount: Option<String>,
-    bettors: Option<String>,
-    play_ids: Option<String>,
-    order: Option<String>,
-}
-async fn periods(State(state): State<AppState>, Query(q): Query<Page>) -> ApiResult<Json<Value>> {
-    let page = q.page.unwrap_or(1).clamp(1, 100000);
-    let search = format!(
-        "%{}%",
-        q.search
-            .unwrap_or_default()
-            .chars()
-            .take(32)
-            .collect::<String>()
-    );
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM periods WHERE id LIKE ? OR CAST(business_date AS CHAR) LIKE ?",
-    )
-    .bind(&search)
-    .bind(&search)
-    .fetch_one(&state.pool)
-    .await?;
-    let rows:Vec<Period>=sqlx::query_as("SELECT * FROM periods WHERE id LIKE ? OR CAST(business_date AS CHAR) LIKE ? ORDER BY business_date DESC LIMIT 20 OFFSET ?").bind(&search).bind(&search).bind((page-1)*20).fetch_all(&state.pool).await?;
-    let mut items = vec![];
-    for p in rows {
-        items.push(view(&state, p).await?);
-    }
-    Ok(Json(
-        json!({"items":items,"total":count,"page":page,"page_size":20}),
-    ))
-}
-async fn period(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<PeriodView>> {
-    let p = sqlx::query_as("SELECT * FROM periods WHERE id=?")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(missing)?;
-    Ok(Json(view(&state, p).await?))
-}
-async fn bets(State(state): State<AppState>, Query(q): Query<Page>) -> ApiResult<Json<Value>> {
-    let id = q.period.unwrap_or_else(|| period_id(state.now().date()));
-    let page = q.page.unwrap_or(1).clamp(1, 100000);
-    let play = q.play_id;
-    let bettor = if q.unassigned == Some(true) {
-        Some(String::new())
-    } else {
-        q.bettor.filter(|v| !v.is_empty())
-    };
-    let min = q.min_amount.as_deref().map(|v| scaled(v, 2)).transpose()?;
-    let max = q.max_amount.as_deref().map(|v| scaled(v, 2)).transpose()?;
-    if min.zip(max).is_some_and(|(a, b)| a > b) {
-        return Err(conflict("金额下限不能超过上限"));
-    }
-    let bettors: Vec<String> = q
-        .bettors
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| conflict("投注人筛选格式错误"))?
-        .unwrap_or_default();
-    let plays: Vec<i64> = q
-        .play_ids
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| conflict("玩法筛选格式错误"))?
-        .unwrap_or_default();
-    if bettors.len() > 1000
-        || plays.len() > 1000
-        || bettors.iter().any(|s| s.chars().count() > 80)
-        || plays.iter().any(|n| *n <= 0)
-    {
-        return Err(conflict("筛选条件超出范围"));
-    }
-    let order = match q.order.as_deref().unwrap_or("newest") {
-        "newest" => "created_at DESC,id DESC",
-        "amount_asc" => "stake ASC,created_at DESC,id DESC",
-        "amount_desc" => "stake DESC,created_at DESC,id DESC",
-        _ => return Err(conflict("排序方式不合法")),
-    };
-    // JSON_CONTAINS is parameterized: names and IDs never become SQL text.
-    let bettors_json = serde_json::to_string(&bettors).map_err(anyhow::Error::from)?;
-    let plays_json = serde_json::to_string(&plays).map_err(anyhow::Error::from)?;
-    let predicate = "period_id=? AND (? IS NULL OR play_id=?) AND (? IS NULL OR bettor=?) AND (? IS NULL OR stake>=?) AND (? IS NULL OR stake<=?) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,JSON_QUOTE(bettor))) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,CAST(play_id AS JSON)))";
-    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM bets WHERE {predicate}"))
-        .bind(&id)
-        .bind(play)
-        .bind(play)
-        .bind(&bettor)
-        .bind(&bettor)
-        .bind(min)
-        .bind(min)
-        .bind(max)
-        .bind(max)
-        .bind(&bettors_json)
-        .bind(&bettors_json)
-        .bind(&plays_json)
-        .bind(&plays_json)
-        .fetch_one(&state.pool)
-        .await?;
-    let items: Vec<BetSummary> = sqlx::query_as(&format!(
-        "SELECT {BET_COLUMNS} FROM bets WHERE {predicate} ORDER BY {order} LIMIT 25 OFFSET ?"
-    ))
-    .bind(&id)
-    .bind(play)
-    .bind(play)
-    .bind(&bettor)
-    .bind(&bettor)
-    .bind(min)
-    .bind(min)
-    .bind(max)
-    .bind(max)
-    .bind(&bettors_json)
-    .bind(&bettors_json)
-    .bind(&plays_json)
-    .bind(&plays_json)
-    .bind((page - 1) * 25)
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(
-        json!({"items":items,"total":count,"page":page,"page_size":25}),
-    ))
-}
-async fn search_bets(State(state): State<AppState>, Json(q): Json<Page>) -> ApiResult<Json<Value>> {
-    // Large multi-selections use a bounded JSON body rather than exceeding
-    // Nginx/Cloudflare request-line limits with hundreds of encoded names.
-    bets(State(state), Query(q)).await
-}
-async fn bet_filters(
+async fn retry_risk(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    let bettors: Vec<String> =
-        sqlx::query_scalar("SELECT DISTINCT bettor FROM bets WHERE period_id=? ORDER BY bettor")
-            .bind(&id)
-            .fetch_all(&state.pool)
-            .await?;
-    // Snapshot names remain discoverable after a play is renamed or deleted.
-    let rows = sqlx::query("SELECT play_id,CAST(MAX(JSON_UNQUOTE(JSON_EXTRACT(rule,'$.name'))) AS CHAR CHARACTER SET utf8mb4) name FROM bets WHERE period_id=? GROUP BY play_id ORDER BY name,play_id")
-        .bind(&id).fetch_all(&state.pool).await?;
-    let plays: Vec<Value> = rows
-        .iter()
-        .map(|row| Ok(json!({"id":row.try_get::<i64,_>("play_id")?,"name":row.try_get::<String,_>("name")?})))
-        .collect::<Result<_, sqlx::Error>>()?;
-    Ok(Json(json!({"period":id,"bettors":bettors,"plays":plays})))
+    let mut tx = state.pool.begin().await?;
+    let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(missing)?;
+    if p.state != "pending" {
+        return Err(conflict("本期已经开奖或停止抓取，不能重新预测"));
+    }
+    if matches!(p.risk_status.as_str(), "failed" | "timeout" | "stale") {
+        sqlx::query("UPDATE periods SET risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_task_id=NULL,risk_error=NULL,risk_result=NULL WHERE id=?")
+            .bind(&id).execute(&mut *tx).await?;
+        audit(
+            &mut tx,
+            Some(&id),
+            "risk_requeued",
+            json!({"version": p.bet_version}),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(json!({"ok":true})))
 }
 async fn bet_detail(
     State(state): State<AppState>,
@@ -697,7 +579,7 @@ async fn quote(
     let (result, max_return) =
         result.map_err(|e| ApiError(StatusCode::REQUEST_TIMEOUT, e.to_string()))?;
     Ok(Json(
-        json!({"units":plan.atoms.len(),"stake":plan.stake,"rebate":plan.rebate,"max_return":max_return,"max_profit":-result.min_net.unwrap_or(0),"result":result}),
+        json!({"units":plan.atoms.len(),"stake":plan.stake,"rebate":plan.rebate,"max_return":max_return,"max_profit":-result.min_net,"result":result}),
     ))
 }
 async fn create_play(

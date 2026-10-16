@@ -336,7 +336,7 @@ test("activation and expiry keep business screens inaccessible until renewed", a
   await page.getByLabel("一次性授权码").fill("MSH1-" + "a".repeat(64));
   await page.getByRole("button", { name: "激活并进入" }).click();
   await expect(
-    page.getByRole("heading", { name: "玩法与配置", exact: true }),
+    page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
 });
 
@@ -428,7 +428,7 @@ test("narrow mobile navigation retains readable labels and touch targets", async
   await page.getByRole("button", { name: "进入工作台" }).click();
   const nav = page.getByRole("navigation", { name: "主要导航" });
   await expect(nav).toBeVisible();
-  const buttons = nav.locator(":scope > button");
+  const buttons = nav.locator(":scope > .nav-item > .nav-link");
   await expect(buttons).toHaveCount(6);
   for (const button of await buttons.all()) {
     const rect = await button.boundingBox();

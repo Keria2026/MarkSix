@@ -1,0 +1,228 @@
+<script lang="ts">
+  import {
+    ArrowRight,
+    ArrowUpRight,
+    ChevronLeft,
+    ChevronRight,
+    ReceiptText,
+  } from "lucide-svelte";
+  import { money, signed, label } from "../lib/types";
+  import type { Page, Bet } from "../lib/types";
+  let {
+    records,
+    recordChoices,
+    historical,
+    selectedBettors = $bindable(),
+    selectedPlays = $bindable(),
+    minAmount = $bindable(),
+    maxAmount = $bindable(),
+    recordOrder = $bindable(),
+    onload,
+    showDetail,
+    onbet,
+  }: {
+    records: Page<Bet>;
+    recordChoices: { bettors: string[]; plays: { id: number; name: string }[] };
+    historical: boolean;
+    selectedBettors: string[];
+    selectedPlays: number[];
+    minAmount: string;
+    maxAmount: string;
+    recordOrder: string;
+    onload: (page?: number) => Promise<void>;
+    showDetail: (bet: Bet) => Promise<void>;
+    onbet: () => Promise<void>;
+  } = $props();
+  function loadRecords(page = 1) {
+    return onload(page);
+  }
+</script>
+
+<section class="records-panel glass">
+  <div class="section-head">
+    <div class="title-with-count">
+      <h2>投注记录</h2>
+      <span class="count-badge">{records.total}</span>
+    </div>
+    <span class="muted small">自动刷新 · 金额为整条投注本金</span>
+  </div>
+  <form
+    class="record-filters"
+    onsubmit={(e) => {
+      e.preventDefault();
+      void loadRecords(1);
+    }}
+  >
+    <label
+      >投注总额下限（元）<input
+        bind:value={minAmount}
+        inputmode="decimal"
+        placeholder="不限"
+      /></label
+    >
+    <label
+      >投注总额上限（元）<input
+        bind:value={maxAmount}
+        inputmode="decimal"
+        placeholder="不限"
+      /></label
+    >
+    <button class="button secondary" type="submit">筛选</button><button
+      class="text-button"
+      type="button"
+      onclick={() => {
+        selectedBettors = [];
+        selectedPlays = [];
+        recordOrder = "newest";
+        minAmount = "";
+        maxAmount = "";
+        void loadRecords(1);
+      }}>重置</button
+    >
+  </form>
+  <div class="record-multifilters">
+    <details class="record-picker">
+      <summary
+        >投注人多选{selectedBettors.length
+          ? ` · ${selectedBettors.length} 位`
+          : " · 全部"}</summary
+      >
+      <div class="record-picker-options">
+        {#each recordChoices.bettors as name (name)}<label
+            class="checkbox-label"
+            ><input
+              type="checkbox"
+              value={name}
+              bind:group={selectedBettors}
+              onchange={() => queueMicrotask(() => void loadRecords(1))}
+            />{name || "未登记"}</label
+          >{/each}{#if !recordChoices.bettors.length}<p class="field-help">
+            本期暂无投注人
+          </p>{/if}
+      </div>
+    </details>
+    <details class="record-picker">
+      <summary
+        >玩法多选{selectedPlays.length
+          ? ` · ${selectedPlays.length} 项`
+          : " · 全部"}</summary
+      >
+      <div class="record-picker-options">
+        {#each recordChoices.plays as play (play.id)}<label
+            class="checkbox-label"
+            ><input
+              type="checkbox"
+              value={play.id}
+              bind:group={selectedPlays}
+              onchange={() => queueMicrotask(() => void loadRecords(1))}
+            />{play.name}</label
+          >{/each}{#if !recordChoices.plays.length}<p class="field-help">
+            本期暂无投注玩法
+          </p>{/if}
+      </div>
+    </details>
+    <label
+      >记录排序<select
+        bind:value={recordOrder}
+        onchange={() => queueMicrotask(() => void loadRecords(1))}
+        ><option value="newest">最新录入优先</option><option value="amount_asc"
+          >投注总额从小到大</option
+        ><option value="amount_desc">投注总额从大到小</option></select
+      ></label
+    >
+  </div>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
+  <div
+    class="table-scroll"
+    role="region"
+    tabindex="0"
+    aria-label="数据表格，可横向滚动"
+  >
+    <table>
+      <thead
+        ><tr
+          ><th>玩法 / 投注人 / 投注项</th><th>基础注</th><th>投注本金</th><th
+            >反水</th
+          ><th>盘口净盈利</th><th>状态</th><th>操作</th></tr
+        ></thead
+      ><tbody
+        >{#each records.items as bet}<tr
+            ><td
+              ><strong
+                >{bet.rule.name}{#if bet.compound}<span class="table-tag"
+                    >复式</span
+                  >{:else if bet.unit_count > 1}<span class="table-tag"
+                    >多选</span
+                  >{/if}</strong
+              ><small class="bettor-name"
+                >{bet.bettor || "未登记（旧记录）"}</small
+              ><small class="bet-selection"
+                >{bet.selections
+                  .map((v) => label(bet.rule.kind, v))
+                  .join(" · ")}</small
+              ></td
+            ><td>{bet.unit_count} 注</td><td>{money(bet.stake)}</td><td
+              >{bet.status === "cancelled" ? "—" : money(bet.rebate)}</td
+            ><td
+              class:positive={bet.payout !== null &&
+                bet.stake - bet.payout - bet.rebate > 0}
+              class:negative={bet.payout !== null &&
+                bet.stake - bet.payout - bet.rebate < 0}
+              ><strong
+                >{bet.status === "settled"
+                  ? signed(bet.stake - bet.payout! - bet.rebate)
+                  : bet.status === "cancelled"
+                    ? "—"
+                    : "待结算"}</strong
+              ></td
+            ><td
+              ><span class="record-status" data-status={bet.status}
+                >{bet.status === "settled"
+                  ? "已结算"
+                  : bet.status === "cancelled"
+                    ? "已撤销"
+                    : "待开奖"}</span
+              ></td
+            ><td
+              ><button class="text-button" onclick={() => showDetail(bet)}
+                >详情 <ArrowUpRight size={13} /></button
+              ></td
+            ></tr
+          >{/each}</tbody
+      >
+    </table>
+    {#if !records.items.length}<div class="empty-state record-empty">
+        <span class="empty-icon"><ReceiptText size={28} /></span>
+        <h3>清晰的记录，从第一笔开始</h3>
+        <p>
+          {selectedBettors.length ||
+          selectedPlays.length ||
+          minAmount ||
+          maxAmount
+            ? "暂无符合筛选条件的记录，可调整条件或重置筛选。"
+            : "本期还没有投注记录，录入后会自动汇总到这里。"}
+        </p>
+        {#if !historical}<button class="text-button" onclick={onbet}
+            >录入第一笔投注 <ArrowRight size={15} /></button
+          >{/if}
+      </div>{/if}
+  </div>
+  <div class="table-footer">
+    <span>共 {records.total} 条记录 <i>·</i> 盘口方盈亏口径</span>
+    <div class="pagination">
+      <button
+        class="icon-button"
+        aria-label="上一页记录"
+        disabled={records.page === 1}
+        onclick={() => loadRecords(records.page - 1)}
+        ><ChevronLeft size={16} /></button
+      ><span>{records.page}</span><button
+        class="icon-button"
+        aria-label="下一页记录"
+        disabled={records.page * 25 >= records.total}
+        onclick={() => loadRecords(records.page + 1)}
+        ><ChevronRight size={16} /></button
+      >
+    </div>
+  </div>
+</section>

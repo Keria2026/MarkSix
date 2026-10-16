@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ShieldCheck, LoaderCircle, LogOut } from "lucide-svelte";
-  import { api } from "../lib/types";
+  import { onDestroy } from "svelte";
+  import { createRequestScope } from "../lib/requests";
   export interface LicenseStatus {
     active: boolean;
     expires_at?: number;
@@ -16,11 +17,16 @@
     status,
     onactivated,
     onlogout,
+    oninvalid,
   }: {
     status: LicenseStatus | null;
     onactivated: () => Promise<void>;
     onlogout: () => Promise<void>;
+    oninvalid: (status: number) => void;
   } = $props();
+  const requests = createRequestScope((status) => oninvalid(status));
+  const api = requests.api;
+  onDestroy(requests.dispose);
   let code = $state("");
   let pending: { key: string; id: string } | null = null;
   let busy = $state(false);

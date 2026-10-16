@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./authenticated";
 import AxeBuilder from "@axe-core/playwright";
 import type { Statistics, Period } from "../src/lib/types";
 
@@ -31,9 +31,6 @@ const reportFixture = (period: string, settled = true): Statistics => ({
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("客户账号").fill("test-admin");
-  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
-  await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
@@ -66,20 +63,46 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
         })
         .toBeLessThan(4);
       if (name !== "录入投注") {
-        const expanded = nav.getByRole("button", {
-          name: `收起${name}二级菜单`,
-          exact: true,
+        const toggle = nav.getByRole("button", {
+          name: new RegExp(`(展开|收起)${name}二级菜单`),
         });
-        if (await expanded.count()) await expanded.click();
-        await nav
-          .getByRole("button", { name: `展开${name}二级菜单`, exact: true })
-          .click();
+        const clickToggle = async () => {
+          if (width <= 960) await target.click();
+          else await toggle.click();
+        };
+        if ((await target.getAttribute("aria-expanded")) === "true")
+          await clickToggle();
+        await clickToggle();
         await expect(nav.locator(".nav-submenu")).toBeVisible();
-        await expanded.click();
+        await clickToggle();
         await expect(nav.locator(".nav-submenu")).toHaveCount(0);
       }
     }
   }
+  const statistics = nav.getByRole("button", { name: "本期统计", exact: true });
+  await statistics.click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
+  await nav.getByRole("button", { name: "本期概览", exact: true }).click();
+  await expect(statistics).toHaveAttribute("aria-expanded", "false");
+  const disclosure = nav.getByRole("button", {
+    name: "展开本期统计二级菜单",
+    exact: true,
+  });
+  const primaryBox = (await statistics.boundingBox())!;
+  const arrowBox = (await disclosure.boundingBox())!;
+  expect(
+    Math.abs(
+      primaryBox.y + primaryBox.height / 2 - arrowBox.y - arrowBox.height / 2,
+    ),
+  ).toBeLessThan(3);
+  await disclosure.click();
+  await expect(statistics).toHaveAttribute("aria-expanded", "true");
+  await expect(nav.getByLabel("本期统计分类")).toBeVisible();
+  await nav
+    .getByRole("button", { name: "收起本期统计二级菜单", exact: true })
+    .click();
   expect(
     await nav
       .locator(".nav-indicator")
@@ -115,6 +138,92 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
       () => (window as unknown as { pageAnimations: number }).pageAnimations,
     ),
   ).toBe(count);
+});
+
+test("navigation selection updates immediately and remains aligned after rapid switches and submenu changes", async ({
+  page,
+}) => {
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  for (const width of [390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const overview = nav.getByRole("button", { name: "本期概览", exact: true });
+    await overview.click();
+    const colors = await nav.evaluate((node) => ({
+      active: getComputedStyle(node.querySelector(".nav-link.active")!).color,
+      inactive: getComputedStyle(
+        node.querySelector('.nav-link[aria-label="录入投注"]')!,
+      ).color,
+    }));
+    // Sample the first frame of a real transition, before the glass finishes sliding.
+    const firstFrame = await nav.evaluate(async (node) => {
+      const previous = node.querySelector<HTMLElement>(".nav-link.active")!;
+      const next = node.querySelector<HTMLButtonElement>(
+        '.nav-link[aria-label="本期统计"]',
+      )!;
+      next.click();
+      await new Promise(requestAnimationFrame);
+      return {
+        previous: getComputedStyle(previous).color,
+        next: getComputedStyle(next).color,
+        active: next.getAttribute("aria-current"),
+      };
+    });
+    expect(firstFrame).toEqual({
+      previous: colors.inactive,
+      next: colors.active,
+      active: "page",
+    });
+
+    const statistics = nav.getByRole("button", {
+      name: "本期统计",
+      exact: true,
+    });
+    const disclosure = nav.getByRole("button", {
+      name: /(?:展开|收起)本期统计二级菜单/,
+    });
+    if ((await statistics.getAttribute("aria-expanded")) !== "true") {
+      if (width <= 960) await statistics.click();
+      else await disclosure.click();
+    }
+    await expect(nav.getByLabel("本期统计分类")).toBeVisible();
+    // These clicks interrupt the indicator while removing/reinserting the submenu.
+    await nav.evaluate(async (node) => {
+      for (const name of [
+        "官方频道",
+        "本期统计",
+        "录入投注",
+        "本期统计",
+        "本期统计",
+        "历史统计",
+      ]) {
+        node
+          .querySelector<HTMLButtonElement>(`.nav-link[aria-label="${name}"]`)!
+          .click();
+        await new Promise(requestAnimationFrame);
+      }
+    });
+    const history = nav.getByRole("button", { name: "历史统计", exact: true });
+    await expect(nav.locator(".nav-link[aria-current='page']")).toHaveCount(1);
+    await expect(history).toHaveAttribute("aria-current", "page");
+    await expect
+      .poll(async () => {
+        const [surface, button] = await Promise.all([
+          nav.locator(".nav-indicator").boundingBox(),
+          history.boundingBox(),
+        ]);
+        return Math.max(
+          Math.abs(surface!.x - button!.x),
+          Math.abs(surface!.y - button!.y),
+          Math.abs(surface!.width - button!.width),
+          Math.abs(surface!.height - button!.height),
+        );
+      })
+      .toBeLessThan(1);
+    await expect(nav.locator(".nav-submenu")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "历史统计", exact: true }),
+    ).toBeVisible();
+  }
 });
 
 test("statistics summaries show category-specific amounts, profit direction, pending and empty states", async ({

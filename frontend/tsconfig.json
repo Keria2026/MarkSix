@@ -1,1 +1,21 @@
-{"extends":"@tsconfig/svelte/tsconfig.json","compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"bundler","allowJs":true,"checkJs":true,"isolatedModules":true,"strict":true,"resolveJsonModule":true,"skipLibCheck":true},"include":["src/**/*.ts","src/**/*.svelte","vite.config.ts"]}
+{
+  "extends": "@tsconfig/svelte/tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "checkJs": true,
+    "isolatedModules": true,
+    "strict": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.svelte",
+    "vite.config.ts"
+  ]
+}

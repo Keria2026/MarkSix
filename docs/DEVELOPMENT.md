@@ -1,103 +1,96 @@
-# 开发与测试
+# 开发指南
 
-当前唯一产品为 Ubuntu Docker 托管版：Rust 1.90.0 / Axum、MySQL 8.4、Svelte 5 / TypeScript、Bun 1.3.14。依赖锁文件必须随实际依赖更新。生产部署见 [VPS 指南](../deploy/vps/README.md)。
+生产部署与恢复只在 [VPS 指南](../deploy/vps/README.md) 维护。业务定义见 [规范](SPECIFICATION.md)，发布门槛见 [测试指南](TESTING.md)。
 
-## 代码职责
+## 环境
 
-- `domain.rs`：定点金额、规则校验、拆注和结算；`risk.rs`：同一合法开奖下的精确极值。
-- `store.rs`：业务库、期次快照；`api.rs`：业务 API 与事务；`ledger.rs`：金额纠正、飞出和统计；`configuration.rs`：玩法导入导出及逻辑删除。
-- `hosted/accounts.rs`：中央账号、会话与激活；`management.rs`：auth 管理端；`portal.rs`：按验证会话选择客户；`tenancy.rs`：独立客户数据库池及并发预算；`history.rs`：客户历史清空及备份删除。
-- `worker.rs`：开奖抓取、结算和风险任务；`logging.rs`：固定 error 级运行日志。财务审计不是运行日志，继续保存于业务库。
-- 前端 `App.svelte` 为客户工作台，`Management.svelte` 为运营后台，按 `/api/site` 选择入口。
-
-## 开发环境
-
-使用已有 checkout，不需创建额外 worktree。MySQL 测试实例 max_connections 至少 64。凭据只放私有环境配置，不写入 Git。auth 管理端需要 CONTROL_DATABASE_URL、PROVISION_DATABASE_URL、AUTHORITY_ADMIN_USERNAME、AUTHORITY_ADMIN_PASSWORD、TENANT_DB_HOST/PORT、BACKUP_ROOT；客户服务使用受限 portal 数据库连接。
+Rust 1.90.0、MySQL 8.4、Bun 1.3.14、Python 3.10+。复用已有 checkout；依赖更新必须同步锁文件。测试 MySQL 的 max_connections 至少 64，凭据只保存在私有环境配置。
 
 ```bash
-cd backend
+# backend：auth 管理端
 BIND_ADDR=127.0.0.1:8090 cargo run --locked -- --hosted-authority
-# 另一个终端，配置客户服务连接
+# backend：另一个终端，使用受限 portal 连接
 BIND_ADDR=127.0.0.1:8080 INTERNAL_AUTHORITY_URL=http://127.0.0.1:8090 cargo run --locked -- --hosted
-# frontend 目录
+# frontend：另一个终端
 bun install --frozen-lockfile
 API_TARGET=http://127.0.0.1:8080 bun run dev
 ```
 
-生产 Secure Cookie 配合 HTTPS；仅回环开发环境可不设置 SECURE_COOKIE=true。客户通过运营后台创建并激活，不提供本机设备授权命令。
+仅回环开发环境可不启用 SECURE_COOKIE；生产必须使用 HTTPS。客户通过 auth 创建并激活。
 
-## 必须执行的验证
+## 代码职责
 
-真实数据库测试会重置专用 `marksix_test` 数据库，禁止指向业务库。TEST_DATABASE_URL 为专用测试连接，TEST_PROVISION_DATABASE_URL 为同一测试 MySQL 的建库管理连接，TENANT_DB_HOST/PORT 指向该实例。各套数据库测试顺序执行，不能与浏览器夹具共享数据库并行重置。
+| 模块 | 职责 |
+| --- | --- |
+| domain / risk | 金额、规则、拆注和结算／同一合法开奖的精确极值 |
+| api / queries | 写入事务与 API 边界／类型化只读查询 |
+| ledger / configuration | 金额、飞出与统计／玩法版本、导入导出和批量变更 |
+| store / worker | 业务库及期次快照／抓取、结算和风险任务生命周期 |
+| hosted/accounts / portal / tenancy | 中央身份及激活／按有效会话分派／账本池与 Router 缓存 |
+| hosted/management / history | auth 管理／历史清空与备份凭据 |
+| App / Workspace | 客户认证壳／账号内导航与账本协调 |
+| BetEntry / PlayEditor / BatchEditor / SystemSettings | 投注草稿与报价／单条编辑／批量变更／配置及历史清空 |
+| selection / modal | 文本选项解析／共享弹窗滚动锁与动效 |
+| requests / Management | 可销毁请求作用域／auth 管理界面 |
+
+客户默认玩法来自 backend/src/default-plays.json，与 fixtures/customer-plays.json 逐字段一致；测试校验此契约。稳定计算夹具单独存于 backend/test_support，不进入生产业务默认值。
+
+## 验证命令
+
+数据库测试会破坏性重置专用 marksix_test。禁止指向业务库，禁止与浏览器夹具并行操作同一测试库。
 
 ```bash
-# 仓库根目录，CI 使用最低支持版本 Python 3.10 执行
+# 仓库根目录
 python3 -m unittest discover -s scripts/tests -v
-cd backend
+python3 scripts/audit_dependencies.py
+# backend
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo test --locked --test upgrade -- --ignored
 cargo test --locked --test workflow -- --ignored
 cargo test --locked --lib hosted::tests -- --ignored
+cargo test --locked --lib worker::recovery_tests -- --ignored
 cargo run --release --locked --example risk_bench
 cargo build --locked --example runtime_server
-# 仓库根目录，设置 TEST_ADMIN_PASSWORD 至少 12 字符
+# 仓库根目录
 python3 scripts/runtime_acceptance.py
 ```
 
-运行验收使用独立 Python Decimal 预期值、真实 HTTP 和 MySQL，覆盖赔率表与补充规则。结果写入 test-results/runtime-acceptance.json，不把后端计算函数当作预期值。
+风险故障测试通过测试管理连接安装／移除临时触发器，仅接受 marksix_test。业务连接不因此获得生产管理权限。
 
-浏览器夹具只绑定回环，固定北京时间 2026-10-14 12:00，不进入生产镜像。每次完整重跑前重启夹具以重置测试库。
+纯界面套件通过 tests/authenticated.ts 在 worker 内复用真实会话，凭据与 cookie 不写入文件；登录、失效与托管隔离测试独立执行，不关闭生产限流。
+
+浏览器夹具固定北京时间 2026-10-14 12:00，仅监听回环，不编译进生产镜像。完整重跑前重启夹具以重置数据库。
 
 ```bash
-# backend 目录；保留同一 TEST_ADMIN_PASSWORD
+# backend，独立终端
 cargo run --locked --example e2e_server
-# frontend 目录，另一个终端
+# frontend，独立终端
 API_TARGET=http://127.0.0.1:8081 bun run dev --port 5174
 bun x playwright install chromium
+bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/*.ts' '*.ts'
+bun audit
 bun run check
 bun run build
 bun run test:e2e
 ```
 
-托管整体验收使用随机 Compose 项目、自签名测试证书和独立测试账号；不连接生产。root 运行验证生产 UID 10001，非 root 本地仅调整测试授权容器 UID 以匹配测试备份目录。
+托管整体验收使用随机 Compose 项目、自签名证书和独立测试账号。root 执行时核查生产 UID 10001；非 root 本地测试只调整测试容器 UID，使其能够访问测试备份目录。
 
 ```bash
-python3 scripts/hosted_acceptance.py --backend marksix-backend:dev1-test --frontend marksix-frontend:dev1-test --browser --bun /完整路径/bun
-python3 scripts/hosted_acceptance.py --users 200 --load-seconds 60
+python3 scripts/hosted_acceptance.py --backend marksix-backend:v1-test --frontend marksix-frontend:v1-test --browser --bun /完整路径/bun
 ```
 
-本机浏览器缓存可通过 --browser-cache 指定。200 在线目标必须结合延迟、失败率、资源和实际账本规模评估，固定基准不代表任意混合玩法都能在一分钟内求出极值。
+实际结果与未执行项目记录在 [验收索引](ACCEPTANCE.md)，不把默认忽略的测试计为已执行。
 
-## 财务和升级约束
+## 附录：变量与契约
 
-金额为整数分，赔率为缩放整数，通过 i128 中间值防溢出；每基础注返还和反水独立舍入到分。金额修改与飞出沿用原基础注费率快照。期次 → 投注的锁顺序保证容量、封盘、撤销和结算一致；请求 UUID 和 revision 防重复及覆盖。
-
-0 尾配置字段 `zero_tail_odds` 可空，只支持尾数。拆分后含 0 的基础注使用该赔率，优先于本命肖赔率；反水沿用原有逐注本命肖规则。未配置时保持原赔率。实际快照进入基础注 `odds/payout`，风险与飞出无需再次按当前配置推导费率。
-
-多选查询通过 POST /api/bets/search 传入参数化 JSON 数组，避免大量姓名超过代理的 URL 长度上限；GET /api/bets 仍供现有查询工具使用。排序参数只允许 newest / amount_asc / amount_desc。金额排序指整条投注总本金 stake；稳定并列顺序为创建时间和记录 ID。候选列表来自当期投注快照，删除玩法后仍可筛选历史记录。
-
-历史清空在auth 管理端执行，客户服务没有备份目录访问权。验证当前会话、密码、确认文字并锁定账号，使用客户自身数据库权限；锁顺序为备份文件锁 → 账号 → 期次。删除本期之前的期次、投注、飞出、金额变更及相关财务审计，保留本期、规则、映射、配置、账号及授权。请求 ID 重试不会扩大清空范围。清除客户托管备份，持久化非实名清空凭据，恢复工具拒绝清空前的全量备份。
-
-生产已存在的迁移文件不得改写。新增字段保留 serde 默认值，以读取已上线的规则和投注快照；这是必要的数据升级保障。0006 增加清空幂等凭据；0007 移除托管库中已停用的设备授权表。Windows 安装脚本、旧独立授权服务、签名 CLI 和本机部署模式不再编译或交付。
-
-## 玩法配置管理
-
-新客户初始化从 `backend/src/default-plays.json` 嵌入用户的 plays-prop；与可分享文件 `fixtures/customer-plays.json` 必须保持逐字段一致，单元及数据库测试校验这项约束。已有客户配置不会在启动或升级时被替换。domain::defaults 仅供计算测试夹具，不再用于客户初始化。
-
-导入按去除首尾空白后的名称精确匹配，同名更新保留 ID、递增版本并写入 play_versions；不同名新增。文件内重复名称或现有重名歧义均整批拒绝。POST /api/plays/batch 接收 targets（id/version）及 delete 或 update（可选 odds、rebate_percent、enabled）；按 ID 顺序锁定，所有修改在同一事务完成，任一无效或版本冲突全部回滚。批量编辑仅改普通费率，保留特殊费率；弹窗固定打开时的目标版本，不随后台刷新偷偷更新。已有投注快照不变。
-
-产品统一称 MarkSix 服务端与 auth 管理端；为兼容已部署服务，内部 authority 标识、现有环境变量／启动参数和 admin 域名继续沿用。
-
-## 前端导航与分类统计
-
-主要导航使用单个玻璃高亮层随当前按钮移动，页面仅做轻微透明度切换；系统开启减少动态效果时关闭这些动画。主导航负责进入页面或返回历史总览，独立的“展开／收起菜单”按钮控制二级菜单。首次默认收起；按账号保存到当前浏览器 localStorage，页面跳转和刷新均沿用最后一次手动选择，不自动展开。历史期次以会话内标签保留，关闭标签不删除服务端数据；关闭当前标签切换到相邻期次，最后一个关闭后回到历史列表。退出登录、会话失效或清空历史时移除标签。
-
-分类统计直接使用现有 statistics 响应，不额外请求或修改账目。全部受注显示原有总账摘要；飞出统计显示有效飞出本金、受注方人数、记录数和本方飞出净盈亏；投注人统计显示有效人数、总本金、人均本金及投注人视角的总净输赢。人均金额仅供展示，四舍五入到分；投注人净输赢是本方原受注净盈亏取反，未结算显示待结算。
-
-## CI/CD
-
-仅 Ubuntu CI：dev / master push、PR 触发验证。master push 且 verify/images 成功后，从同一次构建上传的 MarkSix-Ubuntu-x64 工件部署；生产并发串行且不自动取消。dev 不部署。
-
-`python3 scripts/package_ubuntu.py --output ubuntu-package --version <提交> --backend <已测镜像> --frontend <已测镜像>` 仅打包托管配置、三份镜像、玩法夹具和 SHA-256 清单。verify.py 验证工件完整性。发布前冷备份、增量迁移、健康检查和 TLS 路由验收；失败不能用旧程序直接连接已升级数据库。
+- auth：CONTROL_DATABASE_URL、PROVISION_DATABASE_URL、AUTHORITY_ADMIN_USERNAME、AUTHORITY_ADMIN_PASSWORD、TENANT_DB_HOST/PORT、BACKUP_ROOT。
+- MarkSix：受限 CONTROL_DATABASE_URL、TENANT_DB_HOST/PORT、INTERNAL_AUTHORITY_URL。
+- 测试：TEST_DATABASE_URL 与 TEST_PROVISION_DATABASE_URL 必须同属专用 marksix_test，TEST_ADMIN_PASSWORD 至少 12 字符；浏览器缓存可设置 PLAYWRIGHT_BROWSERS_PATH。
+- 批量规则 `POST /api/plays/batch` 保留 odds、rebate_percent、enabled 字段；rule 为增量对象，省略的键保留原值，null 只用于可空字段清除。仅允许规则白名单字段，名称不可批量设置；每条合并后复用 Rule.validate，整批事务与版本校验。
+- 投注筛选统一为 POST /api/bets/search；bettors、play_ids 是 JSON 数组。GET /api/bets 与单字段旧筛选已移除。排序仅支持 newest、amount_asc、amount_desc；金额为整条本金。
+- 包版本以 backend/Cargo.toml 为唯一来源，构建可注入 MARKSIX_REVISION；/api/site 提供版本和提交，前端不另维护产品版本。
+- 历史 SQL 迁移不可改写。现有规则和基础注的缺省字段继续服务持久化快照；风险缓存通过 0008 失效，移除旧净额回退公式。
+- authority 容器标识、启动参数、环境变量和 cookie 属于当前部署契约；产品对外称 auth，内部标识无需为更名而迁移。

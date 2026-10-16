@@ -53,8 +53,8 @@ export interface Draw {
 }
 export interface Risk {
   min_payout: number;
-  min_net: number | null;
-  max_net: number | null;
+  min_net: number;
+  max_net: number;
   max_payout: number;
   best_draw: number[];
   worst_draw: number[];
@@ -426,4 +426,15 @@ export function selectionBoundary(
   if (basicCount(rule, selections, compound) > 1000)
     return "单次最多 1,000 条基础注，请减少候选项";
   return null;
+}
+
+export interface BetDraft {
+  playId: number;
+  selections: number[];
+  compound: boolean;
+  amount: string;
+  bettor: string;
+  playSearch: string;
+  pickerExpanded: boolean;
+  pendingSubmission: { key: string; id: string } | null;
 }

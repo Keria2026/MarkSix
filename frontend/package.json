@@ -1,6 +1,5 @@
 {
   "name": "marksix-web",
-  "version": "1.0.0-dev.1",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.14",

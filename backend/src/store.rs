@@ -35,7 +35,11 @@ impl AppState {
     pub fn new(pool: MySqlPool) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
-            .user_agent("MarkSix/Dev1.0 (+hosted statistics)")
+            .user_agent(concat!(
+                "MarkSix/",
+                env!("CARGO_PKG_VERSION"),
+                " (+hosted statistics)"
+            ))
             .build()?;
         Ok(Self::with_client(pool, client))
     }
@@ -179,6 +183,7 @@ pub struct Period {
     pub mapping_warning: bool,
     pub settled_at: Option<NaiveDateTime>,
     pub risk_status: String,
+    pub risk_task_id: Option<String>,
     pub risk_version: Option<i64>,
     pub risk_result: Option<Json<RiskResult>>,
     pub risk_error: Option<String>,

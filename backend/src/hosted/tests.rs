@@ -240,6 +240,31 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         .unwrap();
     let sa = registry.state(&aa).await.unwrap();
     let sb = registry.state(&bb).await.unwrap();
+    // A cold tenant blocked in SQL must not hold the warm-cache map lock.
+    let isolated = Registry::new(c.clone()).unwrap();
+    let _warm = isolated.lease(&aa).await.unwrap();
+    let mut blocker = sb.pool.acquire().await.unwrap();
+    sqlx::raw_sql("LOCK TABLES periods READ")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let cold_registry = isolated.clone();
+    let cold_account = bb.clone();
+    let cold = tokio::spawn(async move { cold_registry.lease(&cold_account).await });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let warm = tokio::time::timeout(std::time::Duration::from_secs(1), isolated.lease(&aa)).await;
+    sqlx::raw_sql("UNLOCK TABLES")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    drop(blocker);
+    drop(cold.await.unwrap().unwrap());
+    assert!(
+        warm.is_ok(),
+        "cold database wait blocked an already warm tenant"
+    );
+    drop(warm);
+
     assert!(
         sqlx::query(&format!(
             "SELECT username FROM `{}`.administrators",
@@ -422,22 +447,9 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         ("amount_asc", vec![1000, 2000, 3000]),
         ("amount_desc", vec![3000, 2000, 1000]),
     ] {
-        let path = reqwest::Url::parse_with_params(
-            "http://fixture/api/bets",
-            [
-                ("period", period.to_owned()),
-                ("bettors", json!(["筛选甲", "筛选乙"]).to_string()),
-                ("play_ids", json!([play["id"]]).to_string()),
-                ("order", order.to_owned()),
-            ],
-        )
-        .unwrap();
         let records = ok(
-            &app,
-            "GET",
-            &format!("{}?{}", path.path(), path.query().unwrap()),
-            json!({}),
-            &ca,
+            &app, "POST", "/api/bets/search",
+            json!({"period":period,"bettors":["筛选甲", "筛选乙"],"play_ids":[play["id"]],"order":order}), &ca,
         )
         .await;
         assert_eq!(records["total"], 3);
@@ -454,9 +466,9 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
     assert_eq!(
         request(
             &app,
-            "GET",
-            "/api/bets?order=stake%20DESC%3BDROP%20TABLE%20bets",
-            json!({}),
+            "POST",
+            "/api/bets/search",
+            json!({"order":"stake DESC;DROP TABLE bets"}),
             &ca
         )
         .await
@@ -467,10 +479,26 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         .map(|i| format!("{}-{i}", "长名称".repeat(20)))
         .collect();
     large_filter.extend(["筛选甲".into(), "筛选乙".into()]);
-    let filter = json!({"period":period,"bettors":serde_json::to_string(&large_filter).unwrap(),"order":"amount_asc"});
+    let filter = json!({"period":period,"bettors":large_filter,"order":"amount_asc"});
     assert!(filter.to_string().len() > 8000);
     let records = ok(&app, "POST", "/api/bets/search", filter, &ca).await;
     assert_eq!(records["total"], 3);
+    assert_eq!(
+        request(&app, "GET", "/api/bets", json!({}), &ca).await.0,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/bets/search",
+            json!({"bettor":"ignored alias"}),
+            &ca
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     // Arrival time must be captured before waiting for the shared work gate.
     *clock.write().unwrap() = date.and_hms_opt(21, 27, 59).unwrap();
     let blocked = registry.work_gate.acquire_many(8).await.unwrap();

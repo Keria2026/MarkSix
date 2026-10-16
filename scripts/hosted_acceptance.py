@@ -574,7 +574,7 @@ def main():
         os.chmod(destination, 0o755)
         os.chmod(destination / "hosted-acceptance.json", 0o644)
         if not args.keep:
-            command("down", "--volumes", "--remove-orphans")
+            command("--profile", "maintenance", "down", "--volumes", "--remove-orphans")
         else:
             print(f"Isolated acceptance installation retained at {root}", flush=True)
     print(json.dumps(result, indent=2))

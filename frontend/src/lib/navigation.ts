@@ -9,12 +9,14 @@ export function glassNavigation(node: HTMLElement, current: string) {
   const measure = () => {
     if (destroyed) return;
     const target = node.querySelector<HTMLElement>(
-      ":scope > button[aria-current='page']",
+      ":scope > .nav-item > button[aria-current='page']",
     );
     if (!target) return;
+    const box = target.getBoundingClientRect();
+    const parent = node.getBoundingClientRect();
     indicator.style.width = `${target.offsetWidth}px`;
     indicator.style.height = `${target.offsetHeight}px`;
-    indicator.style.transform = `translate(${target.offsetLeft}px, ${target.offsetTop}px)`;
+    indicator.style.transform = `translate(${box.left - parent.left + node.scrollLeft}px, ${box.top - parent.top + node.scrollTop}px)`;
     if (!ready) {
       ready = true;
       // Commit the initial position before enabling transitions.

@@ -8,6 +8,7 @@ use axum::{
 };
 use chrono::NaiveDate;
 use marksix::{api, domain::*, store::*, worker};
+include!("../test_support/rules.rs");
 use serde_json::{Value, json};
 use sqlx::types::Json;
 use std::sync::{Arc, RwLock};
@@ -571,9 +572,9 @@ async fn transactional_workflow_and_recovery() {
     assert_eq!(size_fly.0, StatusCode::OK);
     let filtered = request(
         &app,
-        Method::GET,
-        &format!("/api/bets?period={ledger_period}&min_amount=120&max_amount=180"),
-        Value::Null,
+        Method::POST,
+        "/api/bets/search",
+        json!({"period":ledger_period,"min_amount":"120","max_amount":"180"}),
         &cookie,
     )
     .await;
@@ -869,8 +870,54 @@ async fn transactional_workflow_and_recovery() {
         "{}",
         invalid_batch.1
     );
-    let updated_batch=request(&app,Method::POST,"/api/plays/batch",json!({"targets":batch_targets,"action":"update","odds":"44","rebate_percent":"8","enabled":false}),&cookie).await;
+    // First target permits this limit; the second does not. Earlier writes must roll back.
+    for patch in [
+        json!({"selection_limit":4}),
+        json!({"name":"覆盖名称"}),
+        json!({"quantity":null}),
+        json!({"compound_enabled":"true"}),
+        json!({"scope":"unknown"}),
+        json!({"special_odds":"3.12345"}),
+        json!({}),
+    ] {
+        let rejected = request(
+            &app,
+            Method::POST,
+            "/api/plays/batch",
+            json!({"targets":batch_targets,"action":"update","rule":patch}),
+            &cookie,
+        )
+        .await;
+        assert_eq!(
+            rejected.0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            rejected.1
+        );
+        for (id, version) in [(imported_id, imported_version), (play_id, target_version)] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT version FROM plays WHERE id=?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                version
+            );
+        }
+    }
+    let updated_batch=request(&app,Method::POST,"/api/plays/batch",json!({"targets":batch_targets,"action":"update","odds":"44","rebate_percent":"8","enabled":false,"rule":{"special_odds":"3.25","special_rebate_percent":"1.25","selection_limit":null}}),&cookie).await;
     assert_eq!(updated_batch.0, StatusCode::OK, "{}", updated_batch.1);
+    for id in [imported_id, play_id] {
+        let rule: Json<Value> = sqlx::query_scalar("SELECT rule FROM plays WHERE id=?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rule["special_odds"], "3.25");
+        assert_eq!(rule["special_rebate_percent"], "1.25");
+        assert!(rule["selection_limit"].is_null());
+    }
+
     assert_eq!(
         request(
             &app,

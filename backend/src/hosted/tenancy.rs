@@ -50,6 +50,7 @@ pub(super) async fn pool(a: &Account, max: u32) -> anyhow::Result<MySqlPool> {
 }
 struct Entry {
     state: AppState,
+    router: axum::Router,
     users: Arc<AtomicUsize>,
     touched: Instant,
 }
@@ -59,6 +60,7 @@ impl Entry {
         self.touched = Instant::now();
         TenantLease {
             state: self.state.clone(),
+            router: self.router.clone(),
             users: self.users.clone(),
         }
     }
@@ -73,6 +75,7 @@ impl Entry {
 }
 pub(super) struct TenantLease {
     state: AppState,
+    pub router: axum::Router,
     users: Arc<AtomicUsize>,
 }
 impl Deref for TenantLease {
@@ -91,6 +94,7 @@ const WARM_TENANTS: usize = 12;
 pub(super) struct Registry {
     pub control: Control,
     states: Arc<Mutex<HashMap<String, Entry>>>,
+    cold_load: Arc<Mutex<()>>,
     pub work_gate: Arc<Semaphore>,
     risk_gate: Arc<Semaphore>,
     draw_cache: crate::store::DrawCache,
@@ -102,12 +106,17 @@ impl Registry {
         Ok(Self {
             control,
             states: Arc::default(),
+            cold_load: Arc::default(),
             work_gate: Arc::new(Semaphore::new(8)),
             risk_gate: Arc::new(Semaphore::new(1)),
             draw_cache: Arc::default(),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
-                .user_agent("MarkSix/Dev1.0 (+hosted statistics)")
+                .user_agent(concat!(
+                    "MarkSix/",
+                    env!("CARGO_PKG_VERSION"),
+                    " (+hosted statistics)"
+                ))
                 .build()?,
             clock: Arc::new(|| {
                 chrono::Utc::now()
@@ -117,6 +126,11 @@ impl Registry {
         })
     }
     pub async fn lease(&self, a: &Account) -> ApiResult<TenantLease> {
+        if let Some(entry) = self.states.lock().await.get_mut(&a.id) {
+            return Ok(entry.borrow());
+        }
+        // SQL and pool close never hold the state-map lock used by warm requests.
+        let _cold = self.cold_load.lock().await;
         let mut states = self.states.lock().await;
         if let Some(entry) = states.get_mut(&a.id) {
             return Ok(entry.borrow());
@@ -124,7 +138,7 @@ impl Registry {
         // Bound *all* live pools, not just each customer's pool. In-flight
         // requests and risk jobs pin their context; idle LRU contexts can close.
         // 12 pools x 2 connections = at most 24 customer connections per process.
-        if states.len() >= WARM_TENANTS {
+        let evicted = if states.len() >= WARM_TENANTS {
             let oldest = states
                 .iter()
                 .filter(|(_, entry)| entry.evictable())
@@ -136,7 +150,12 @@ impl Registry {
                     "服务器正在完成已有任务，请稍后重试".into(),
                 )
             })?;
-            let old = states.remove(&id).unwrap();
+            Some(states.remove(&id).unwrap())
+        } else {
+            None
+        };
+        drop(states);
+        if let Some(old) = evicted {
             old.state.pool.close().await;
         }
         let pool = pool(a, 2).await?;
@@ -153,12 +172,13 @@ impl Registry {
         });
         crate::worker::recover(&state).await?;
         let mut entry = Entry {
+            router: crate::api::router(state.clone()),
             state,
             users: Arc::new(AtomicUsize::new(0)),
             touched: Instant::now(),
         };
         let lease = entry.borrow();
-        states.insert(a.id.clone(), entry);
+        self.states.lock().await.insert(a.id.clone(), entry);
         Ok(lease)
     }
     #[cfg(test)]

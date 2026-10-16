@@ -1,6 +1,7 @@
 <script lang="ts">
   import { X } from "lucide-svelte";
   import type { Snippet } from "svelte";
+  import { lockPage, modalMotion } from "../lib/modal";
   let {
     title,
     onclose,
@@ -16,8 +17,12 @@
   } = $props();
   let dialog: HTMLDialogElement;
   $effect(() => {
-    dialog?.showModal();
-    return () => dialog?.close();
+    dialog.showModal();
+    const unlock = lockPage(dialog);
+    return () => {
+      dialog.close();
+      unlock();
+    };
   });
 </script>
 
@@ -25,9 +30,10 @@
   bind:this={dialog!}
   class="modal glass"
   class:wide
-  {onclose}
+  in:modalMotion|global
   oncancel={(event) => {
-    if (!dismissible) event.preventDefault();
+    event.preventDefault();
+    if (dismissible) onclose();
   }}
   aria-label={title}
 >
@@ -38,7 +44,7 @@
       class="icon-button"
       aria-label="关闭对话框"
       disabled={!dismissible}
-      onclick={() => dialog.close()}><X size={20} /></button
+      onclick={onclose}><X size={20} /></button
     >
   </div>
   <div class="modal-body">{@render children()}</div>

@@ -1,5 +1,6 @@
 //! Deterministic, reproducible 10,000-unit exact-risk workloads.
 use marksix::{domain::*, risk};
+include!("../test_support/rules.rs");
 use std::{sync::atomic::AtomicBool, time::Duration};
 fn main() {
     let seconds = std::env::var("BENCH_SECONDS")
@@ -144,8 +145,8 @@ fn main() {
         ) {
             Ok(result) => {
                 for (numbers, expected) in [
-                    (result.best_draw, result.max_net.unwrap()),
-                    (result.worst_draw, result.min_net.unwrap()),
+                    (result.best_draw, result.max_net),
+                    (result.worst_draw, result.min_net),
                 ] {
                     let draw = Draw::predicted(numbers, &mapping);
                     assert_eq!(

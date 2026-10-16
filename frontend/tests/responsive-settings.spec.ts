@@ -1,12 +1,9 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./authenticated";
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("客户账号").fill("test-admin");
-  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
-  await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
@@ -17,9 +14,7 @@ test("statistics submenu highlights only the current section on mobile and deskt
 }) => {
   const nav = page.getByRole("navigation", { name: "主要导航" });
   await nav.getByRole("button", { name: "本期统计", exact: true }).click();
-  await nav
-    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
-    .click();
+  await nav.getByRole("button", { name: "本期统计", exact: true }).click();
   const submenu = nav.locator(".nav-submenu");
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 844 });

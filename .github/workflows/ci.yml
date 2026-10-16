@@ -49,6 +49,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - name: Locked Rust dependency security gate
+        run: python3 scripts/audit_dependencies.py
       - name: Rust checks and database transactions
         working-directory: backend
         run: |
@@ -58,6 +60,7 @@ jobs:
           cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
           cargo test --locked --lib hosted::tests -- --ignored
+          cargo test --locked --lib worker::recovery_tests -- --ignored
           cargo build --locked --example e2e_server
           cargo run --release --locked --example risk_bench
       - name: Customer rules runtime accounting acceptance
@@ -74,6 +77,7 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/*.ts' '*.ts'
+          bun audit
           bun run check
           bun x playwright test --list
           bun run build
@@ -119,6 +123,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: backend
+          build-args: MARKSIX_REVISION=${{ github.sha }}
           load: true
           tags: ${{ steps.names.outputs.backend }}
           cache-from: type=gha,scope=backend
@@ -182,7 +187,7 @@ jobs:
           docker push "$FRONTEND_IMAGE"
           printf 'Backend: `%s`\nFrontend: `%s`\n' "$BACKEND_IMAGE" "$FRONTEND_IMAGE" >> "$GITHUB_STEP_SUMMARY"
   deploy:
-    name: Deploy Dev1.0 to VPS
+    name: Deploy MarkSix to VPS
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [verify, images]
     runs-on: ubuntu-latest
@@ -195,11 +200,23 @@ jobs:
       contents: read
       actions: read
     steps:
+      - uses: actions/checkout@v4
+      - name: Reject superseded master builds inside the production queue
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getBranch({ ...context.repo, branch: 'master' });
+            const allowed = data.commit.sha === context.sha;
+            core.setOutput('allowed', String(allowed));
+            if (!allowed) core.notice('Skipping superseded master artifact; production was not changed.');
       - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.allowed == 'true'
         with:
           name: MarkSix-Ubuntu-x64
           path: tested-release
       - name: Transfer and deploy the tested artifact
+        if: steps.gate.outputs.allowed == 'true'
         env:
           VPS_HOST: ${{ vars.VPS_HOST }}
           VPS_USER: ${{ vars.VPS_USER }}
@@ -218,18 +235,35 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/marksix"
           printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/marksix" "$HOME/.ssh/known_hosts"
-          trap 'rm -f "$HOME/.ssh/marksix"' EXIT
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if [[ -n "${stage:-}" ]]; then
+              ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "python3 - discard $receive_args" < deploy/vps/receive.py || true
+            fi
+            rm -f "$HOME/.ssh/marksix"
+            exit "$result"
+          }
+          trap cleanup EXIT
           ssh_options=(-i "$HOME/.ssh/marksix" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
-          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "sudo -n install -d -m 755 -o $VPS_USER /opt/marksix/releases/$GITHUB_SHA"
           tar -cf tested-release.tar -C tested-release .
-          scp "${ssh_options[@]}" -P "$VPS_PORT" tested-release.tar "$VPS_USER@$VPS_HOST:/opt/marksix/releases/$GITHUB_SHA/package.tar"
-          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "tar -xf /opt/marksix/releases/$GITHUB_SHA/package.tar -C /opt/marksix/releases/$GITHUB_SHA && sudo -n systemd-run --unit=marksix-deploy-$GITHUB_SHA --collect --wait --pipe /bin/bash /opt/marksix/releases/$GITHUB_SHA/hosted/release.sh $GITHUB_SHA $VPS_USER"
+          archive_bytes=$(stat -c '%s' tested-release.tar)
+          package_bytes=$(python3 -c 'import tarfile; print(sum(m.size for m in tarfile.open("tested-release.tar")))')
+          image_bytes=$(python3 -c 'import json; print(json.load(open("tested-release/manifest.json"))["image_unpacked_bytes"])')
+          for bytes in "$archive_bytes" "$package_bytes" "$image_bytes" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT"; do [[ "$bytes" =~ ^[1-9][0-9]*$ ]]; done
+          receive_args="$GITHUB_SHA $GITHUB_RUN_NUMBER $GITHUB_RUN_ATTEMPT $archive_bytes $package_bytes $image_bytes"
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "python3 - prepare $receive_args" < deploy/vps/receive.py
+          stage="/opt/marksix/releases/.incoming-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA"
+          scp "${ssh_options[@]}" -P "$VPS_PORT" tested-release.tar "$VPS_USER@$VPS_HOST:$stage/package.tar"
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "python3 - extract $receive_args" < deploy/vps/receive.py
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "sudo -n systemd-run --unit=marksix-deploy-$GITHUB_SHA-$GITHUB_RUN_ATTEMPT --collect --wait --pipe /bin/bash /opt/marksix/releases/$GITHUB_SHA/hosted/release.sh $GITHUB_SHA $VPS_USER $GITHUB_RUN_NUMBER $GITHUB_RUN_ATTEMPT"
       - name: Verify public domain routing
+        if: steps.gate.outputs.allowed == 'true'
         env:
           PUBLIC_APP_URL: ${{ vars.APP_URL || 'https://3801.win' }}
           PUBLIC_ADMIN_URL: ${{ vars.ADMIN_URL || 'https://admin.3801.win' }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_APP_URL%/}/api/site" | python3 -c 'import json,sys; assert json.load(sys.stdin)["mode"]=="hosted"'
-          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_ADMIN_URL%/}/api/site" | python3 -c 'import json,sys; assert json.load(sys.stdin)["mode"]=="authority"'
-          printf 'Dev1.0 production commit: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_APP_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="hosted" and data["commit"]==os.environ["GITHUB_SHA"]'
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_ADMIN_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="authority" and data["commit"]==os.environ["GITHUB_SHA"]'
+          printf 'MarkSix production commit: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

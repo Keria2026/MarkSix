@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { site } from "./lib/site";
+  import { onMount, onDestroy } from "svelte";
   import { pageFade } from "./lib/navigation";
   import {
     Users,
@@ -14,8 +15,41 @@
     Copy,
     AlertTriangle,
   } from "lucide-svelte";
-  import { api, ApiError } from "./lib/types";
+  import { createRequestScope } from "./lib/requests";
   import Modal from "./components/Modal.svelte";
+  function invalid(status: number) {
+    if (status === 401 && loggedIn) resetAccount();
+  }
+  let requests = createRequestScope(invalid);
+  async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+    return requests.api<T>(path, options);
+  }
+  onDestroy(() => requests.dispose());
+  function resetAccount() {
+    requests.dispose();
+    requests = createRequestScope(invalid);
+    loggedIn = false;
+    customers = [];
+    codes = [];
+    events = [];
+    admins = [];
+    password = "";
+    operator = "";
+    search = "";
+    tab = "accounts";
+    target = null;
+    dialog = null;
+    newName = "";
+    newPassword = "";
+    issuedCode = "";
+    confirmation = "";
+    action = "";
+    notice = "";
+    modalError = "";
+    permanent = false;
+    days = 30;
+    redeemDate = "";
+  }
   interface Customer {
     id: string;
     username: string;
@@ -151,7 +185,6 @@
       if (tab === "audit")
         events = (await api<{ items: Audit[] }>("/audit")).items;
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) loggedIn = false;
       error = e instanceof Error ? e.message : "加载失败";
     }
   }
@@ -175,19 +208,15 @@
     }
   }
   async function logout() {
+    const logout = createRequestScope(() => {});
+    resetAccount();
     busy = true;
     try {
-      await api("/logout", { method: "POST" });
-      loggedIn = false;
-      customers = [];
-      codes = [];
-      events = [];
-      admins = [];
-      issuedCode = "";
-      dialog = null;
-    } catch (e) {
-      error = e instanceof Error ? e.message : "退出失败";
+      await logout.api("/logout", { method: "POST" });
+    } catch {
+      error = "退出请求未完成，请重试或关闭页面";
     } finally {
+      logout.dispose();
       busy = false;
     }
   }
@@ -309,7 +338,7 @@
 {:else if !loggedIn}<main class="owner-login">
     <section class="glass">
       <div class="brand-mark">M</div>
-      <p class="eyebrow">AUTH · DEV1.0</p>
+      <p class="eyebrow">AUTH · {site.version}</p>
       <h1>auth 管理端</h1>
       <p class="owner-muted">管理客户、授权与激活码</p>
       <form onsubmit={login}>
@@ -368,7 +397,7 @@
     <main class="owner-main" use:pageFade={tab}>
       <header>
         <div>
-          <p class="eyebrow">AUTH · DEV1.0</p>
+          <p class="eyebrow">AUTH · {site.version}</p>
           <h1>{tabs.find((t) => t.id === tab)?.label}</h1>
         </div>
         <button class="button secondary" disabled={busy} onclick={refresh}

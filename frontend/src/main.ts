@@ -1,11 +1,14 @@
 import { mount } from "svelte";
 import "./app.css";
+import { site as metadata } from "./lib/site";
 const target = document.getElementById("app")!;
 async function start() {
   try {
     const response = await fetch("/api/site", { credentials: "same-origin" });
     if (!response.ok) throw new Error("无法连接服务，请稍后刷新重试。");
     const site = await response.json();
+    metadata.version = site.version ?? "";
+    metadata.commit = site.commit ?? "";
     document.documentElement.dataset.mode = site.mode;
     const { default: App } =
       site.mode === "authority"

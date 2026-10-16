@@ -1,0 +1,9 @@
+[
+  {
+    "package": "rsa",
+    "version": "0.9.10",
+    "id": "RUSTSEC-2023-0071",
+    "review_by": "2027-01-01",
+    "reason": "sqlx-mysql only uses RsaPublicKey.encrypt for database authentication; this application performs no RSA private-key operation. The timing advisory has no upstream fix. Re-review on dependency or TLS/authentication changes; do not add private-key operations."
+  }
+]
