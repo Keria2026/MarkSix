@@ -1084,6 +1084,9 @@
             >
               {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }] as sub}<button
                   class:active={statisticsCategory === sub.id}
+                  aria-current={statisticsCategory === sub.id
+                    ? "location"
+                    : undefined}
                   onclick={() => {
                     statisticsCategory = sub.id as typeof statisticsCategory;
                     if (sub.id === "records")
