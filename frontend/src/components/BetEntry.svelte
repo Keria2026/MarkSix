@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import {
     AlertCircle,
     CheckCircle2,
@@ -36,6 +36,7 @@
     api as Api,
   } from "../lib/types";
   import { createRequestScope } from "../lib/requests";
+  import { parseSelections } from "../lib/selection";
   let {
     boot,
     draft = $bindable(),
@@ -62,6 +63,36 @@
   onDestroy(requests.dispose);
   let busy = $state(false),
     selectionError = $state("");
+  let selectionText = $state("");
+  let textInvalid = $state(false);
+  function syncSelectionText() {
+    selectionText = currentPlay
+      ? draft.selections
+          .map((value) => label(currentPlay.rule.kind, value))
+          .join(" ")
+      : "";
+    textInvalid = false;
+  }
+  function enterSelections(value: string) {
+    selectionText = value;
+    if (!currentPlay) return;
+    try {
+      const next = parseSelections(currentPlay.rule.kind, value);
+      if (
+        currentPlay.rule.kind === "zodiac_count" &&
+        next.some((n) => n !== currentPlay.rule.zodiac_count)
+      )
+        throw new Error(`本玩法只允许 ${currentPlay.rule.zodiac_count} 种生肖`);
+      const error = selectionBoundary(currentPlay.rule, next, draft.compound);
+      if (error) throw new Error(error);
+      draft.selections = next;
+      selectionError = "";
+      textInvalid = false;
+    } catch (e) {
+      selectionError = fail(e);
+      textInvalid = true;
+    }
+  }
   function fail(e: unknown) {
     return e instanceof Error ? e.message : "操作失败，请重试";
   }
@@ -81,6 +112,24 @@
     boot?.plays.find((p) => p.id === draft.playId && p.enabled) ??
       boot?.plays.find((p) => p.enabled),
   );
+  $effect(() => {
+    const kind = currentPlay?.rule.kind;
+    const selections = [...draft.selections];
+    untrack(() => {
+      if (!kind || textInvalid) return;
+      try {
+        const typed = parseSelections(kind, selectionText);
+        if (
+          typed.length !== selections.length ||
+          typed.some((n, i) => n !== selections[i])
+        )
+          syncSelectionText();
+      } catch {
+        textInvalid = true;
+        selectionError = "玩法选项已变化，请清空后重新选择投注项";
+      }
+    });
+  });
   const selectedCount = $derived(
     currentPlay
       ? basicCount(currentPlay.rule, draft.selections, draft.compound)
@@ -88,6 +137,7 @@
   );
   const inputValid = $derived(
     !!currentPlay &&
+      !textInvalid &&
       selectedCount > 0 &&
       selectedCount <= 1000 &&
       /^\d+$/.test(draft.amount) &&
@@ -116,6 +166,7 @@
       : "",
   );
   function selectPlay(value: number) {
+    if (draft.playId === value) return;
     draft.playId = value;
     const selectedRule = boot?.plays.find((play) => play.id === value)?.rule;
     draft.selections =
@@ -124,6 +175,7 @@
         : [];
     draft.compound = false;
     selectionError = "";
+    syncSelectionText();
   }
   function setCompound(next: boolean) {
     if (currentPlay) {
@@ -141,6 +193,7 @@
     if (draft.selections.includes(value)) {
       draft.selections = draft.selections.filter((n) => n !== value);
       selectionError = "";
+      syncSelectionText();
       return;
     }
     const next = [...draft.selections, value];
@@ -154,6 +207,7 @@
     }
     selectionError = "";
     draft.selections = next;
+    syncSelectionText();
   }
   function matchPlay() {
     const exact = matchingPlays.find(
@@ -180,6 +234,7 @@
       });
       draft.pendingSubmission = null;
       draft.selections = [];
+      syncSelectionText();
       notify("投注已记录，正在更新本期风险");
       await onrecorded();
     } catch (e) {
@@ -333,10 +388,40 @@
             : `选择数量${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个${currentPlay.rule.quantity === 1 ? "；多选逐项拆注" : "；允许的超额选择按阈值拆注"}`}</span
         ><button
           class="text-button"
-          onclick={() => (draft.selections = [])}
-          disabled={!draft.selections.length}>清空选择</button
+          onclick={() => {
+            draft.selections = [];
+            selectionError = "";
+            syncSelectionText();
+          }}
+          disabled={!draft.selections.length && !selectionText}>清空选择</button
         >
       </div>
+      <label class="play-search selection-input"
+        >输入投注项<input
+          type="text"
+          maxlength="2048"
+          value={selectionText}
+          aria-invalid={textInvalid}
+          aria-describedby={selectionError
+            ? "selection-error"
+            : "selection-input-help"}
+          oninput={(event) => enterSelections(event.currentTarget.value)}
+          onkeydown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              enterSelections(event.currentTarget.value);
+            }
+          }}
+          placeholder={currentPlay.rule.kind === "number"
+            ? "例如：01 02，03、04"
+            : currentPlay.rule.kind === "zodiac"
+              ? "例如：鼠 牛，虎、兔"
+              : "输入选项，以空格或标点分隔"}
+        /></label
+      >
+      <p id="selection-input-help" class="field-help">
+        支持空格、中英文标点分隔，重复项只计一次；输入与下方选择同步，超过规则边界时不应用、不提交。
+      </p>
       <div
         class="option-grid"
         class:number-grid={currentPlay.rule.kind === "number"}
@@ -361,7 +446,11 @@
               >{/if}</button
           >{/each}
       </div>
-      {#if selectionError}<p class="inline-error" role="alert">
+      {#if selectionError}<p
+          id="selection-error"
+          class="inline-error"
+          role="alert"
+        >
           {selectionError}
         </p>{/if}
       <div class="selection-meta">

@@ -104,24 +104,48 @@
     effectiveDate = config.tomorrow;
     mapping = structuredClone($state.snapshot(today?.mapping ?? mapping));
   }
+  let closingDraft = $state<{ open_time: string; close_time: string } | null>(
+    null,
+  );
+  let closingError = $state("");
+  function requestClosing(event: SubmitEvent) {
+    event.preventDefault();
+    if (closeTime <= openTime) {
+      notify("封盘时间须晚于开始时间，不能跨日");
+      return;
+    }
+    closingDraft = { open_time: openTime, close_time: closeTime };
+    settingsUsername = username;
+    settingsPassword = "";
+    closingError = "";
+  }
+  function closeClosing() {
+    if (busy) return;
+    closingDraft = null;
+    settingsPassword = "";
+    closingError = "";
+  }
   async function saveClosing(event: SubmitEvent) {
     event.preventDefault();
+    if (!closingDraft) return;
     busy = true;
+    closingError = "";
     try {
       await api("/settings/closing", {
         method: "PUT",
         body: JSON.stringify({
-          open_time: openTime,
-          close_time: closeTime,
+          ...closingDraft,
           username: settingsUsername,
           password: settingsPassword,
         }),
       });
-      await loadSettings();
+      closingDraft = null;
       settingsPassword = "";
-      notify("封盘时间已安排，从下一期生效");
+      await loadSettings();
+      notify("投注时间已安排，从下一期生效");
     } catch (e) {
-      notify(fail(e));
+      closingError = fail(e);
+      settingsPassword = "";
     } finally {
       busy = false;
     }
@@ -194,7 +218,7 @@
       <div></div>
       <span>21:34<small>获取开奖</small></span>
     </div>
-    <form onsubmit={saveClosing}>
+    <form onsubmit={requestClosing}>
       <label
         >新的开始时间<input type="time" bind:value={openTime} required /></label
       >
@@ -208,23 +232,6 @@
       <p class="field-help">
         从下一期生效，当前期不会重新开放。保存前请验证管理员身份。
       </p>
-      <label
-        >验证账号<input
-          bind:value={settingsUsername}
-          autocomplete="username"
-          required
-          maxlength="80"
-        /></label
-      >
-      <label
-        >验证密码<input
-          type="password"
-          bind:value={settingsPassword}
-          autocomplete="current-password"
-          required
-          maxlength="256"
-        /></label
-      >
       <button class="button secondary" disabled={busy}
         >保存时间 <ArrowRight size={15} /></button
       >
@@ -350,6 +357,51 @@
           class="button danger"
           disabled={busy || clearHistoryConfirmation !== "永久清空历史记录"}
           >{busy ? "正在永久清空…" : "确认永久清空"}</button
+        >
+      </div>
+    </form>
+  </Modal>{/if}
+
+{#if closingDraft}<Modal
+    title="验证身份并保存投注时间"
+    dismissible={!busy}
+    onclose={closeClosing}
+  >
+    <form class="rule-form" onsubmit={saveClosing}>
+      <p class="modal-description">
+        新的投注时间为 {closingDraft.open_time} – {closingDraft.close_time}，从下一期生效。请验证当前账号身份。
+      </p>
+      <label
+        >验证账号<input
+          bind:value={settingsUsername}
+          autocomplete="username"
+          required
+          maxlength="80"
+          disabled={busy}
+        /></label
+      >
+      <label
+        >验证密码<input
+          type="password"
+          bind:value={settingsPassword}
+          autocomplete="current-password"
+          required
+          maxlength="256"
+          disabled={busy}
+        /></label
+      >
+      {#if closingError}<p class="inline-error" role="alert">
+          {closingError}
+        </p>{/if}
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="button secondary"
+          onclick={closeClosing}
+          disabled={busy}>取消</button
+        >
+        <button class="button primary" disabled={busy}
+          >{busy ? "正在验证…" : "验证并保存"}</button
         >
       </div>
     </form>

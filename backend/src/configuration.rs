@@ -185,6 +185,8 @@ pub enum BatchChange {
         odds: Option<String>,
         rebate_percent: Option<String>,
         enabled: Option<bool>,
+        #[serde(default)]
+        rule: serde_json::Map<String, Value>,
     },
 }
 pub async fn batch(
@@ -200,12 +202,34 @@ pub async fn batch(
         return Err(String::from("批量操作包含重复玩法").into());
     }
     if let BatchChange::Update {
-        odds: None,
-        rebate_percent: None,
-        enabled: None,
+        odds,
+        rebate_percent,
+        enabled,
+        rule,
     } = &input.change
     {
-        return Err(String::from("请至少设置一个批量修改字段").into());
+        if odds.is_none() && rebate_percent.is_none() && enabled.is_none() && rule.is_empty() {
+            return Err(String::from("请至少设置一个批量修改字段").into());
+        }
+        const FIELDS: &[&str] = &[
+            "kind",
+            "scope",
+            "condition",
+            "relation",
+            "quantity",
+            "combination_size",
+            "compound_enabled",
+            "selection_limit",
+            "zodiac_count",
+            "special_hit_odds",
+            "minimum_hits",
+            "special_odds",
+            "zero_tail_odds",
+            "special_rebate_percent",
+        ];
+        if rule.keys().any(|key| !FIELDS.contains(&key.as_str())) {
+            return Err(String::from("批量规则包含不支持的字段；名称不可批量修改").into());
+        }
     }
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
@@ -237,14 +261,25 @@ pub async fn batch(
                 odds,
                 rebate_percent,
                 enabled,
+                rule,
             } => {
+                let mut merged = serde_json::to_value(&play.rule.0).map_err(anyhow::Error::from)?;
+                merged.as_object_mut().unwrap().extend(rule.clone());
+                play.rule.0 = serde_json::from_value(merged).map_err(|_| {
+                    format!(
+                        "{}：批量设置的字段类型或值不合法；整批尚未保存",
+                        play.rule.name
+                    )
+                })?;
                 if let Some(value) = odds {
                     play.rule.odds = value.clone();
                 }
                 if let Some(value) = rebate_percent {
                     play.rule.rebate_percent = value.clone();
                 }
-                play.rule.validate()?;
+                play.rule
+                    .validate()
+                    .map_err(|message| format!("{}：{message}；整批尚未保存", play.rule.name))?;
                 let version = play.version + 1;
                 let enabled = enabled.unwrap_or(play.enabled);
                 sqlx::query("UPDATE plays SET version=?,rule=?,enabled=?,updated_at=UTC_TIMESTAMP(6) WHERE id=?")

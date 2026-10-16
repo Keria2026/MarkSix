@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./authenticated";
 import AxeBuilder from "@axe-core/playwright";
 import type { Statistics, Period } from "../src/lib/types";
 
@@ -31,9 +31,6 @@ const reportFixture = (period: string, settled = true): Statistics => ({
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("客户账号").fill("test-admin");
-  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
-  await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
@@ -66,20 +63,46 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
         })
         .toBeLessThan(4);
       if (name !== "录入投注") {
-        const expanded = nav.getByRole("button", {
-          name: `收起${name}二级菜单`,
-          exact: true,
+        const toggle = nav.getByRole("button", {
+          name: new RegExp(`(展开|收起)${name}二级菜单`),
         });
-        if (await expanded.count()) await expanded.click();
-        await nav
-          .getByRole("button", { name: `展开${name}二级菜单`, exact: true })
-          .click();
+        const clickToggle = async () => {
+          if (width <= 960) await target.click();
+          else await toggle.click();
+        };
+        if ((await target.getAttribute("aria-expanded")) === "true")
+          await clickToggle();
+        await clickToggle();
         await expect(nav.locator(".nav-submenu")).toBeVisible();
-        await expanded.click();
+        await clickToggle();
         await expect(nav.locator(".nav-submenu")).toHaveCount(0);
       }
     }
   }
+  const statistics = nav.getByRole("button", { name: "本期统计", exact: true });
+  await statistics.click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
+  await nav.getByRole("button", { name: "本期概览", exact: true }).click();
+  await expect(statistics).toHaveAttribute("aria-expanded", "false");
+  const disclosure = nav.getByRole("button", {
+    name: "展开本期统计二级菜单",
+    exact: true,
+  });
+  const primaryBox = (await statistics.boundingBox())!;
+  const arrowBox = (await disclosure.boundingBox())!;
+  expect(
+    Math.abs(
+      primaryBox.y + primaryBox.height / 2 - arrowBox.y - arrowBox.height / 2,
+    ),
+  ).toBeLessThan(3);
+  await disclosure.click();
+  await expect(statistics).toHaveAttribute("aria-expanded", "true");
+  await expect(nav.getByLabel("本期统计分类")).toBeVisible();
+  await nav
+    .getByRole("button", { name: "收起本期统计二级菜单", exact: true })
+    .click();
   expect(
     await nav
       .locator(".nav-indicator")

@@ -34,6 +34,7 @@
     X,
   } from "lucide-svelte";
   import type { LicenseStatus } from "./components/Activation.svelte";
+  import BatchEditor from "./components/BatchEditor.svelte";
   import RecordsTable from "./components/RecordsTable.svelte";
   import SystemSettings from "./components/SystemSettings.svelte";
   import PlayEditor from "./components/PlayEditor.svelte";
@@ -147,6 +148,9 @@
       /* Keep this session's choice. */
     }
   }
+  function menuIsOpen(id: Tab) {
+    return tab === id && submenuExpanded[id as keyof typeof submenuExpanded];
+  }
   function hasSubmenu(id: Tab) {
     return (
       id === "statistics" ||
@@ -166,7 +170,7 @@
     const target = selectedPeriod
       ? document.getElementById(`history-period-${selectedPeriod.id}`)
       : document.querySelector<HTMLButtonElement>(
-          'nav > button[aria-label="历史统计"]',
+          'nav .nav-link[aria-label="历史统计"]',
         );
     target?.focus({ preventScroll: true });
   }
@@ -214,10 +218,6 @@
   let settingsSearch = $state("");
   let selectedPlayIds = $state<number[]>([]);
   let batchOpen = $state<"update" | "delete" | null>(null);
-  let batchOdds = $state("");
-  let batchRebate = $state("");
-  let batchEnabled = $state("");
-  let batchError = $state("");
   let batchTargets = $state<{ id: number; version: number }[]>([]);
   const settingsPlays = $derived(
     boot?.plays.filter((p) =>
@@ -229,48 +229,12 @@
   const selectedConfigurations = $derived(
     boot?.plays.filter((p) => selectedPlayIds.includes(p.id)) ?? [],
   );
-  async function saveBatch(event: SubmitEvent) {
-    event.preventDefault();
-    batchError = "";
-    if (!batchTargets.length) return;
-    busy = true;
-    try {
-      const change =
-        batchOpen === "delete"
-          ? { action: "delete" }
-          : {
-              action: "update",
-              odds: batchOdds.trim() || null,
-              rebate_percent: batchRebate.trim() || null,
-              enabled: batchEnabled === "" ? null : batchEnabled === "true",
-            };
-      await api("/plays/batch", {
-        method: "POST",
-        body: JSON.stringify({
-          targets: batchTargets,
-          ...change,
-        }),
-      });
-      batchOpen = null;
-      selectedPlayIds = [];
-      await refresh();
-      notify("所选玩法已更新，历史投注快照保留");
-    } catch (e) {
-      batchError = fail(e);
-    } finally {
-      busy = false;
-    }
-  }
   function openBatch(action: "update" | "delete") {
     batchTargets = selectedConfigurations.map((p) => ({
       id: p.id,
       version: p.version,
     }));
     batchOpen = action;
-    batchOdds = "";
-    batchRebate = "";
-    batchEnabled = "";
-    batchError = "";
   }
 
   let deletePlayTarget = $state<Play | null>(null);
@@ -688,96 +652,108 @@
     ><span class="sidebar-label">工作空间</span>
     <nav aria-label="主要导航" use:glassNavigation={tab}>
       <div class="nav-indicator" aria-hidden="true"></div>
-      {#each nav as item}<button
-          class:active={tab === item.id}
-          aria-label={item.label}
-          aria-current={tab === item.id ? "page" : undefined}
-          onclick={() => navigate(item.id)}
-          ><item.icon size={19} strokeWidth={1.7} /><span class="nav-label"
-            >{item.label}</span
-          ><span class="nav-label-short" aria-hidden="true">{item.short}</span
-          ></button
-        >
-        {#if tab === item.id && hasSubmenu(item.id)}
-          <div class="nav-disclosure">
+      {#each nav as item}<div class="nav-item">
+          <button
+            class="nav-link"
+            class:active={tab === item.id}
+            aria-label={item.label}
+            aria-current={tab === item.id ? "page" : undefined}
+            aria-expanded={hasSubmenu(item.id)
+              ? menuIsOpen(item.id)
+              : undefined}
+            aria-controls={hasSubmenu(item.id)
+              ? `submenu-${item.id}`
+              : undefined}
+            onclick={() => {
+              if (
+                tab === item.id &&
+                hasSubmenu(item.id) &&
+                !(item.id === "history" && selectedPeriod)
+              )
+                toggleSubmenu(item.id);
+              else void navigate(item.id);
+            }}
+            ><item.icon size={19} strokeWidth={1.7} /><span class="nav-label"
+              >{item.label}</span
+            ><span class="nav-label-short" aria-hidden="true">{item.short}</span
+            >{#if hasSubmenu(item.id)}<ChevronDown
+                size={12}
+                class={`nav-caret ${menuIsOpen(item.id) ? "expanded" : ""}`}
+              />{/if}</button
+          >
+          {#if hasSubmenu(item.id)}
             <button
-              aria-label={`${submenuExpanded[item.id as keyof typeof submenuExpanded] ? "收起" : "展开"}${item.label}二级菜单`}
-              aria-expanded={submenuExpanded[
-                item.id as keyof typeof submenuExpanded
-              ]}
+              class="nav-toggle icon-button"
+              aria-label={`${menuIsOpen(item.id) ? "收起" : "展开"}${item.label}二级菜单`}
+              aria-expanded={menuIsOpen(item.id)}
               aria-controls={`submenu-${item.id}`}
-              onclick={() => toggleSubmenu(item.id)}
+              onclick={() => {
+                if (tab !== item.id) {
+                  void navigate(item.id);
+                  if (!submenuExpanded[item.id as keyof typeof submenuExpanded])
+                    toggleSubmenu(item.id);
+                } else toggleSubmenu(item.id);
+              }}
             >
-              {submenuExpanded[item.id as keyof typeof submenuExpanded]
-                ? "收起"
-                : "展开"}菜单 <ChevronDown
-                size={14}
-                class={submenuExpanded[item.id as keyof typeof submenuExpanded]
-                  ? "expanded"
-                  : ""}
+              <ChevronDown
+                size={15}
+                class={menuIsOpen(item.id) ? "expanded" : ""}
               />
             </button>
-          </div>
-        {/if}
-        {#if item.id === "statistics" && tab === "statistics" && submenuExpanded.statistics}<div
-            class="nav-submenu"
-            id="submenu-statistics"
-            aria-label="本期统计分类"
-          >
-            {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }] as sub}<button
-                class:active={statisticsCategory === sub.id}
-                aria-current={statisticsCategory === sub.id
-                  ? "location"
-                  : undefined}
-                onclick={() => {
-                  statisticsCategory = sub.id as typeof statisticsCategory;
-                  if (sub.id === "records")
-                    void loadRecords(1).catch((e) => notify(fail(e)));
-                }}>{sub.label}</button
-              >{/each}
-          </div>{/if}
-        {#if item.id === "history" && tab === "history" && historyTabs.length && submenuExpanded.history}<div
-            class="nav-submenu history-tabs"
-            id="submenu-history"
-            aria-label="已打开的历史期次"
-          >
-            {#each historyTabs as period (period.id)}
-              <div
-                class="history-tab"
-                class:active={selectedPeriod?.id === period.id}
-              >
-                <button
-                  class:active={selectedPeriod?.id === period.id}
-                  aria-current={selectedPeriod?.id === period.id
+          {/if}
+          {#if item.id === "statistics" && tab === "statistics" && submenuExpanded.statistics}<div
+              class="nav-submenu"
+              id="submenu-statistics"
+              aria-label="本期统计分类"
+            >
+              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }] as sub}<button
+                  class:active={statisticsCategory === sub.id}
+                  aria-current={statisticsCategory === sub.id
                     ? "location"
                     : undefined}
-                  id={`history-period-${period.id}`}
-                  onclick={() => openPeriod(period)}>第 {period.id} 期</button
+                  onclick={() => {
+                    statisticsCategory = sub.id as typeof statisticsCategory;
+                    if (sub.id === "records")
+                      void loadRecords(1).catch((e) => notify(fail(e)));
+                  }}>{sub.label}</button
+                >{/each}
+            </div>{/if}
+          {#if item.id === "history" && tab === "history" && historyTabs.length && submenuExpanded.history}<div
+              class="nav-submenu history-tabs"
+              id="submenu-history"
+              aria-label="已打开的历史期次"
+            >
+              {#each historyTabs as period (period.id)}
+                <div
+                  class="history-tab"
+                  class:active={selectedPeriod?.id === period.id}
                 >
-                <button
-                  class="history-tab-close"
-                  aria-label={`关闭第 ${period.id} 期标签`}
-                  onclick={() => closeHistoryTab(period.id)}
-                  ><X size={14} /></button
-                >
-              </div>
-            {/each}
-          </div>{/if}
-        {#if item.id === "official" && tab === "official" && submenuExpanded.official}<div
-            class="nav-submenu"
-            id="submenu-official"
-          >
-            <button class="active" aria-current="location">调码助手</button>
-          </div>{/if}
-      {/each}
+                  <button
+                    class:active={selectedPeriod?.id === period.id}
+                    aria-current={selectedPeriod?.id === period.id
+                      ? "location"
+                      : undefined}
+                    id={`history-period-${period.id}`}
+                    onclick={() => openPeriod(period)}>第 {period.id} 期</button
+                  >
+                  <button
+                    class="history-tab-close"
+                    aria-label={`关闭第 ${period.id} 期标签`}
+                    onclick={() => closeHistoryTab(period.id)}
+                    ><X size={14} /></button
+                  >
+                </div>
+              {/each}
+            </div>{/if}
+          {#if item.id === "official" && tab === "official" && submenuExpanded.official}<div
+              class="nav-submenu"
+              id="submenu-official"
+            >
+              <button class="active" aria-current="location">调码助手</button>
+            </div>{/if}
+        </div>{/each}
     </nav>
     <div class="sidebar-bottom">
-      <div class="private-card">
-        <span class="private-icon"><ShieldCheck size={19} /></span>
-        <div>
-          <strong>独立账本空间</strong><small>数据由你掌控</small>
-        </div>
-      </div>
       <div class="account">
         <span class="avatar">A</span>
         <div><strong>{username}</strong><small>管理员</small></div>
@@ -1365,25 +1341,16 @@
             >
           </div>
           <div class="play-settings-grid">
-            {#each settingsPlays as play}<div class="play-management-item">
-                <label class="play-select checkbox-line"
-                  ><input
-                    type="checkbox"
-                    aria-label={`选择玩法 ${play.rule.name}`}
-                    checked={selectedPlayIds.includes(play.id)}
-                    onchange={(e) =>
-                      (selectedPlayIds = e.currentTarget.checked
-                        ? [...selectedPlayIds, play.id]
-                        : selectedPlayIds.filter((id) => id !== play.id))}
-                  />选择</label
-                ><button
+            {#each settingsPlays as play}<div
+                class="play-management-item"
+                class:selected-play={selectedPlayIds.includes(play.id)}
+              >
+                <button
                   class="play-setting"
                   class:disabled-play={!play.enabled}
                   onclick={() => openEditor(play)}
                   ><div>
-                    <span class="play-symbol"><Layers3 size={21} /></span><span
-                      class="version-chip">V{play.version}</span
-                    >
+                    <span class="play-symbol"><Layers3 size={21} /></span>
                   </div>
                   <h3>
                     {play.rule.name}
@@ -1406,6 +1373,21 @@
                       >编辑 <ArrowUpRight size={15} /></span
                     >
                   </div></button
+                >
+                <label class="play-select checkbox-line"
+                  ><input
+                    type="checkbox"
+                    aria-label={`选择玩法 ${play.rule.name}`}
+                    checked={selectedPlayIds.includes(play.id)}
+                    onchange={(e) =>
+                      (selectedPlayIds = e.currentTarget.checked
+                        ? [...selectedPlayIds, play.id]
+                        : selectedPlayIds.filter((id) => id !== play.id))}
+                  /><span class="play-select-indicator" aria-hidden="true"
+                    >{#if selectedPlayIds.includes(play.id)}<Check
+                        size={12}
+                      />{/if}</span
+                  ><span>V{play.version}</span></label
                 >
               </div>{/each}
           </div>
@@ -1431,11 +1413,6 @@
         />
       {/if}
     {/if}
-    <footer class="page-footer">
-      <span>MarkSix · 清晰记录，从容掌控</span><span
-        ><ShieldCheck size={12} /> 人民币计价 <i>·</i> 北京时间</span
-      >
-    </footer>
   </main>
 </div>
 
@@ -1789,53 +1766,15 @@
     </div>
   </Modal>{/if}
 
-{#if batchOpen}<Modal
-    title={batchOpen === "delete" ? "批量删除玩法" : "批量调整玩法"}
-    onclose={() => {
-      if (!busy) batchOpen = null;
+{#if batchOpen}<BatchEditor
+    action={batchOpen}
+    targets={batchTargets}
+    {api}
+    onclose={() => (batchOpen = null)}
+    onsaved={async () => {
+      batchOpen = null;
+      selectedPlayIds = [];
+      await refresh();
+      notify("所选玩法已更新，历史投注快照保留");
     }}
-    ><form class="rule-form" onsubmit={saveBatch}>
-      <p class="modal-description">
-        已选择 {batchTargets.length} 条玩法。整批校验后保存；已有投注使用原快照。
-      </p>
-      {#if batchOpen === "delete"}<p class="inline-error">
-          这些玩法将停止录入，历史投注及统计保留。
-        </p>{:else}<label
-          >批量含本赔率<input
-            bind:value={batchOdds}
-            inputmode="decimal"
-            placeholder="留空不修改"
-          /></label
-        ><label
-          >批量反水比例（%）<input
-            bind:value={batchRebate}
-            inputmode="decimal"
-            placeholder="留空不修改"
-          /></label
-        ><label
-          >批量启用状态<select bind:value={batchEnabled}
-            ><option value="">保持原状</option><option value="true"
-              >全部启用</option
-            ><option value="false">全部停用</option></select
-          ></label
-        >
-        <p class="field-help">
-          仅修改普通赔率和普通反水；本命生肖、0
-          尾及一特一平特殊配置保留。留空字段不修改。
-        </p>{/if}{#if batchError}<p class="inline-error" role="alert">
-          {batchError}
-        </p>{/if}
-      <div class="modal-actions">
-        <button
-          type="button"
-          class="button secondary"
-          disabled={busy}
-          onclick={() => (batchOpen = null)}>取消</button
-        ><button
-          class={batchOpen === "delete" ? "button danger" : "button primary"}
-          disabled={busy || !batchTargets.length}
-          >{batchOpen === "delete" ? "确认批量删除" : "保存批量调整"}</button
-        >
-      </div>
-    </form></Modal
-  >{/if}
+  />{/if}

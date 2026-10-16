@@ -29,7 +29,8 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 | hosted/accounts / portal / tenancy | 中央身份及激活／按有效会话分派／账本池与 Router 缓存 |
 | hosted/management / history | auth 管理／历史清空与备份凭据 |
 | App / Workspace | 客户认证壳／账号内导航与账本协调 |
-| BetEntry / PlayEditor / SystemSettings | 投注草稿与报价／玩法编辑／配置及历史清空 |
+| BetEntry / PlayEditor / BatchEditor / SystemSettings | 投注草稿与报价／单条编辑／批量变更／配置及历史清空 |
+| selection / modal | 文本选项解析／共享弹窗滚动锁与动效 |
 | requests / Management | 可销毁请求作用域／auth 管理界面 |
 
 客户默认玩法来自 backend/src/default-plays.json，与 fixtures/customer-plays.json 逐字段一致；测试校验此契约。稳定计算夹具单独存于 backend/test_support，不进入生产业务默认值。
@@ -57,6 +58,8 @@ python3 scripts/runtime_acceptance.py
 ```
 
 风险故障测试通过测试管理连接安装／移除临时触发器，仅接受 marksix_test。业务连接不因此获得生产管理权限。
+
+纯界面套件通过 tests/authenticated.ts 在 worker 内复用真实会话，凭据与 cookie 不写入文件；登录、失效与托管隔离测试独立执行，不关闭生产限流。
 
 浏览器夹具固定北京时间 2026-10-14 12:00，仅监听回环，不编译进生产镜像。完整重跑前重启夹具以重置数据库。
 
@@ -86,6 +89,7 @@ python3 scripts/hosted_acceptance.py --backend marksix-backend:v1-test --fronten
 - auth：CONTROL_DATABASE_URL、PROVISION_DATABASE_URL、AUTHORITY_ADMIN_USERNAME、AUTHORITY_ADMIN_PASSWORD、TENANT_DB_HOST/PORT、BACKUP_ROOT。
 - MarkSix：受限 CONTROL_DATABASE_URL、TENANT_DB_HOST/PORT、INTERNAL_AUTHORITY_URL。
 - 测试：TEST_DATABASE_URL 与 TEST_PROVISION_DATABASE_URL 必须同属专用 marksix_test，TEST_ADMIN_PASSWORD 至少 12 字符；浏览器缓存可设置 PLAYWRIGHT_BROWSERS_PATH。
+- 批量规则 `POST /api/plays/batch` 保留 odds、rebate_percent、enabled 字段；rule 为增量对象，省略的键保留原值，null 只用于可空字段清除。仅允许规则白名单字段，名称不可批量设置；每条合并后复用 Rule.validate，整批事务与版本校验。
 - 投注筛选统一为 POST /api/bets/search；bettors、play_ids 是 JSON 数组。GET /api/bets 与单字段旧筛选已移除。排序仅支持 newest、amount_asc、amount_desc；金额为整条本金。
 - 包版本以 backend/Cargo.toml 为唯一来源，构建可注入 MARKSIX_REVISION；/api/site 提供版本和提交，前端不另维护产品版本。
 - 历史 SQL 迁移不可改写。现有规则和基础注的缺省字段继续服务持久化快照；风险缓存通过 0008 失效，移除旧净额回退公式。

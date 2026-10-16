@@ -1,11 +1,8 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./authenticated";
 import { randomUUID } from "node:crypto";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.getByLabel("客户账号").fill("test-admin");
-  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
-  await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
@@ -65,12 +62,15 @@ test("same-name import and multi-select changes preserve IDs and manage all sele
         .map((p: { version: number }) => p.version),
     ).toEqual([2, 2]);
     await page.getByLabel("搜索配置玩法").fill(prefix);
+    await expect(page.getByLabel("搜索配置玩法")).toHaveValue(prefix);
+    await expect(page.locator(".play-management-item")).toHaveCount(2);
     await page.getByLabel("选择当前结果").check();
     await page.getByRole("button", { name: "批量调整", exact: true }).click();
     const dialog = page.getByRole("dialog", {
       name: "批量调整玩法",
       exact: true,
     });
+    await expect(dialog).toContainText("已选择 2 条玩法");
     await dialog.getByLabel("批量含本赔率").fill("46");
     await dialog.getByLabel("批量反水比例（%）").fill("9");
     // A background refresh must not silently replace the versions reviewed in this dialog.
@@ -84,7 +84,7 @@ test("same-name import and multi-select changes preserve IDs and manage all sele
     });
     expect(external.ok()).toBe(true);
     await expect(
-      page.getByRole("button").filter({
+      page.locator(".play-management-item").filter({
         has: page.getByRole("heading", {
           name: plays[0].rule.name,
           exact: true,
@@ -99,6 +99,38 @@ test("same-name import and multi-select changes preserve IDs and manage all sele
     await page.getByRole("button", { name: "批量调整", exact: true }).click();
     await dialog.getByLabel("批量含本赔率").fill("46");
     await dialog.getByLabel("批量反水比例（%）").fill("9");
+    await dialog
+      .locator("summary")
+      .filter({ hasText: "开奖、数量与复式" })
+      .click();
+    await dialog
+      .getByLabel("批量投注对象", { exact: true })
+      .selectOption("tail");
+    await dialog
+      .getByLabel("批量开奖对比范围", { exact: true })
+      .selectOption("all");
+    await dialog
+      .getByLabel("批量命中条件", { exact: true })
+      .selectOption("none");
+    await dialog.getByLabel("批量数量关系", { exact: true }).selectOption("eq");
+    await dialog.getByLabel("批量数量阈值", { exact: true }).fill("1");
+    await dialog.getByLabel("批量每注选项数", { exact: true }).fill("1");
+    await dialog
+      .getByLabel("批量复式状态", { exact: true })
+      .selectOption("true");
+    await dialog.getByLabel("批量最少命中数", { exact: true }).fill("1");
+    await dialog.getByLabel("批量最多可选数量", { exact: true }).fill("5");
+    await dialog.getByLabel("清除目标生肖种数", { exact: true }).check();
+    await dialog
+      .locator("summary")
+      .filter({ hasText: "特殊赔率与反水" })
+      .click();
+    await dialog.getByLabel("批量本命肖特殊赔率", { exact: true }).fill("1.75");
+    await dialog
+      .getByLabel("批量本命肖特殊反水（%）", { exact: true })
+      .fill("4");
+    await dialog.getByLabel("批量0 尾特殊赔率", { exact: true }).fill("4.1234");
+    await dialog.getByLabel("清除一特一平赔率", { exact: true }).check();
 
     await dialog
       .getByRole("button", { name: "保存批量调整", exact: true })
@@ -110,7 +142,27 @@ test("same-name import and multi-select changes preserve IDs and manage all sele
       expect(p.version).toBe(id === ids[0] ? 4 : 3);
       expect(p.rule.odds).toBe("46");
       expect(p.rule.rebate_percent).toBe("9");
+      expect(p.rule).toMatchObject({
+        kind: "tail",
+        scope: "all",
+        condition: "none",
+        relation: "eq",
+        quantity: 1,
+        combination_size: 1,
+        compound_enabled: true,
+        minimum_hits: 1,
+        selection_limit: 5,
+        zodiac_count: null,
+        special_odds: "1.75",
+        special_rebate_percent: "4",
+        zero_tail_odds: "4.1234",
+        special_hit_odds: null,
+      });
     }
+    expect(
+      state.plays.filter((p: { id: number }) => !ids.includes(p.id)),
+    ).toEqual(boot.plays);
+    await expect(page.locator(".play-management-item")).toHaveCount(2);
     await page.getByLabel("选择当前结果").check();
     await page.getByRole("button", { name: "批量删除", exact: true }).click();
     await page
@@ -119,6 +171,8 @@ test("same-name import and multi-select changes preserve IDs and manage all sele
       .click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.locator(".play-management-item")).toHaveCount(0);
+    const remaining = await (await page.request.get("/api/bootstrap")).json();
+    expect(remaining.plays).toEqual(boot.plays);
     await page.getByRole("button", { name: "配置设置", exact: false }).click();
     await expect(
       page.getByRole("heading", { name: "投注时间", exact: true }),
