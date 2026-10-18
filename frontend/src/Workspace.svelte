@@ -35,9 +35,13 @@
   } from "lucide-svelte";
   import type { LicenseStatus } from "./components/Activation.svelte";
   import BatchEditor from "./components/BatchEditor.svelte";
+  import PlayOrder from "./components/PlayOrder.svelte";
+  import PasswordChange from "./components/PasswordChange.svelte";
   import RecordsTable from "./components/RecordsTable.svelte";
   import SystemSettings from "./components/SystemSettings.svelte";
   import PlayEditor from "./components/PlayEditor.svelte";
+  import SlipComposer from "./components/SlipComposer.svelte";
+  import SlipDetail from "./components/SlipDetail.svelte";
   import BetEntry from "./components/BetEntry.svelte";
   import StatisticsPanel from "./components/Statistics.svelte";
   import Balls from "./components/Balls.svelte";
@@ -55,6 +59,8 @@
   import type {
     Bootstrap,
     BetDraft,
+    RecordGroup,
+    SlipDraftLine,
     Period,
     Play,
     Bet,
@@ -108,7 +114,7 @@
   let globalError = $state("");
   let toast = $state("");
   let toastTimer: ReturnType<typeof setTimeout>;
-  let records = $state<Page<Bet>>({
+  let records = $state<Page<RecordGroup>>({
     items: [],
     total: 0,
     page: 1,
@@ -305,6 +311,41 @@
     if (error instanceof DOMException && error.name === "AbortError") return "";
     return error instanceof Error ? error.message : "操作失败，请重试";
   }
+  let slipItems = $state<SlipDraftLine[]>([]);
+  let slipBusy = $state(false);
+  let slipPeriod = $state("");
+  let slipPending = $state<{ key: string; id: string } | null>(null);
+  let slipDetail = $state<RecordGroup | null>(null);
+  async function showRecord(record: RecordGroup) {
+    if (!record.grouped) return showDetail(record.items[0]);
+    try {
+      slipDetail = await api(`/slips/${record.id}`);
+    } catch (e) {
+      notify(fail(e));
+    }
+  }
+  function addSlipItem(line: SlipDraftLine) {
+    if (!today) return false;
+    if (slipBusy) {
+      notify("组合单正在提交，请稍后操作");
+      return false;
+    }
+    if (slipItems.length && slipPeriod !== today.id) {
+      notify("组合单草稿已跨期，请清空后重新录入");
+      return false;
+    }
+    if (
+      slipItems.length >= 100 ||
+      slipItems.reduce((n, item) => n + item.units, 0) + line.units > 1000
+    ) {
+      notify("组合单最多 100 个分项、1000 条基础注");
+      return false;
+    }
+    if (!slipItems.length) slipPeriod = today.id;
+    slipItems = [...slipItems, line];
+    notify("已加入组合单，尚未入账");
+    return true;
+  }
   let recordsRequest = 0;
   let statisticsRequest = 0;
   async function loadRecords(page = 1) {
@@ -320,7 +361,7 @@
       bettors: selectedBettors,
       play_ids: selectedPlays,
     };
-    const next = await api<Page<Bet>>("/bets/search", {
+    const next = await api<Page<RecordGroup>>("/records/search", {
       method: "POST",
       body: JSON.stringify(query),
     });
@@ -363,6 +404,7 @@
         );
       if (!parties.bettors.length && !parties.receivers.length)
         parties = await api("/parties");
+      if (slipDetail) slipDetail = await api(`/slips/${slipDetail.id}`);
       globalError = "";
     } catch (e) {
       globalError = fail(e);
@@ -427,6 +469,7 @@
     }
   }
   const signOut = () => onlogout();
+  let orderOpen = $state(false);
   async function exportPlays(id?: number) {
     try {
       const file = await api(`/plays/export${id ? `?id=${id}` : ""}`);
@@ -837,7 +880,7 @@
           </div>
           <strong class="stat-value">{money(active.totals.stake)}</strong>
           <div class="stat-foot">
-            <span>{active.totals.records} 条记录</span><i></i><span
+            <span>{active.totals.records} 个有效分项</span><i></i><span
               >{active.totals.units} 条基础注</span
             >
           </div>
@@ -1039,6 +1082,7 @@
         </div>{/if}
       {#if report && report.period === active.id}<StatisticsPanel
           {report}
+          {api}
           compact={!selectedPeriod}
           category={selectedPeriod ? historyCategory : "bettors"}
           onbettor={filterBettor}
@@ -1060,7 +1104,7 @@
             notify(fail(e));
           }
         }}
-        {showDetail}
+        showDetail={showRecord}
         onbet={() => navigate("bet")}
       />
     {:else if tab === "bet"}
@@ -1089,6 +1133,20 @@
         {notify}
         onrecorded={() => refresh()}
         onconfigure={() => navigate("settings")}
+        onadd={addSlipItem}
+      />
+      <SlipComposer
+        bind:items={slipItems}
+        bind:busy={slipBusy}
+        bind:pending={slipPending}
+        period={slipPeriod}
+        bettor={betDraft.bettor}
+        {today}
+        {api}
+        onrecorded={async () => {
+          await refresh();
+          notify("组合单已完整入账");
+        }}
       />
     {:else if tab === "history"}
       <section class="page-heading">
@@ -1215,11 +1273,12 @@
               notify(fail(e));
             }
           }}
-          {showDetail}
+          showDetail={showRecord}
           onbet={() => navigate("bet")}
         />
       {:else if report && report.period === today.id}<StatisticsPanel
           {report}
+          {api}
           category={statisticsCategory}
           onpage={loadStatistics}
         />{:else}<div class="empty-panel glass">正在加载本期统计…</div>{/if}
@@ -1275,6 +1334,11 @@
             >
             <button class="button primary" onclick={() => openEditor()}
               ><Plus size={17} /> 新建玩法</button
+            >
+            <button
+              class="button secondary"
+              disabled={!boot?.plays.length}
+              onclick={() => (orderOpen = true)}>排序玩法</button
             >
           </div>{/if}
       </section>
@@ -1396,6 +1460,7 @@
           </div>
         </section>
       {:else}
+        <PasswordChange {api} onchanged={onlogout} />
         <SystemSettings
           {username}
           {today}
@@ -1417,6 +1482,24 @@
 </div>
 
 {#if licenseStatus.active}
+  {#if slipDetail}<SlipDetail
+      record={slipDetail}
+      canCancel={today?.phase === "open" && today?.id === slipDetail.period_id}
+      {api}
+      onclose={() => (slipDetail = null)}
+      onshow={showDetail}
+      onchanged={() => refresh()}
+    />{/if}
+  {#if orderOpen && boot}<PlayOrder
+      plays={boot.plays}
+      {api}
+      onclose={() => (orderOpen = false)}
+      onsaved={async () => {
+        orderOpen = false;
+        await refresh();
+        notify("玩法顺序已保存");
+      }}
+    />{/if}
   {#if detail}<Modal title="投注记录详情" wide onclose={() => (detail = null)}
       ><div class="detail-heading">
         <div>

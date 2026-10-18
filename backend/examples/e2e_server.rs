@@ -16,6 +16,7 @@ async fn main() -> anyhow::Result<()> {
         "bet_mutations",
         "layoffs",
         "bets",
+        "bet_slips",
         "periods",
         "play_versions",
         "plays",

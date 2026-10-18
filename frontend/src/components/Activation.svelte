@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PasswordChange from "./PasswordChange.svelte";
   import { ShieldCheck, LoaderCircle, LogOut } from "lucide-svelte";
   import { onDestroy } from "svelte";
   import { createRequestScope } from "../lib/requests";
@@ -90,6 +91,7 @@
     <button class="button secondary" disabled={busy} onclick={onlogout}
       ><LogOut size={16} />退出账号</button
     >
+    <PasswordChange {api} onchanged={onlogout} />
   </section>
 </main>
 

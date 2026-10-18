@@ -128,6 +128,7 @@ async fn erase(
             "DELETE FROM bet_mutations WHERE bet_id IN (SELECT id FROM bets WHERE period_id=?)",
             "DELETE FROM layoffs WHERE period_id=?",
             "DELETE FROM bets WHERE period_id=?",
+            "DELETE FROM bet_slips WHERE period_id=?",
             "DELETE FROM audit_events WHERE period_id=?",
             "DELETE FROM periods WHERE id=?",
         ] {

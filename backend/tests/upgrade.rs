@@ -28,6 +28,7 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
         "bet_mutations",
         "layoffs",
         "bets",
+        "bet_slips",
         "periods",
         "play_versions",
         "plays",

@@ -127,6 +127,7 @@ pub(super) fn router(c: Control) -> Router {
                 )
                 .route("/login", post(login))
                 .route("/customer/history/clear", post(super::history::clear))
+                .route("/customer/password", post(super::accounts::change_password))
                 .route("/health", get(health)),
         )
         .layer(axum::extract::DefaultBodyLimit::max(16384))

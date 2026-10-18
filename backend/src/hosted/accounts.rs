@@ -1,9 +1,13 @@
 use crate::api::{ApiError, ApiResult, digest};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+};
 use chrono::{Datelike, Days, FixedOffset, NaiveDate, Utc};
 use rand::RngCore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, MySqlPool};
 use std::{
@@ -190,6 +194,83 @@ pub(super) async fn customer(control: &Control, headers: &HeaderMap) -> ApiResul
     let token = token(headers, "marksix_session").ok_or_else(unauthorized)?;
     sqlx::query_as::<_,Account>("SELECT a.* FROM hosted_accounts a JOIN hosted_sessions s ON s.account_id=a.id AND s.credential_version=a.credential_version WHERE s.token_hash=? AND s.expires_at>UTC_TIMESTAMP(6) AND a.disabled=FALSE AND a.state='ready'")
         .bind(digest(&token)).fetch_optional(&control.pool).await?.ok_or_else(unauthorized)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PasswordChange {
+    pub old_password: String,
+    pub new_password: String,
+}
+pub(super) async fn change_password(
+    State(c): State<Control>,
+    headers: HeaderMap,
+    Json(input): Json<PasswordChange>,
+) -> ApiResult<Json<Value>> {
+    let first = customer(&c, &headers).await?;
+    c.verify(
+        &first.username,
+        input.old_password.clone(),
+        Some(first.password_hash.clone()),
+    )
+    .await
+    .map_err(|e| {
+        if e.0 == StatusCode::UNAUTHORIZED {
+            invalid("原密码不正确")
+        } else {
+            e
+        }
+    })?;
+    if input.new_password.chars().count() < 12 || input.new_password.len() > 256 {
+        return Err(invalid("新密码须至少 12 个字符且不超过 256 字节"));
+    }
+    if input.old_password == input.new_password {
+        return Err(invalid("新密码不能与原密码相同"));
+    }
+    let permit = c.gate.clone().try_acquire_owned().map_err(|_| {
+        ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "正在验证账号，请稍后重试".into(),
+        )
+    })?;
+    let hash = hash_password(input.new_password).await?;
+    drop(permit);
+    let mut tx = c.pool.begin().await?;
+    let current =
+        sqlx::query_as::<_, Account>("SELECT * FROM hosted_accounts WHERE id=? FOR UPDATE")
+            .bind(&first.id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(unauthorized)?;
+    if current.disabled
+        || current.state != "ready"
+        || current.credential_version != first.credential_version
+        || current.password_hash != first.password_hash
+    {
+        return Err(unauthorized());
+    }
+    let live: Option<String> = sqlx::query_scalar("SELECT token_hash FROM hosted_sessions WHERE account_id=? AND token_hash=? AND credential_version=? AND expires_at>UTC_TIMESTAMP(6) FOR UPDATE")
+        .bind(&first.id).bind(digest(&token(&headers, "marksix_session").ok_or_else(unauthorized)?))
+        .bind(first.credential_version).fetch_optional(&mut *tx).await?;
+    if live.is_none() {
+        return Err(unauthorized());
+    }
+    sqlx::query("UPDATE hosted_accounts SET password_hash=?,credential_version=credential_version+1 WHERE id=?")
+        .bind(hash).bind(&first.id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE hosted_codes SET revoked_at=UTC_TIMESTAMP(6) WHERE account_id=? AND redeemed_at IS NULL AND revoked_at IS NULL")
+        .bind(&first.id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM hosted_sessions WHERE account_id=?")
+        .bind(&first.id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO authority_audit(account_id,event) VALUES(?,'customer_password_changed')",
+    )
+    .bind(&first.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({"ok":true})))
 }
 
 #[derive(Deserialize)]

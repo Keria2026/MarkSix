@@ -1148,6 +1148,7 @@ details[open] > summary svg {
   align-items: start;
 }
 .bet-form {
+  min-width: 0;
   padding: 27px;
 }
 .step {
@@ -1375,6 +1376,7 @@ details[open] > summary svg {
 }
 .quick-amounts {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
 }
@@ -1392,6 +1394,7 @@ details[open] > summary svg {
   color: #385793;
 }
 .bet-summary {
+  min-width: 0;
   padding: 26px;
   position: sticky;
   top: 18px;
@@ -3207,10 +3210,15 @@ td {
 }
 .play-search {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin-bottom: 18px;
   font-size: 13px;
   font-weight: 600;
+}
+.play-search input {
+  min-width: 0;
+  width: 100%;
 }
 .import-preview {
   max-height: 360px;
@@ -3710,4 +3718,194 @@ body {
   min-height: 44px;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.play-order-list {
+  list-style: none;
+  padding: 0;
+  margin: 20px 0;
+  display: grid;
+  gap: 8px;
+}
+.play-order-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffffa8;
+}
+.order-number {
+  width: 28px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.play-order-list strong {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.play-order-list small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+.order-controls {
+  display: flex;
+  flex-shrink: 0;
+}
+.order-controls .icon-button {
+  width: 44px;
+  height: 44px;
+}
+.account-security {
+  padding: 24px;
+  margin-bottom: 24px;
+}
+.account-security > .field-help {
+  margin-bottom: 16px;
+}
+@media (max-width: 480px) {
+  .play-order-list li {
+    padding: 8px 4px;
+    gap: 4px;
+  }
+  .order-number {
+    width: 22px;
+  }
+}
+
+.slip-composer {
+  margin-top: 24px;
+  padding: 24px;
+}
+.slip-draft-list {
+  padding: 0;
+  margin: 18px 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+.slip-draft-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 44px;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  padding: 14px;
+  border-radius: 16px;
+  background: #ffffffb0;
+}
+.slip-draft-list p,
+.slip-detail-items p {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+.slip-draft-list small,
+.slip-detail-items small {
+  color: var(--muted);
+}
+.slip-total {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin: 20px 0;
+}
+.slip-total strong {
+  font-size: 25px;
+}
+.slip-detail-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+.slip-detail-summary > div {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.slip-detail-summary span,
+.slip-detail-summary strong {
+  display: block;
+}
+.slip-detail-summary strong {
+  font-size: 21px;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.slip-detail-items {
+  display: grid;
+  gap: 10px;
+}
+.slip-detail-items article {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.slip-detail-items article > div {
+  min-width: 0;
+}
+.slip-detail-items article > div:last-child {
+  display: grid;
+  gap: 6px;
+  text-align: right;
+}
+@media (max-width: 600px) {
+  .slip-draft-list li {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+  .slip-draft-list li > div {
+    grid-column: 1 / -1;
+  }
+  .slip-detail-summary {
+    grid-template-columns: 1fr;
+  }
+  .slip-detail-items article {
+    flex-direction: column;
+  }
+  .slip-detail-items article > div:last-child {
+    text-align: left;
+  }
+}
+
+.bettor-export {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.bettor-export .form-error {
+  width: 100%;
+}
+.slip-detail-summary span {
+  color: var(--muted);
+}
+
+.play-order-list {
+  max-height: 48dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.slip-draft-list strong,
+.slip-detail-items strong,
+.modal-description {
+  overflow-wrap: anywhere;
+}
+.slip-composer .section-head {
+  flex-wrap: wrap;
+}
+.slip-composer .soft-chip {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }

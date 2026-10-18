@@ -59,6 +59,7 @@ jobs:
           cargo test --locked
           cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
+          cargo test --locked --test receipts -- --ignored
           cargo test --locked --lib hosted::tests -- --ignored
           cargo test --locked --lib worker::recovery_tests -- --ignored
           cargo build --locked --example e2e_server
@@ -70,7 +71,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-acceptance
-          path: test-results/runtime-acceptance.json
+          path: |
+            test-results/runtime-acceptance.json
+            test-results/slip-export.json
           retention-days: 30
       - name: Frontend checks
         working-directory: frontend

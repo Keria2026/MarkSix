@@ -218,6 +218,8 @@ pub struct PeriodView {
 }
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct BetSummary {
+    pub slip_id: Option<String>,
+    pub slip_position: Option<i32>,
     pub bettor: String,
     pub revision: i64,
     pub void_stake: i64,
@@ -240,7 +242,7 @@ pub struct BetSummary {
     pub cancelled_at: Option<NaiveDateTime>,
     pub natal: i8,
 }
-pub const BET_COLUMNS: &str = "bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
+pub const BET_COLUMNS: &str = "slip_id,slip_position,bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FutureMapping {
     pub effective_date: NaiveDate,

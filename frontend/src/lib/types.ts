@@ -106,6 +106,8 @@ export interface Bootstrap {
   zodiacs: string[];
 }
 export interface Bet {
+  slip_id: string | null;
+  slip_position: number | null;
   bettor: string;
   revision: number;
   void_stake: number;
@@ -129,6 +131,8 @@ export interface Bet {
   natal: number;
 }
 export interface Atom {
+  kind: Kind;
+  rebate_percent: string;
   special_hit_odds?: string | null;
   special_hit_payout?: number | null;
   options: number[];
@@ -437,4 +441,29 @@ export interface BetDraft {
   playSearch: string;
   pickerExpanded: boolean;
   pendingSubmission: { key: string; id: string } | null;
+}
+
+export interface RecordGroup {
+  id: string;
+  period_id: string;
+  bettor: string;
+  created_at: string;
+  grouped: boolean;
+  status: string;
+  stake: number;
+  unit_count: number;
+  totals: LedgerTotals;
+  items: Bet[];
+}
+export interface SlipLine {
+  play_id: number;
+  play_version: number;
+  selections: number[];
+  compound: boolean;
+  amount: string;
+}
+export interface SlipDraftLine extends SlipLine {
+  key: string;
+  rule: Rule;
+  units: number;
 }

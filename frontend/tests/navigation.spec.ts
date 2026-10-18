@@ -321,7 +321,7 @@ test("historical periods remain individually closable navigation tabs without de
     if (
       req.method() !== "GET" &&
       req.url().includes("/api/") &&
-      !req.url().endsWith("/bets/search")
+      !req.url().endsWith("/records/search")
     )
       mutations.push(req.url());
   });

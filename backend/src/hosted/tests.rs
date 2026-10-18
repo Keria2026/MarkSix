@@ -317,6 +317,24 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
     let old_bet = uuid::Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor) SELECT ?,?,?,?,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor FROM bets WHERE id=?")
         .bind(&old_bet).bind(uuid::Uuid::new_v4().to_string()).bind("e".repeat(64)).bind(&old.id).bind(bet_id).execute(&sa.pool).await.unwrap();
+    let historical_slip = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO bet_slips(id,request_id,request_hash,period_id,bettor) VALUES(?,?,?,?,?)",
+    )
+    .bind(&historical_slip)
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind("a".repeat(64))
+    .bind(&old.id)
+    .bind("历史客户")
+    .execute(&sa.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE bets SET slip_id=?,slip_position=0 WHERE id=?")
+        .bind(&historical_slip)
+        .bind(&old_bet)
+        .execute(&sa.pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO layoffs(id,bet_id,period_id,receiver,amount,unit_count,stake,rebate,exposure,atoms) SELECT ?,id,period_id,'历史受注者',amount,unit_count,stake,rebate,exposure,atoms FROM bets WHERE id=?")
         .bind(uuid::Uuid::new_v4().to_string()).bind(&old_bet).execute(&sa.pool).await.unwrap();
     sqlx::query("INSERT INTO bet_mutations(request_id,bet_id,request_hash,response) VALUES(?,?,?,JSON_OBJECT())")
@@ -591,7 +609,7 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
     );
     // A fixed account/credential-bound unused code is invalid after reset; paid time stays.
     let unused = code(&management, &owner, aid, 10).await;
-    let new_password = uuid::Uuid::new_v4().to_string();
+    let mut new_password = uuid::Uuid::new_v4().to_string();
     ok(
         &management,
         "PUT",
@@ -619,6 +637,7 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
+    let unused_self = code(&management, &owner, aid, 3).await;
     // Permanent accounts bypass expiry, never normal financial rules or disabling.
     ok(
         &management,
@@ -628,12 +647,112 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         &owner,
     )
     .await;
-    let permanent_ca = login(&app, "客户甲", &new_password).await;
+    let mut permanent_ca = login(&app, "客户甲", &new_password).await;
     assert_eq!(
         ok(&app, "GET", "/api/license", json!({}), &permanent_ca).await["permanent"],
         true
     );
     ok(&app, "GET", "/api/bootstrap", json!({}), &permanent_ca).await;
+    // Self-service password changes use a fresh authority process attempt window.
+    // The production limiter stays enabled; no credential is accepted on caller identity alone.
+    let fresh = Control::new(pool.clone(), None, false, root.clone())
+        .await
+        .unwrap();
+    let self_authority = management::router(fresh.clone());
+    let self_portal = portal::router(Registry::new(fresh).unwrap());
+    let old_grant: Option<chrono::NaiveDate> =
+        sqlx::query_scalar("SELECT authorized_through FROM hosted_accounts WHERE id=?")
+            .bind(aid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let previous_password = new_password.clone();
+    let self_password = uuid::Uuid::new_v4().to_string();
+    assert_eq!(
+        request(
+            &self_authority,
+            "POST",
+            "/api/customer/password",
+            json!({"old_password":"wrong","new_password":self_password}),
+            &permanent_ca
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    ok(&app, "GET", "/api/session", json!({}), &permanent_ca).await;
+    assert_eq!(
+        request(
+            &self_authority,
+            "POST",
+            "/api/customer/password",
+            json!({"old_password":new_password,"new_password":self_password,"account_id":bid}),
+            &permanent_ca
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    ok(
+        &self_authority,
+        "POST",
+        "/api/customer/password",
+        json!({"old_password":new_password,"new_password":self_password}),
+        &permanent_ca,
+    )
+    .await;
+    assert_eq!(
+        request(&app, "GET", "/api/session", json!({}), &permanent_ca)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(
+            &self_portal,
+            "POST",
+            "/api/login",
+            json!({"username":"客户甲","password":new_password}),
+            ""
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    new_password = self_password;
+    permanent_ca = login(&self_portal, "客户甲", &new_password).await;
+    assert_eq!(
+        ok(
+            &self_portal,
+            "GET",
+            "/api/license",
+            json!({}),
+            &permanent_ca
+        )
+        .await["permanent"],
+        true
+    );
+    let grant: Option<chrono::NaiveDate> =
+        sqlx::query_scalar("SELECT authorized_through FROM hosted_accounts WHERE id=?")
+            .bind(aid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(grant, old_grant);
+    assert_eq!(
+        request(
+            &self_portal,
+            "POST",
+            "/api/license/activate",
+            json!({"code":unused_self,"request_id":uuid::Uuid::new_v4()}),
+            &permanent_ca
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    ok(&app, "GET", "/api/session", json!({}), &cb).await;
     ok(
         &management,
         "PUT",
@@ -800,6 +919,7 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
     for secret in [
         &password,
         &new_password,
+        &previous_password,
         &unused,
         &first_code,
         aid,
