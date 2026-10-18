@@ -27,6 +27,13 @@ test("hosted manager creates and activates customer, replaces session and perman
   const manager = await managerContext.newPage();
   const customer = await customerContext.newPage();
   const replacement = await replacementContext.newPage();
+  const readLicense = () =>
+    replacement.evaluate(async () => {
+      const response = await fetch("/api/license");
+      if (!response.ok)
+        throw new Error(`License request failed: HTTP ${response.status}`);
+      return response.json();
+    });
   const errors: string[] = [];
   for (const page of [manager, customer, replacement])
     page.on("pageerror", (e) => errors.push(e.message));
@@ -107,11 +114,8 @@ test("hosted manager creates and activates customer, replaces session and perman
     await expect(replacement.getByRole("status")).toContainText(
       "历史记录已永久清空",
     );
-    const licenseBefore = await (
-      await replacement.request.get(
-        "https://app.marksix.test:18443/api/license",
-      )
-    ).json();
+    const licenseBefore = await readLicense();
+    expect(licenseBefore.authorized_through).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     const changedPassword = crypto.randomUUID();
     await replacement
       .getByRole("button", { name: "修改登录密码", exact: true })
@@ -150,11 +154,8 @@ test("hosted manager creates and activates customer, replaces session and perman
     await expect(
       replacement.getByRole("heading", { name: "本期概览", exact: true }),
     ).toBeVisible();
-    const licenseAfter = await (
-      await replacement.request.get(
-        "https://app.marksix.test:18443/api/license",
-      )
-    ).json();
+    const licenseAfter = await readLicense();
+    expect(licenseAfter.active).toBe(true);
     expect(licenseAfter.authorized_through).toBe(
       licenseBefore.authorized_through,
     );

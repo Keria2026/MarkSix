@@ -62,6 +62,8 @@ sudo bash /opt/marksix/current/install-timers.sh
 在 master 设置分支保护，要求 PR 审查及 CI 验证通过，禁止常规直接推送。
 dev 与 PR 只测试和构建；只有 push master 运行生产部署。生产部署串行执行，不因下一次提交自动取消。进入生产队列后重新检查最新 master；过期工件跳过。服务器在操作锁内核对 Actions run_number/run_attempt，拒绝较早构建及较早尝试。手工回退不降低这个高水位。
 
+dev／PR 仍执行完整镜像验收、打包及校验，但不上传 Ubuntu 大包；push master 或手动运行工作流才上传，保留 30 天。测试报告和 Docker 构建记录保留 7 天，避免重复构建耗尽存储额度。生产部署继续下载同一次运行的已测试工件。
+
 镜像随已测试工件传输，VPS 无须 GitHub PAT 或私有镜像仓库凭据。工件不包含生产密码和私钥。
 首次安全配置完成后，再合并经过验收的 dev PR。不要为测试部署而绕过失败的验证。
 
