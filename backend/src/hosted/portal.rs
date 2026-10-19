@@ -47,6 +47,7 @@ pub(super) fn router(r: Registry) -> Router {
         .route("/api/license", get(status))
         .route("/api/license/activate", post(activate))
         .route("/api/history/clear", post(clear_history))
+        .route("/api/account/password", post(change_password))
         .fallback(dispatch)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn(crate::api::security_headers))
@@ -178,6 +179,45 @@ async fn clear_history(
     let status = response.status();
     let value: Value = response.json().await.map_err(anyhow::Error::from)?;
     Ok((status, Json(value)).into_response())
+}
+async fn change_password(
+    State(r): State<Registry>,
+    headers: HeaderMap,
+    Json(input): Json<PasswordChange>,
+) -> ApiResult<Response> {
+    customer(&r.control, &headers).await?;
+    let url =
+        std::env::var("INTERNAL_AUTHORITY_URL").unwrap_or_else(|_| "http://authority:8090".into());
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(anyhow::Error::from)?
+        .post(format!(
+            "{}/api/customer/password",
+            url.trim_end_matches('/')
+        ))
+        .header(
+            header::COOKIE,
+            headers.get(header::COOKIE).ok_or_else(unauthorized)?,
+        )
+        .header("X-MarkSix", "1")
+        .json(&input)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(anyhow::Error::from)?;
+    let status = response.status();
+    let value: Value = response.json().await.map_err(anyhow::Error::from)?;
+    let mut result = (status, Json(value)).into_response();
+    if status.is_success() {
+        result.headers_mut().insert(
+            header::SET_COOKIE,
+            cookie(&r.control, "marksix_session", "", 0)
+                .parse()
+                .map_err(anyhow::Error::from)?,
+        );
+    }
+    Ok(result)
 }
 async fn status(State(r): State<Registry>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     let a = customer(&r.control, &headers).await?;

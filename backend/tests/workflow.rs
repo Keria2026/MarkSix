@@ -66,6 +66,7 @@ async fn transactional_workflow_and_recovery() {
         "bet_mutations",
         "layoffs",
         "bets",
+        "bet_slips",
         "periods",
         "play_versions",
         "plays",

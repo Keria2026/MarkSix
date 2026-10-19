@@ -76,11 +76,14 @@ fn reprice(atoms: &[Atom], amount: i64, rule: &Rule) -> RuleResult<BetPlan> {
         atoms,
     })
 }
-async fn invalidate(tx: &mut sqlx::Transaction<'_, sqlx::MySql>, period: &str) -> ApiResult<()> {
+pub(crate) async fn invalidate(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    period: &str,
+) -> ApiResult<()> {
     sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(period).execute(&mut **tx).await?;
     Ok(())
 }
-async fn cancel_calculation(state: &AppState, period: &str) {
+pub(crate) async fn cancel_calculation(state: &AppState, period: &str) {
     if let Some(flag) = state.cancellations.lock().await.get(period) {
         flag.store(true, Ordering::Relaxed);
     }
@@ -286,7 +289,7 @@ pub struct LedgerTotals {
     pub net: Option<i64>,
 }
 impl LedgerTotals {
-    fn add(
+    pub(crate) fn add(
         &mut self,
         amounts: (i32, i64, i64, Option<i64>, i64),
         settled: bool,

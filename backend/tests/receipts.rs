@@ -1,0 +1,414 @@
+//! Real SQL, HTTP and worker checks for receipt grouping; disposable database only.
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
+use chrono::NaiveDate;
+use marksix::{api, domain::*, store::*, worker};
+use serde_json::{Value, json};
+use std::sync::{Arc, RwLock};
+use tower::ServiceExt;
+async fn call(
+    app: &Router,
+    method: &str,
+    path: &str,
+    data: Value,
+    cookie: &str,
+) -> (StatusCode, Value, String) {
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Content-Type", "application/json")
+                .header("X-MarkSix", "1")
+                .header("Cookie", cookie)
+                .body(Body::from(data.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = r.status();
+    let cookie = r
+        .headers()
+        .get("set-cookie")
+        .map(|s| s.to_str().unwrap().split(';').next().unwrap().to_owned())
+        .unwrap_or_default();
+    let bytes = to_bytes(r.into_body(), 16 * 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap(), cookie)
+}
+async fn ok(app: &Router, method: &str, path: &str, data: Value, cookie: &str) -> Value {
+    let (s, v, _) = call(app, method, path, data, cookie).await;
+    assert_eq!(s, StatusCode::OK, "{method} {path}: {v}");
+    v
+}
+fn line(p: &Value, options: Value, amount: &str) -> Value {
+    json!({"play_id":p["id"],"play_version":p["version"],"selections":options,"compound":false,"amount":amount})
+}
+fn slip(period: &str, items: Vec<Value>) -> Value {
+    json!({"period":period,"bettor":"组合客户甲","request_id":uuid::Uuid::new_v4(),"items":items})
+}
+fn versions(record: &Value) -> Value {
+    json!({"versions":record["items"].as_array().unwrap().iter().map(|b|json!({"id":b["id"],"revision":b["revision"]})).collect::<Vec<_>>()})
+}
+#[tokio::test]
+#[ignore = "requires disposable marksix_test; never production"]
+async fn atomic_slips_order_statements_and_capacity() {
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    assert!(url.ends_with("/marksix_test"));
+    let pool = connect(&url).await.unwrap();
+    for table in [
+        "audit_events",
+        "bet_mutations",
+        "layoffs",
+        "bets",
+        "bet_slips",
+        "periods",
+        "play_versions",
+        "plays",
+        "sessions",
+        "closing_configs",
+        "mapping_configs",
+        "administrators",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let password = uuid::Uuid::new_v4().to_string();
+    initialize(&pool, "receipt-admin", Some(&password))
+        .await
+        .unwrap();
+    let date = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    let clock = Arc::new(RwLock::new(date.and_hms_opt(12, 0, 0).unwrap()));
+    let mut state = AppState::new(pool.clone()).unwrap();
+    let c = clock.clone();
+    state.clock = Arc::new(move || *c.read().unwrap());
+    let app = api::router(state.clone());
+    let (_, _, cookie) = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"username":"receipt-admin","password":password}),
+        "",
+    )
+    .await;
+    assert!(!cookie.is_empty());
+    let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let period = boot["today"]["id"].as_str().unwrap().to_owned();
+    let mut rule = boot["plays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["rule"]["kind"] == "number" && p["rule"]["quantity"] == 1)
+        .unwrap()["rule"]
+        .clone();
+    for (k, v) in [
+        ("name", json!("验收特码")),
+        ("odds", json!("43")),
+        ("rebate_percent", json!("10")),
+        ("special_odds", Value::Null),
+        ("special_rebate_percent", Value::Null),
+        ("scope", json!("special")),
+        ("condition", json!("all")),
+    ] {
+        rule[k] = v;
+    }
+    let number_id = ok(&app, "POST", "/api/plays", rule.clone(), &cookie).await["id"].clone();
+    for (k, v) in [
+        ("name", json!("验收一肖")),
+        ("kind", json!("zodiac")),
+        ("scope", json!("all")),
+        ("odds", json!("2")),
+        ("special_odds", json!("1.8")),
+    ] {
+        rule[k] = v;
+    }
+    let zodiac_id = ok(&app, "POST", "/api/plays", rule.clone(), &cookie).await["id"].clone();
+    for (k, v) in [
+        ("name", json!("验收二有")),
+        ("quantity", json!(2)),
+        ("combination_size", json!(2)),
+        ("odds", json!("4")),
+        ("special_odds", json!("3.5")),
+    ] {
+        rule[k] = v;
+    }
+    let pair_id = ok(&app, "POST", "/api/plays", rule, &cookie).await["id"].clone();
+    let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let plays = boot["plays"].as_array().unwrap();
+    let number = plays.iter().find(|p| p["id"] == number_id).unwrap();
+    let zodiac = plays.iter().find(|p| p["id"] == zodiac_id).unwrap();
+    let pair = plays.iter().find(|p| p["id"] == pair_id).unwrap();
+    let mut order: Vec<_> = plays
+        .iter()
+        .rev()
+        .map(|p| json!({"id":p["id"],"version":p["version"]}))
+        .collect();
+    ok(
+        &app,
+        "PUT",
+        "/api/plays/order",
+        json!({"plays":order}),
+        &cookie,
+    )
+    .await;
+    let sorted = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    assert_eq!(sorted["plays"][0]["id"], pair_id);
+    assert_eq!(sorted["plays"][0]["version"], 1);
+    assert_eq!(
+        ok(&app, "GET", "/api/plays/export", json!({}), &cookie).await["plays"][0]["rule"]["name"],
+        "验收二有"
+    );
+    order.push(order[0].clone());
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/plays/order",
+            json!({"plays":order}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let data = slip(
+        &period,
+        vec![
+            line(zodiac, json!([2]), "200"),
+            line(zodiac, json!([6]), "400"),
+            line(pair, json!([6, 2]), "500"),
+            line(number, json!([44, 10, 9]), "10"),
+            line(number, json!([4, 1, 8]), "20"),
+        ],
+    );
+    let mut bad = data.clone();
+    bad["request_id"] = json!(uuid::Uuid::new_v4());
+    bad["items"][4]["selections"] = json!([50]);
+    assert_eq!(
+        call(&app, "POST", "/api/slips", bad, &cookie).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let (a, b) = tokio::join!(
+        call(&app, "POST", "/api/slips", data.clone(), &cookie),
+        call(&app, "POST", "/api/slips", data.clone(), &cookie)
+    );
+    assert_eq!(a.0, StatusCode::OK);
+    assert_eq!(b.0, StatusCode::OK);
+    assert_eq!(a.1["id"], b.1["id"]);
+    assert_ne!(a.1["replayed"], b.1["replayed"]);
+    let id = a.1["id"].as_str().unwrap();
+    let path = format!("/api/slips/{id}");
+    let record = ok(&app, "GET", &path, json!({}), &cookie).await;
+    assert_eq!(record["stake"], 119000);
+    assert_eq!(record["unit_count"], 9);
+    assert_eq!(record["totals"]["rebate"], 11900);
+    let listed = ok(
+        &app,
+        "POST",
+        "/api/records/search",
+        json!({"period":period,"play_ids":[number_id],"min_amount":"1100","max_amount":"1200"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["items"][0]["items"].as_array().unwrap().len(), 5);
+    let mut bad = data.clone();
+    bad["items"][0]["amount"] = json!("201");
+    assert_eq!(
+        call(&app, "POST", "/api/slips", bad, &cookie).await.0,
+        StatusCode::CONFLICT
+    );
+    let tiger = record["items"][0]["id"].as_str().unwrap();
+    for (revision, amount) in [(1, "250"), (2, "200")] {
+        ok(&app,"PUT",&format!("/api/bets/{tiger}/amount"),json!({"revision":revision,"amount":amount,"receiver":null,"request_id":uuid::Uuid::new_v4()}),&cookie).await;
+    }
+    let horse = record["items"][1]["id"].as_str().unwrap();
+    ok(&app,"POST",&format!("/api/bets/{horse}/layoffs"),json!({"revision":1,"amount":"100","receiver":"受注方甲","request_id":uuid::Uuid::new_v4()}),&cookie).await;
+    let updated = ok(&app, "GET", &path, json!({}), &cookie).await;
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{path}/cancel"),
+            versions(&updated),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let other = ok(
+        &app,
+        "POST",
+        "/api/slips",
+        slip(
+            &period,
+            vec![
+                line(number, json!([1]), "10"),
+                line(number, json!([2]), "20"),
+            ],
+        ),
+        &cookie,
+    )
+    .await;
+    let other_path = format!("/api/slips/{}", other["id"].as_str().unwrap());
+    let other = ok(&app, "GET", &other_path, json!({}), &cookie).await;
+    let stale = versions(&other);
+    ok(
+        &app,
+        "POST",
+        &format!(
+            "/api/bets/{}/cancel",
+            other["items"][0]["id"].as_str().unwrap()
+        ),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{other_path}/cancel"),
+            stale,
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let other = ok(&app, "GET", &other_path, json!({}), &cookie).await;
+    assert_eq!(other["stake"], 2000);
+    ok(
+        &app,
+        "POST",
+        &format!("{other_path}/cancel"),
+        versions(&other),
+        &cookie,
+    )
+    .await;
+    *clock.write().unwrap() = date.and_hms_opt(21, 34, 0).unwrap();
+    let mut draw = Draw::predicted([1, 5, 9, 10, 44, 4, 8], &Mapping::for_year(2026));
+    draw.expect = period.clone();
+    draw.open_time = *clock.read().unwrap();
+    worker::accept_draw(&state, &draw, &json!({"test":"slips"}))
+        .await
+        .unwrap();
+    let final_record = ok(&app, "GET", &path, json!({}), &cookie).await;
+    assert_eq!(final_record["totals"]["net"], -265900);
+    assert_eq!(final_record["totals"]["payout"], 373000);
+    let stats = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{period}/statistics"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(stats["incoming"]["net"], -265900);
+    assert_eq!(stats["outgoing"]["net"], 9000);
+    assert_eq!(stats["retained"]["net"], -256900);
+    let export = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{period}/bettor-export"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(export["bettors"][0]["totals"]["net"], -265900);
+    assert_eq!(export["bettors"][0]["bets"].as_array().unwrap().len(), 7);
+    std::fs::create_dir_all("../test-results").unwrap();
+    std::fs::write(
+        "../test-results/slip-export.json",
+        serde_json::to_vec(&export).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        ok(&app, "POST", "/api/slips", data, &cookie).await["id"],
+        id
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/slips",
+            slip(&period, vec![line(number, json!([1]), "1")]),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    *clock.write().unwrap() = date.succ_opt().unwrap().and_hms_opt(12, 0, 0).unwrap();
+    let next = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await["today"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let options: Vec<_> = (1..=49).collect();
+    let mut thousand = vec![line(number, json!(options), "1"); 20];
+    thousand.push(line(number, json!((1..=20).collect::<Vec<_>>()), "1"));
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/slips",
+            slip(&next, vec![line(number, json!(options), "1"); 21]),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut first = None;
+    for _ in 0..10 {
+        let entry = ok(
+            &app,
+            "POST",
+            "/api/slips",
+            slip(&next, thousand.clone()),
+            &cookie,
+        )
+        .await;
+        if first.is_none() {
+            first = Some(entry);
+        }
+    }
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/slips",
+            slip(&next, vec![line(number, json!([1]), "1")]),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let path = format!("/api/slips/{}", first.unwrap()["id"].as_str().unwrap());
+    let first = ok(&app, "GET", &path, json!({}), &cookie).await;
+    ok(
+        &app,
+        "POST",
+        &format!("{path}/cancel"),
+        versions(&first),
+        &cookie,
+    )
+    .await;
+    ok(&app, "POST", "/api/slips", slip(&next, thousand), &cookie).await;
+    let units:i64=sqlx::query_scalar("SELECT CAST(SUM(unit_count) AS SIGNED) FROM bets WHERE period_id=? AND status<>'cancelled'").bind(next).fetch_one(&pool).await.unwrap();
+    assert_eq!(units, 10000);
+}

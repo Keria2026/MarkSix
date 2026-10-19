@@ -1,0 +1,41 @@
+name: Clean Actions artifacts
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview only; do not delete artifacts
+        type: boolean
+        default: true
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: marksix-artifact-cleanup
+  cancel-in-progress: false
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Remove obsolete CI artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLEANUP_APPLY: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        run: |
+          if [[ "$CLEANUP_APPLY" == 'true' ]]; then
+            python3 scripts/cleanup_artifacts.py --apply
+          else
+            python3 scripts/cleanup_artifacts.py
+          fi

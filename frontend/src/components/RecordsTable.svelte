@@ -7,7 +7,7 @@
     ReceiptText,
   } from "lucide-svelte";
   import { money, signed, label } from "../lib/types";
-  import type { Page, Bet } from "../lib/types";
+  import type { Page, RecordGroup } from "../lib/types";
   let {
     records,
     recordChoices,
@@ -21,7 +21,7 @@
     showDetail,
     onbet,
   }: {
-    records: Page<Bet>;
+    records: Page<RecordGroup>;
     recordChoices: { bettors: string[]; plays: { id: number; name: string }[] };
     historical: boolean;
     selectedBettors: string[];
@@ -30,7 +30,7 @@
     maxAmount: string;
     recordOrder: string;
     onload: (page?: number) => Promise<void>;
-    showDetail: (bet: Bet) => Promise<void>;
+    showDetail: (bet: RecordGroup) => Promise<void>;
     onbet: () => Promise<void>;
   } = $props();
   function loadRecords(page = 1) {
@@ -44,7 +44,7 @@
       <h2>投注记录</h2>
       <span class="count-badge">{records.total}</span>
     </div>
-    <span class="muted small">自动刷新 · 金额为整条投注本金</span>
+    <span class="muted small">自动刷新 · 组合单合并展示，撤销分项不计金额</span>
   </div>
   <form
     class="record-filters"
@@ -149,28 +149,34 @@
         >{#each records.items as bet}<tr
             ><td
               ><strong
-                >{bet.rule.name}{#if bet.compound}<span class="table-tag"
-                    >复式</span
-                  >{:else if bet.unit_count > 1}<span class="table-tag"
-                    >多选</span
-                  >{/if}</strong
-              ><small class="bettor-name"
+                >{bet.grouped
+                  ? `组合单 · ${bet.items.length} 项`
+                  : bet.items[0].rule.name}
+                {#if !bet.grouped && bet.items[0].compound}<span
+                    class="table-tag">复式</span
+                  >{:else if !bet.grouped && bet.unit_count > 1}<span
+                    class="table-tag">多选</span
+                  >{/if}
+              </strong><small class="bettor-name"
                 >{bet.bettor || "未登记（旧记录）"}</small
-              ><small class="bet-selection"
-                >{bet.selections
-                  .map((v) => label(bet.rule.kind, v))
-                  .join(" · ")}</small
-              ></td
-            ><td>{bet.unit_count} 注</td><td>{money(bet.stake)}</td><td
-              >{bet.status === "cancelled" ? "—" : money(bet.rebate)}</td
+              >
+              <small class="bet-selection"
+                >{bet.items
+                  .slice(0, 3)
+                  .map(
+                    (item) =>
+                      `${bet.grouped ? `${item.rule.name}：` : ""}${item.selections.map((v) => label(item.rule.kind, v)).join(" · ")}`,
+                  )
+                  .join("；")}{bet.items.length > 3 ? "…" : ""}</small
+              >
+            </td><td>{bet.unit_count} 注</td><td>{money(bet.stake)}</td><td
+              >{bet.status === "cancelled" ? "—" : money(bet.totals.rebate)}</td
             ><td
-              class:positive={bet.payout !== null &&
-                bet.stake - bet.payout - bet.rebate > 0}
-              class:negative={bet.payout !== null &&
-                bet.stake - bet.payout - bet.rebate < 0}
+              class:positive={(bet.totals.net ?? 0) > 0}
+              class:negative={(bet.totals.net ?? 0) < 0}
               ><strong
                 >{bet.status === "settled"
-                  ? signed(bet.stake - bet.payout! - bet.rebate)
+                  ? signed(bet.totals.net)
                   : bet.status === "cancelled"
                     ? "—"
                     : "待结算"}</strong

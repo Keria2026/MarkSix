@@ -54,7 +54,7 @@ pub async fn export(
     State(state): State<AppState>,
     Query(query): Query<ExportQuery>,
 ) -> ApiResult<Json<PlayFile>> {
-    let rows: Vec<Play> = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND (? IS NULL OR id=?) ORDER BY id")
+    let rows: Vec<Play> = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND (? IS NULL OR id=?) ORDER BY sort_order,id")
         .bind(query.id).bind(query.id).fetch_all(&state.pool).await?;
     if query.id.is_some() && rows.is_empty() {
         return Err(missing());
@@ -170,6 +170,59 @@ pub fn bundled() -> Result<PlayFile, String> {
 pub struct BatchTarget {
     id: i64,
     version: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayOrder {
+    plays: Vec<BatchTarget>,
+}
+pub async fn reorder(
+    State(state): State<AppState>,
+    Json(input): Json<PlayOrder>,
+) -> ApiResult<Json<Value>> {
+    if input.plays.is_empty() || input.plays.len() > 1000 {
+        return Err("排序须包含 1–1000 条玩法".to_string().into());
+    }
+    let mut ids = HashSet::new();
+    if input.plays.iter().any(|p| p.id <= 0 || !ids.insert(p.id)) {
+        return Err("排序包含重复或无效玩法".to_string().into());
+    }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    let existing: Vec<Play> = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    if existing.len() != input.plays.len()
+        || existing.iter().any(|p| {
+            !input
+                .plays
+                .iter()
+                .any(|target| target.id == p.id && target.version == p.version)
+        })
+    {
+        return Err(conflict("玩法列表已变化，请刷新后重新排序"));
+    }
+    for (position, p) in input.plays.iter().enumerate() {
+        sqlx::query("UPDATE plays SET sort_order=? WHERE id=?")
+            .bind(position as i64)
+            .bind(p.id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    audit(
+        &mut tx,
+        None,
+        "plays_reordered",
+        json!({"ids":input.plays.iter().map(|p|p.id).collect::<Vec<_>>()}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
 pub struct BatchInput {

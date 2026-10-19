@@ -33,6 +33,7 @@
     Period,
     Quote,
     BetDraft,
+    SlipDraftLine,
     api as Api,
   } from "../lib/types";
   import { createRequestScope } from "../lib/requests";
@@ -45,6 +46,7 @@
     notify,
     onrecorded,
     onconfigure,
+    onadd,
   }: {
     boot: Bootstrap;
     draft: BetDraft;
@@ -53,6 +55,7 @@
     notify: (message: string) => void;
     onrecorded: () => Promise<void>;
     onconfigure: () => Promise<void>;
+    onadd: (line: SlipDraftLine) => boolean;
   } = $props();
   // Abort quote/submission responses when leaving this form as well as logout.
   const requests = createRequestScope(
@@ -569,6 +572,31 @@
       >{#if busy}<LoaderCircle size={17} class="spin" />{:else}<Plus
           size={17}
         />{/if}确认录入投注</button
+    >
+    <button
+      class="button secondary submit-bet"
+      disabled={busy ||
+        !inputValid ||
+        !draft.bettor.trim() ||
+        today.phase !== "open"}
+      onclick={() => {
+        if (!currentPlay || !inputValid) return;
+        const added = onadd({
+          key: crypto.randomUUID(),
+          rule: structuredClone($state.snapshot(currentPlay.rule)),
+          play_id: currentPlay.id,
+          play_version: currentPlay.version,
+          selections: [...draft.selections],
+          compound: draft.compound,
+          amount: draft.amount,
+          units: selectedCount,
+        });
+        if (added) {
+          draft.selections = [];
+          draft.pendingSubmission = null;
+          syncSelectionText();
+        }
+      }}>加入组合单</button
     >
     <p class="summary-note">
       <ShieldCheck size={13} /> 规则与赔率在提交时留存快照

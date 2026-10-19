@@ -20,15 +20,46 @@ pub(crate) struct PeriodQuery {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BetQuery {
-    period: Option<String>,
-    page: Option<u32>,
-    min_amount: Option<String>,
-    max_amount: Option<String>,
+    pub period: Option<String>,
+    pub page: Option<u32>,
+    pub min_amount: Option<String>,
+    pub max_amount: Option<String>,
     #[serde(default)]
-    bettors: Vec<String>,
+    pub bettors: Vec<String>,
     #[serde(default)]
-    play_ids: Vec<i64>,
-    order: Option<String>,
+    pub play_ids: Vec<i64>,
+    pub order: Option<String>,
+}
+impl BetQuery {
+    pub(crate) fn validate(&self) -> ApiResult<(Option<i64>, Option<i64>)> {
+        let min = self
+            .min_amount
+            .as_deref()
+            .map(|v| scaled(v, 2))
+            .transpose()?;
+        let max = self
+            .max_amount
+            .as_deref()
+            .map(|v| scaled(v, 2))
+            .transpose()?;
+        if min.zip(max).is_some_and(|(a, b)| a > b) {
+            return Err(conflict("金额下限不能超过上限"));
+        }
+        if self.bettors.len() > 1000
+            || self.play_ids.len() > 1000
+            || self.bettors.iter().any(|s| s.chars().count() > 80)
+            || self.play_ids.iter().any(|n| *n <= 0)
+        {
+            return Err(conflict("筛选条件超出范围"));
+        }
+        if !matches!(
+            self.order.as_deref().unwrap_or("newest"),
+            "newest" | "amount_asc" | "amount_desc"
+        ) {
+            return Err(conflict("排序方式不合法"));
+        }
+        Ok((min, max))
+    }
 }
 pub(crate) async fn periods(
     State(state): State<AppState>,
@@ -74,22 +105,11 @@ pub(crate) async fn search_bets(
     State(state): State<AppState>,
     Json(q): Json<BetQuery>,
 ) -> ApiResult<Json<Value>> {
+    let (min, max) = q.validate()?;
     let id = q.period.unwrap_or_else(|| period_id(state.now().date()));
     let page = q.page.unwrap_or(1).clamp(1, 100000);
-    let min = q.min_amount.as_deref().map(|v| scaled(v, 2)).transpose()?;
-    let max = q.max_amount.as_deref().map(|v| scaled(v, 2)).transpose()?;
-    if min.zip(max).is_some_and(|(a, b)| a > b) {
-        return Err(conflict("金额下限不能超过上限"));
-    }
     let bettors = q.bettors;
     let plays = q.play_ids;
-    if bettors.len() > 1000
-        || plays.len() > 1000
-        || bettors.iter().any(|s| s.chars().count() > 80)
-        || plays.iter().any(|n| *n <= 0)
-    {
-        return Err(conflict("筛选条件超出范围"));
-    }
     let order = match q.order.as_deref().unwrap_or("newest") {
         "newest" => "created_at DESC,id DESC",
         "amount_asc" => "stake ASC,created_at DESC,id DESC",

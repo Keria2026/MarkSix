@@ -58,7 +58,7 @@ async function fixture(page: Page) {
       return route.fulfill({ json: value });
     }
     if (path === "/api/settings") return route.fulfill({ json: settings });
-    if (path === "/api/bets/search")
+    if (path === "/api/records/search")
       return route.fulfill({
         json: { items: [], total: 0, page: 1, page_size: 25 },
       });

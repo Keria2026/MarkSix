@@ -92,7 +92,12 @@ pub fn router(state: AppState) -> Router {
         .route("/bootstrap", get(bootstrap))
         .route("/periods", get(crate::queries::periods))
         .route("/periods/{id}", get(crate::queries::period))
-        .route("/bets", post(create_bet))
+        .route("/bets", post(crate::betting::single))
+        .route("/slips", post(crate::betting::slip))
+        .route("/records/search", post(crate::records::search))
+        .route("/slips/{id}", get(crate::records::detail))
+        .route("/slips/{id}/cancel", post(crate::records::cancel))
+        .route("/periods/{id}/bettor-export", get(crate::records::export))
         .route("/bets/search", post(crate::queries::search_bets))
         .route("/periods/{id}/risk", post(retry_risk))
         .route("/bets/{id}/amount", put(crate::ledger::change_amount))
@@ -115,6 +120,7 @@ pub fn router(state: AppState) -> Router {
         .route("/plays/export", get(crate::configuration::export))
         .route("/plays/import", post(crate::configuration::import))
         .route("/plays/batch", post(crate::configuration::batch))
+        .route("/plays/order", put(crate::configuration::reorder))
         .route("/settings", get(settings))
         .route("/settings/closing", put(update_closing))
         .route("/settings/mapping", put(update_mapping))
@@ -300,7 +306,7 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let today = ensure_period(&state, state.now().date()).await?;
     let plays: Vec<Play> = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY id",
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY sort_order,id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -384,108 +390,6 @@ async fn current_plan(state: &AppState, input: &BetInput) -> ApiResult<(Period, 
     }
     let plan = plan(&play.rule, input, &p.mapping)?;
     Ok((p, play, plan))
-}
-async fn create_bet(
-    State(state): State<AppState>,
-    Extension(ReceivedAt(received)): Extension<ReceivedAt>,
-    Json(mut input): Json<BetInput>,
-) -> ApiResult<Json<Value>> {
-    uuid::Uuid::parse_str(&input.request_id).map_err(|_| {
-        ApiError(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "提交标识不合法，请刷新页面".into(),
-        )
-    })?;
-    input.bettor = crate::ledger::party(&input.bettor)?;
-    let hash = digest(&serde_json::to_string(&input).map_err(anyhow::Error::from)?);
-    if let Some(row) = sqlx::query("SELECT id,request_hash FROM bets WHERE request_id=?")
-        .bind(&input.request_id)
-        .fetch_optional(&state.pool)
-        .await?
-    {
-        if row.try_get::<String, _>("request_hash")? != hash {
-            return Err(conflict("同一提交标识不能用于不同投注"));
-        }
-        return Ok(Json(
-            json!({"id":row.try_get::<String,_>("id")?,"replayed":true}),
-        ));
-    }
-    let p = ensure_period(&state, received.date()).await?;
-    if input.period != p.id {
-        return Err(conflict("期次已切换，请刷新后重新录入"));
-    }
-    let mut tx = state.pool.begin().await?;
-    let locked: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
-        .bind(&p.id)
-        .fetch_one(&mut *tx)
-        .await?;
-    // Repeat idempotency under the period lock, including retries racing one another.
-    if let Some(row) = sqlx::query("SELECT id,request_hash FROM bets WHERE request_id=?")
-        .bind(&input.request_id)
-        .fetch_optional(&mut *tx)
-        .await?
-    {
-        if row.try_get::<String, _>("request_hash")? != hash {
-            return Err(conflict("同一提交标识不能用于不同投注"));
-        }
-        let id: String = row.try_get("id")?;
-        tx.commit().await?;
-        return Ok(Json(json!({"id":id,"replayed":true})));
-    }
-    if locked.state != "pending"
-        || !is_open_between(
-            received,
-            locked.business_date,
-            &locked.open_time,
-            &locked.close_time,
-        )
-    {
-        return Err(conflict("当前不在投注时间内，或本期已经封盘／接受开奖"));
-    }
-    let play: Play = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE",
-    )
-    .bind(input.play_id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| conflict("玩法已删除，请刷新后重新选择"))?;
-    if !play.enabled || play.version != input.play_version {
-        return Err(conflict("玩法配置已变更，请刷新后确认"));
-    }
-    let p = plan(&play.rule, &input, &locked.mapping)?;
-    let totals=sqlx::query("SELECT COUNT(*) records, CAST(COALESCE(SUM(unit_count),0) AS SIGNED) units, CAST(COALESCE(SUM(stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(exposure),0) AS SIGNED) exposure FROM bets WHERE period_id=? AND status<>'cancelled'").bind(&locked.id).fetch_one(&mut *tx).await?;
-    if totals.try_get::<i64, _>("records")? >= 1000
-        || totals.try_get::<i64, _>("units")? + p.atoms.len() as i64 > 10000
-    {
-        return Err(conflict(
-            "本期容量已满：最多 1000 条有效记录、10000 条基础注",
-        ));
-    }
-    checked_sum([totals.try_get("stake")?, p.stake])?;
-    let outgoing_budget: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(stake+exposure),0) AS SIGNED) FROM layoffs WHERE period_id=? AND status<>'cancelled'").bind(&locked.id).fetch_one(&mut *tx).await?;
-    checked_sum([
-        totals.try_get("stake")?,
-        totals.try_get("exposure")?,
-        outgoing_budget,
-        p.stake,
-        p.exposure,
-    ])?;
-    let id = uuid::Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(&id).bind(&input.request_id).bind(hash).bind(&locked.id).bind(play.id).bind(play.version).bind(play.rule).bind(DbJson(&input.selections)).bind(input.compound).bind(p.atoms[0].stake).bind(p.atoms.len() as i32).bind(p.stake).bind(p.rebate).bind(p.exposure).bind(locked.mapping.natal as i8).bind(DbJson(&p.atoms)).bind(&input.bettor).execute(&mut *tx).await?;
-    sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(&locked.id).execute(&mut *tx).await?;
-    audit(
-        &mut tx,
-        Some(&locked.id),
-        "bet_created",
-        json!({"id":id,"units":p.atoms.len()}),
-    )
-    .await?;
-    tx.commit().await?;
-    if let Some(flag) = state.cancellations.lock().await.get(&locked.id) {
-        flag.store(true, Ordering::Relaxed);
-    }
-    Ok(Json(json!({"id":id,"replayed":false})))
 }
 async fn cancel_bet(
     State(state): State<AppState>,

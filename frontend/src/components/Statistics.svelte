@@ -1,4 +1,6 @@
 <script lang="ts">
+  import BettorExport from "./BettorExport.svelte";
+  import type { api as Api } from "../lib/types";
   import { money, signed, time } from "../lib/types";
   import type { Statistics as Report } from "../lib/types";
   let {
@@ -7,8 +9,10 @@
     compact = false,
     onbettor,
     onpage,
+    api,
   }: {
     report: Report;
+    api: typeof Api;
     category?: "all" | "bettors" | "receivers";
     compact?: boolean;
     onbettor?: (name: string) => void;
@@ -33,6 +37,10 @@
   });
 </script>
 
+{#if category === "bettors" && !compact}<BettorExport
+    period={report.period}
+    {api}
+  />{/if}
 {#if !compact}
   <div class="stats-grid ledger-stats" aria-label="分类统计摘要">
     {#if category === "receivers"}
@@ -77,7 +85,7 @@
         <div class="stat-label">投注人总本金</div>
         <strong class="stat-value">{money(report.incoming.stake)}</strong>
         <div class="stat-foot">
-          {report.incoming.records} 条有效记录 · {report.incoming.units} 条基础注
+          {report.incoming.records} 个有效分项 · {report.incoming.units} 条基础注
         </div>
       </article>
       <article class="stat glass">

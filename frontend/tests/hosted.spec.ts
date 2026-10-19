@@ -27,6 +27,13 @@ test("hosted manager creates and activates customer, replaces session and perman
   const manager = await managerContext.newPage();
   const customer = await customerContext.newPage();
   const replacement = await replacementContext.newPage();
+  const readLicense = () =>
+    replacement.evaluate(async () => {
+      const response = await fetch("/api/license");
+      if (!response.ok)
+        throw new Error(`License request failed: HTTP ${response.status}`);
+      return response.json();
+    });
   const errors: string[] = [];
   for (const page of [manager, customer, replacement])
     page.on("pageerror", (e) => errors.push(e.message));
@@ -106,6 +113,51 @@ test("hosted manager creates and activates customer, replaces session and perman
     await expect(erasure).toHaveCount(0);
     await expect(replacement.getByRole("status")).toContainText(
       "历史记录已永久清空",
+    );
+    const licenseBefore = await readLicense();
+    expect(licenseBefore.authorized_through).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    const changedPassword = crypto.randomUUID();
+    await replacement
+      .getByRole("button", { name: "修改登录密码", exact: true })
+      .click();
+    const passwordDialog = replacement.getByRole("dialog", {
+      name: "修改登录密码",
+      exact: true,
+    });
+    await passwordDialog
+      .getByLabel("原密码", { exact: true })
+      .fill("wrong-password");
+    await passwordDialog
+      .getByLabel("新密码", { exact: true })
+      .fill(changedPassword);
+    await passwordDialog
+      .getByLabel("再次输入新密码", { exact: true })
+      .fill(changedPassword);
+    await passwordDialog
+      .getByRole("button", { name: "确认修改密码", exact: true })
+      .click();
+    await expect(passwordDialog.getByRole("alert")).toContainText(
+      "原密码不正确",
+    );
+    await passwordDialog.getByLabel("原密码", { exact: true }).fill(password);
+    await passwordDialog
+      .getByRole("button", { name: "确认修改密码", exact: true })
+      .click();
+    await expect(
+      replacement.getByRole("button", { name: "进入工作台", exact: true }),
+    ).toBeVisible();
+    await replacement.getByLabel("客户账号").fill(name);
+    await replacement.getByLabel("登录密码").fill(changedPassword);
+    await replacement
+      .getByRole("button", { name: "进入工作台", exact: true })
+      .click();
+    await expect(
+      replacement.getByRole("heading", { name: "本期概览", exact: true }),
+    ).toBeVisible();
+    const licenseAfter = await readLicense();
+    expect(licenseAfter.active).toBe(true);
+    expect(licenseAfter.authorized_through).toBe(
+      licenseBefore.authorized_through,
     );
     expect(
       (await new AxeBuilder({ page: manager }).analyze()).violations,

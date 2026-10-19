@@ -59,6 +59,7 @@ jobs:
           cargo test --locked
           cargo test --locked --test upgrade -- --ignored
           cargo test --locked --test workflow -- --ignored
+          cargo test --locked --test receipts -- --ignored
           cargo test --locked --lib hosted::tests -- --ignored
           cargo test --locked --lib worker::recovery_tests -- --ignored
           cargo build --locked --example e2e_server
@@ -70,8 +71,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-acceptance
-          path: test-results/runtime-acceptance.json
-          retention-days: 30
+          path: |
+            test-results/runtime-acceptance.json
+            test-results/slip-export.json
+          retention-days: 7
       - name: Frontend checks
         working-directory: frontend
         run: |
@@ -99,9 +102,12 @@ jobs:
         with:
           name: browser-report
           path: frontend/playwright-report
+          retention-days: 7
   images:
     needs: [verify]
     runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
     permissions:
       contents: read
       packages: write
@@ -155,6 +161,7 @@ jobs:
         with:
           name: hosted-acceptance
           path: test-results/hosted-acceptance.json
+          retention-days: 7
           if-no-files-found: error
       - name: Package the tested hosted Ubuntu images
         env:
@@ -166,6 +173,7 @@ jobs:
           bash -n ubuntu-package/hosted/*.sh
       - uses: actions/upload-artifact@v4
         id: ubuntu-package
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
         with:
           name: MarkSix-Ubuntu-x64
           path: ubuntu-package/
@@ -173,6 +181,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
       - name: Ubuntu download link
+        if: steps.ubuntu-package.outcome == 'success'
         env:
           PACKAGE_URL: ${{ steps.ubuntu-package.outputs.artifact-url }}
         run: |

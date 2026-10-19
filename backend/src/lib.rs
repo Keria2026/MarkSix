@@ -1,7 +1,9 @@
 pub mod domain;
 
 pub mod api;
+mod betting;
 mod queries;
+mod records;
 pub mod risk;
 pub mod store;
 pub mod worker;
