@@ -1,5 +1,6 @@
 import datetime as dt
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -35,6 +36,20 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(len(rejected), 2)
         with self.assertRaisesRegex(RuntimeError, "Expired"):
             audit.evaluate([], [], [exception], dt.date(2027, 1, 2))
+
+    def test_roots_adapter_exception_does_not_allow_vulnerable_parent(self):
+        exceptions = json.loads(
+            (audit.ROOT / "scripts/security-exceptions.json").read_text()
+        )
+        advisory = {"vulns": [{"id": "RUSTSEC-2026-0381"}]}
+        findings, rejected = audit.evaluate(
+            [("webpki-roots", "0.26.11"), ("webpki-roots", "1.0.9")],
+            [advisory, advisory],
+            exceptions,
+            dt.date(2026, 10, 21),
+        )
+        self.assertTrue(findings[0]["reviewed_exception"])
+        self.assertEqual([item["version"] for item in rejected], ["1.0.9"])
 
     def test_incomplete_scan_is_not_reported_as_clean(self):
         with self.assertRaisesRegex(RuntimeError, "Incomplete"):

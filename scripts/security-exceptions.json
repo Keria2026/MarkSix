@@ -5,5 +5,12 @@
     "id": "RUSTSEC-2023-0071",
     "review_by": "2027-01-01",
     "reason": "sqlx-mysql only uses RsaPublicKey.encrypt for database authentication; this application performs no RSA private-key operation. The timing advisory has no upstream fix. Re-review on dependency or TLS/authentication changes; do not add private-key operations."
+  },
+  {
+    "package": "webpki-roots",
+    "version": "0.26.11",
+    "id": "RUSTSEC-2026-0381",
+    "review_by": "2027-01-01",
+    "reason": "sqlx-core 0.8.6 requires webpki-roots 0.26. This exact version contains no certificate data: its entire implementation re-exports parent::TLS_SERVER_ROOTS from webpki-roots 1.x. Cargo.lock pins that parent to the fixed 1.0.10 and rustls-webpki to 0.103.16, which rejects the distrusted intermediates. The OSV range also flags this compatibility adapter; vulnerable parent versions remain independently blocked by this audit. Re-review when sqlx, either webpki-roots version or certificate verification changes."
   }
 ]
