@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import type { BettorStatement } from "../src/lib/bettor-statement";
 import { unzipSync } from "fflate";
 import { PDFDocument, PDFDict, PDFName } from "pdf-lib";
-import { statementFilename, statementRows } from "../src/lib/bettor-statement";
+import {
+  statementFilename,
+  statementRows,
+  statementTotals,
+} from "../src/lib/bettor-statement";
 
 const headers = { "X-MarkSix": "1" };
 test("custom rule ordering survives reload without invalidating rule versions", async ({
@@ -320,6 +324,7 @@ test("statement sums receipts, excludes cancellation, handles refunded 49 and re
     if (b.record.status !== "cancelled") {
       b.record.status = "pending";
       b.record.payout = null;
+      b.results = null;
     }
   expect(statementRows(pending, false)[0].net).toBeNull();
   expect(() => statementRows(pending, true)).toThrow("结算记录不完整");
@@ -331,6 +336,13 @@ test("statement sums receipts, excludes cancellation, handles refunded 49 and re
     rebate: 0,
     void_stake: 10000,
   });
+  refunded.bets[0].record.unit_count = 1;
+  refunded.bets[0].atoms = [
+    { ...refunded.bets[0].atoms[0], stake: 10000, rebate: 1000 },
+  ];
+  refunded.bets[0].results = [
+    { voided: true, won: false, payout: 10000, rebate: 0, net: 0 },
+  ];
   Object.assign(refunded.totals, {
     stake: 0,
     refunded: 10000,
@@ -345,7 +357,12 @@ test("statement sums receipts, excludes cancellation, handles refunded 49 and re
   });
   const partial = structuredClone(bettor);
   partial.bets[0].record.status = "cancelled";
-  Object.assign(partial.totals, { stake: 99000, rebate: 9900, net: -243900 });
+  Object.assign(partial.totals, {
+    stake: 99000,
+    payout: 333000,
+    rebate: 9900,
+    net: -243900,
+  });
   const remaining = statementRows(partial, true);
   expect(remaining[0].stake).toBe(99000n);
   expect(remaining[0].createdAt).toBe(bettor.bets[0].record.created_at);
@@ -370,6 +387,33 @@ test("PDF and PNG use the compact receipt layout, paginate and release temporary
       status: "settled",
       void_stake: 0,
     });
+    entry.record.unit_count = 1;
+    entry.atoms = [
+      { ...entry.atoms[0], stake: 1000, rebate: 100, rebate_percent: "10" },
+    ];
+    entry.results = [
+      {
+        voided: false,
+        won: i % 2 === 0,
+        payout: entry.record.payout!,
+        rebate: 100,
+        net: 1000 - entry.record.payout! - 100,
+      },
+    ];
+    if (i % 7 === 0) {
+      entry.record.unit_count = 2;
+      entry.atoms = [
+        { ...entry.atoms[0], stake: 500, rebate: 25, rebate_percent: "5" },
+        { ...entry.atoms[0], stake: 500, rebate: 75, rebate_percent: "15" },
+      ];
+      entry.results = entry.atoms.map((atom) => ({
+        voided: false,
+        won: i % 2 === 0,
+        payout: i % 2 ? 0 : 1000,
+        rebate: atom.rebate,
+        net: 500 - (i % 2 ? 0 : 1000) - atom.rebate,
+      }));
+    }
     return entry;
   }).reverse();
   Object.assign(bettor.totals, {
@@ -473,4 +517,64 @@ test("statement export cancellation never downloads partial PNG files", async ({
   );
   await expect(page.getByLabel("账单导出格式")).toBeEnabled();
   expect(downloads).toBe(0);
+});
+
+test("water bands use snapshot rates and already-rounded atom amounts; payout totals reconcile", async () => {
+  const data = await statementFixture(),
+    bettor = data.bettors[0];
+  const entry = structuredClone(bettor.bets[0]);
+  const atom = entry.atoms[0];
+  entry.atoms = [
+    { ...atom, stake: 20000, rebate: 1000, rebate_percent: "5.00" },
+    { ...atom, stake: 30000, rebate: 3000, rebate_percent: "10" },
+  ];
+  entry.results = [
+    { voided: false, won: false, payout: 0, rebate: 1000, net: 19000 },
+    { voided: false, won: true, payout: 175000, rebate: 3000, net: -148000 },
+  ];
+  Object.assign(entry.record, {
+    unit_count: 2,
+    stake: 50000,
+    payout: 175000,
+    rebate: 4000,
+    void_stake: 0,
+  });
+  bettor.bets = [entry];
+  Object.assign(bettor.totals, {
+    stake: 50000,
+    payout: 175000,
+    rebate: 4000,
+    refunded: 0,
+    net: -129000,
+  });
+  const rows = statementRows(bettor, true),
+    total = statementTotals(rows, true);
+  expect(rows[0].bands).toEqual([
+    { rate: "5", base: 20000n, amount: 1000n },
+    { rate: "10", base: 30000n, amount: 3000n },
+  ]);
+  expect(total).toMatchObject({
+    stake: 50000n,
+    payout: 175000n,
+    rebate: 4000n,
+    net: 129000n,
+  });
+  entry.atoms = [
+    { ...atom, stake: 100, rebate: 1, rebate_percent: "0.50" },
+    { ...atom, stake: 100, rebate: 1, rebate_percent: "0.5" },
+  ];
+  entry.results = entry.atoms.map(() => ({
+    voided: false,
+    won: false,
+    payout: 0,
+    rebate: 1,
+    net: 99,
+  }));
+  Object.assign(entry.record, { stake: 200, payout: 0, rebate: 2 });
+  Object.assign(bettor.totals, { stake: 200, payout: 0, rebate: 2, net: 198 });
+  expect(statementRows(bettor, true)[0].bands).toEqual([
+    { rate: "0.5", base: 200n, amount: 2n },
+  ]);
+  entry.atoms[0].rebate_percent = "bad";
+  expect(() => statementRows(bettor, true)).toThrow("水钱比例");
 });

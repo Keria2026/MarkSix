@@ -41,12 +41,19 @@ export function statementFilename(
 }
 
 type Bettor = BettorStatement["bettors"][number];
+export interface RebateBand {
+  rate: string;
+  base: bigint;
+  amount: bigint;
+}
 export interface StatementRow {
   id: string;
   createdAt: string;
   stake: bigint;
+  payout: bigint | null;
   rebate: bigint;
   net: bigint | null;
+  bands: RebateBand[];
 }
 const cents = (value: number) => {
   if (!Number.isSafeInteger(value))
@@ -54,33 +61,111 @@ const cents = (value: number) => {
   return BigInt(value);
 };
 const sum = (values: bigint[]) => values.reduce((a, b) => a + b, 0n);
+function normalizedRate(value: string): string {
+  const match = /^(\d{1,3})(?:\.(\d{1,2}))?$/.exec(value);
+  if (!match) throw new Error("水钱比例不完整，已停止导出");
+  const scaled =
+    Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  if (scaled > 10000) throw new Error("水钱比例不合法，已停止导出");
+  const fraction = String(scaled % 100)
+    .padStart(2, "0")
+    .replace(/0+$/, "");
+  return `${Math.floor(scaled / 100)}${fraction ? `.${fraction}` : ""}`;
+}
+function addBand(
+  bands: RebateBand[],
+  rate: string,
+  base: bigint,
+  amount: bigint,
+) {
+  const existing = bands.find((b) => b.rate === rate);
+  if (existing) {
+    existing.base += base;
+    existing.amount += amount;
+  } else bands.push({ rate, base, amount });
+}
+export function statementTotals(rows: StatementRow[], settled: boolean) {
+  const bands: RebateBand[] = [];
+  for (const row of rows)
+    for (const band of row.bands)
+      addBand(bands, band.rate, band.base, band.amount);
+  bands.sort((a, b) => Number(a.rate) - Number(b.rate));
+  return {
+    stake: sum(rows.map((r) => r.stake)),
+    payout: settled ? sum(rows.map((r) => r.payout!)) : null,
+    rebate: sum(rows.map((r) => r.rebate)),
+    net: settled ? sum(rows.map((r) => r.net!)) : null,
+    bands,
+  };
+}
 export function statementRows(
   bettor: Bettor,
   settled: boolean,
 ): StatementRow[] {
-  const groups = new Map<string, StatementRow>();
-  const created = new Map<string, string>();
+  const groups = new Map<string, StatementRow>(),
+    created = new Map<string, string>();
   for (const { record: r } of bettor.bets) {
     const key = r.slip_id ?? r.id;
     if (!created.has(key) || r.created_at < created.get(key)!)
       created.set(key, r.created_at);
   }
-  for (const { record: r } of bettor.bets) {
+  for (const { record: r, atoms, results } of bettor.bets) {
     if (r.status === "cancelled") continue;
-    if (settled && (r.status !== "settled" || r.payout === null))
+    if (
+      !atoms.length ||
+      atoms.length !== r.unit_count ||
+      (settled &&
+        (r.status !== "settled" ||
+          r.payout === null ||
+          !results ||
+          results.length !== atoms.length))
+    )
       throw new Error("结算记录不完整，已停止导出");
     const id = r.slip_id ?? r.id;
     const row = groups.get(id) ?? {
       id,
       createdAt: created.get(id)!,
       stake: 0n,
+      payout: settled ? 0n : null,
       rebate: 0n,
       net: settled ? 0n : null,
+      bands: [],
     };
-    row.stake += cents(r.stake);
-    row.rebate += cents(r.rebate);
-    if (row.net !== null)
-      row.net += cents(r.payout!) + cents(r.rebate) - cents(r.stake);
+    let stake = 0n,
+      rebate = 0n,
+      paid = 0n,
+      refunded = 0n;
+    for (let i = 0; i < atoms.length; i++) {
+      const atom = atoms[i],
+        result = settled ? results![i] : null;
+      const base = cents(atom.stake),
+        amount = cents(result?.rebate ?? atom.rebate);
+      stake += base;
+      rebate += amount;
+      if (result) paid += cents(result.payout);
+      if (result?.voided) {
+        if (amount !== 0n || cents(result.payout) !== base)
+          throw new Error("和局金额不一致，已停止导出");
+        refunded += base;
+      } else
+        addBand(
+          row.bands,
+          normalizedRate(atom.rebate_percent || r.rule.rebate_percent),
+          base,
+          amount,
+        );
+    }
+    if (
+      stake !== cents(r.stake) ||
+      rebate !== cents(r.rebate) ||
+      (settled &&
+        (paid !== cents(r.payout!) || refunded !== cents(r.void_stake)))
+    )
+      throw new Error("基础注与投注单金额不一致，已停止导出");
+    row.stake += stake;
+    row.rebate += rebate;
+    if (row.payout !== null) row.payout += paid;
+    if (row.net !== null) row.net += paid + rebate - stake;
     groups.set(id, row);
   }
   const rows = [...groups.values()].sort((a, b) =>
@@ -94,12 +179,17 @@ export function statementRows(
             ? 1
             : 0,
   );
-  const t = bettor.totals;
+  for (const row of rows)
+    row.bands.sort((a, b) => Number(a.rate) - Number(b.rate));
+  const total = statementTotals(rows, settled),
+    t = bettor.totals;
   if (
-    sum(rows.map((r) => r.stake)) !== cents(t.stake) + cents(t.refunded) ||
-    sum(rows.map((r) => r.rebate)) !== cents(t.rebate) ||
+    total.stake !== cents(t.stake) + cents(t.refunded) ||
+    total.rebate !== cents(t.rebate) ||
     (settled &&
-      (t.net === null || sum(rows.map((r) => r.net!)) !== -cents(t.net)))
+      (t.net === null ||
+        total.net !== -cents(t.net) ||
+        total.payout !== cents(t.payout) + cents(t.refunded)))
   )
     throw new Error("账单明细与汇总不一致，已停止导出");
   return rows;
@@ -217,9 +307,17 @@ function layout(
     end("金额单位：元", RIGHT, y, 8.5, muted);
     rect(LEFT, y - 42, RIGHT - LEFT, 27, [0.937, 0.953, 0.973]);
     text("序号", 55, y - 33, 9, muted);
-    end("下注本金", 252, y - 33, 9, muted);
-    end("净输赢", 396, y - 33, 9, muted);
-    end(data.settled ? "反水" : "预计反水", 538, y - 33, 9, muted);
+    end("下注本金", 190, y - 33, 9, muted, 90);
+    end("中奖金额", 300, y - 33, 9, muted, 100);
+    end(
+      data.settled ? "水钱（比例）" : "预计水钱（比例）",
+      425,
+      y - 33,
+      9,
+      muted,
+      115,
+    );
+    end("净输赢", 538, y - 33, 9, muted, 100);
     return y - 67;
   }
   start();
@@ -235,7 +333,8 @@ function layout(
   const offset = Math.max(0, names.length - 2) * nameHeight;
   rect(LEFT, 509 - offset, RIGHT - LEFT, 91, pale);
   text("总净输赢", 59, 577 - offset, 9, muted);
-  const net = data.settled ? -cents(bettor.totals.net!) : null;
+  const total = statementTotals(rows, data.settled);
+  const net = total.net;
   text(
     net === null ? "待结算" : `¥ ${netText(net)}`,
     59,
@@ -244,35 +343,138 @@ function layout(
     netColor(net),
     185,
   );
-  text(data.settled ? "反水" : "预计反水", 262, 577 - offset, 9, muted);
+  text(data.settled ? "水钱（反水）" : "预计水钱", 262, 577 - offset, 9, muted);
   text(money(cents(bettor.totals.rebate)), 262, 545 - offset, 17, ink, 128);
   text("本金", 406, 577 - offset, 9, muted);
   text(money(sum(rows.map((r) => r.stake))), 406, 545 - offset, 17, ink, 130);
+  function continuation() {
+    start();
+    const heading = wrap(`第 ${data.period} 期 · ${name}`, 10, RIGHT - LEFT);
+    heading.forEach((line, n) => text(line, LEFT, 685 - n * 15, 10, muted));
+    return Math.min(640, 685 - heading.length * 15 - 20);
+  }
+  let cursor = 486 - offset;
+  function bandHeader() {
+    text("水钱拆分", LEFT, cursor, 10);
+    text("水钱比例", 59, cursor - 20, 8.5, muted);
+    end("本金基数", 330, cursor - 20, 8.5, muted);
+    end(data.settled ? "水钱小计" : "预计水钱", 538, cursor - 20, 8.5, muted);
+    cursor -= 40;
+  }
+  bandHeader();
+  for (const band of total.bands) {
+    if (cursor < 100) {
+      cursor = continuation();
+      bandHeader();
+    }
+    text(`${band.rate}%`, 59, cursor, 10);
+    end(money(band.base, false), 330, cursor, 10);
+    end(money(band.amount, false), 538, cursor, 10);
+    cursor -= 20;
+  }
+  if (!total.bands.length) {
+    text("无计水钱的有效基础注", 59, cursor, 9, muted);
+    cursor -= 20;
+  }
+  if (cursor < 140) cursor = continuation();
   text(
     data.settled
-      ? "净输赢已包含反水，反水不重复相加。"
-      : "尚未结算，反水为预计值。",
+      ? "中奖金额按含本返还列示（含和局退本）；净输赢＝中奖金额＋水钱－本金。"
+      : "尚未结算，中奖金额和净输赢显示待结算，水钱为预计值。",
     LEFT,
-    490 - offset,
-    8,
+    cursor - 2,
+    7.5,
     muted,
   );
-  let y = header(452 - offset);
-  if (!rows.length) text("暂无有效投注单", LEFT, y, 10, muted);
-  rows.forEach((row, i) => {
-    if (y < 85) {
-      start();
-      const heading = wrap(`第 ${data.period} 期 · ${name}`, 10, RIGHT - LEFT);
-      heading.forEach((line, n) => text(line, LEFT, 685 - n * 15, 10, muted));
-      y = header(Math.min(640, 685 - heading.length * 15 - 20));
-    }
-    text(String(i + 1).padStart(3, "0"), 55, y, 10, muted, 55);
-    end(money(row.stake, false), 252, y, 10);
-    end(netText(row.net), 396, y, 11, netColor(row.net));
-    end(money(row.rebate, false), 538, y, 10);
-    rule(y - 12);
+  if (bettor.totals.refunded > 0) {
+    cursor -= 15;
+    text(
+      `和局退本 ${money(cents(bettor.totals.refunded))}，不计入水钱基数。`,
+      LEFT,
+      cursor,
+      8,
+      muted,
+    );
+  }
+  cursor -= 28;
+  if (cursor < 155) cursor = continuation();
+  let y = header(cursor);
+  if (!rows.length) {
+    text("暂无有效投注单", LEFT, y, 10, muted);
     y -= 33;
+  }
+  rows.forEach((row, i) => {
+    const lines = row.bands.length
+      ? row.bands.map((b) => `${b.rate}% · ${money(b.amount, false)}`)
+      : ["0.00（无水钱）"];
+    let line = 0;
+    if (
+      i === rows.length - 1 &&
+      lines.length <= 15 &&
+      y < Math.max(30, lines.length * 13 + 14) + 120
+    )
+      y = header(continuation());
+    while (line < lines.length) {
+      if (y < 100) y = header(continuation());
+      // A receipt may contain hundreds of rates. Continue the same numbered row
+      // across pages, without duplicating principal or winnings in the totals.
+      const count = Math.min(
+        lines.length - line,
+        Math.max(1, Math.floor((y - 85) / 13)),
+      );
+      const center = y - (count - 1) * 6.5;
+      text(
+        `${String(i + 1).padStart(3, "0")}${line ? "（续）" : ""}`,
+        55,
+        center,
+        9,
+        muted,
+        53,
+      );
+      end(line ? "—" : money(row.stake, false), 190, center, 10, ink, 90);
+      end(
+        line ? "—" : row.payout === null ? "待结算" : money(row.payout, false),
+        300,
+        center,
+        10,
+        ink,
+        100,
+      );
+      for (let n = 0; n < count; n++)
+        end(lines[line + n], 425, y - n * 13, 9, ink, 115);
+      end(
+        line ? "—" : netText(row.net),
+        538,
+        center,
+        10,
+        netColor(row.net),
+        100,
+      );
+      const height = Math.max(30, count * 13 + 14);
+      rule(y - height + 12);
+      y -= height;
+      line += count;
+    }
   });
+  if (y < 120) y = header(continuation());
+  const footerHeight = 48;
+  rect(LEFT, y - footerHeight + 14, RIGHT - LEFT, footerHeight, pale);
+  text("合计", 55, y - 10, 10);
+  end("总本金", 190, y + 1, 8, muted, 90);
+  end("总中奖金额", 300, y + 1, 8, muted, 100);
+  end(data.settled ? "总反水" : "预计总反水", 425, y + 1, 8, muted, 115);
+  end("总净输赢", 538, y + 1, 8, muted, 100);
+  end(money(total.stake, false), 190, y - 18, 10, ink, 90);
+  end(
+    total.payout === null ? "待结算" : money(total.payout, false),
+    300,
+    y - 18,
+    10,
+    ink,
+    100,
+  );
+  end(money(total.rebate, false), 425, y - 18, 10, ink, 115);
+  end(netText(total.net), 538, y - 18, 10, netColor(total.net), 100);
   pages.forEach((page, i) => {
     ops = page;
     rule(57);
