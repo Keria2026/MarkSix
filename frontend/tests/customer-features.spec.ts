@@ -578,3 +578,53 @@ test("water bands use snapshot rates and already-rounded atom amounts; payout to
   entry.atoms[0].rebate_percent = "bad";
   expect(() => statementRows(bettor, true)).toThrow("水钱比例");
 });
+
+test("zodiac packages split per zodiac, preserve draft mode and accept one decimal", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  await nav.getByRole("button", { name: "录入投注", exact: true }).click();
+  await page.getByLabel("搜索玩法名称").fill("特码直选");
+  await page.getByLabel("投注人", { exact: true }).fill("包肖UI");
+  await page.getByRole("button", { name: "包肖投注", exact: true }).click();
+  await page.getByLabel("输入投注项", { exact: true }).fill("狗 马");
+  await page.getByLabel("每肖金额", { exact: true }).fill("100.1");
+  await expect(page.locator(".summary-total")).toContainText("¥ 200.20");
+  await expect(page.locator(".bet-summary")).toContainText("09");
+  await nav.getByRole("button", { name: "本期概览", exact: true }).click();
+  await nav.getByRole("button", { name: "录入投注", exact: true }).click();
+  await expect(page.getByLabel("每肖金额", { exact: true })).toHaveValue(
+    "100.1",
+  );
+  await page.getByLabel("每肖金额", { exact: true }).fill("100.12");
+  await expect(
+    page.getByRole("button", { name: "确认录入投注", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("每肖金额", { exact: true }).fill("100.1");
+  await page.getByRole("button", { name: "加入组合单", exact: true }).click();
+  const draft = page.getByLabel("组合单草稿", { exact: true });
+  await expect(draft).toContainText("包肖：狗 · 马");
+  await expect(draft.locator(".slip-total")).toContainText("¥ 200.20");
+  await page.getByRole("button", { name: "直接选号", exact: true }).click();
+  await page.getByLabel("输入投注项", { exact: true }).fill("44");
+  await page.getByLabel("每注金额", { exact: true }).fill("10.5");
+  await page.getByRole("button", { name: "加入组合单", exact: true }).click();
+  await expect(draft.locator(".slip-total")).toContainText("¥ 210.70");
+  const response = page.waitForResponse(
+    (r) => r.url().endsWith("/api/slips") && r.request().method() === "POST",
+  );
+  await draft
+    .getByRole("button", { name: "确认录入组合单", exact: true })
+    .click();
+  const r = await response;
+  expect(r.ok()).toBe(true);
+  const id = (await r.json()).id;
+  const detail = await (await page.request.get(`/api/slips/${id}`)).json();
+  expect(detail.stake).toBe(21070);
+  expect(detail.items[0].package_zodiacs).toEqual([10, 6]);
+  expect(detail.items[0].unit_count).toBe(9);
+  expect(detail.items[1].amount).toBe(1050);
+  await expect(draft).toHaveCount(0);
+});

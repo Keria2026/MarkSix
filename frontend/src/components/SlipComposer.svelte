@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { Trash2, Layers3 } from "lucide-svelte";
-  import { money, label } from "../lib/types";
+  import { money, label, entryCents } from "../lib/types";
   import type { SlipDraftLine, Period, api as Api } from "../lib/types";
   import { createRequestScope } from "../lib/requests";
   let {
@@ -35,17 +35,14 @@
       items.length > 0 &&
       items.length <= 100 &&
       units <= 1000 &&
-      items.every(
-        (item) => /^\d+$/.test(item.amount) && BigInt(item.amount) > 0n,
-      ),
+      items.every((item) => entryCents(item.amount) !== null),
   );
   const stake = $derived(
     items.reduce(
       (sum, item) =>
         sum +
-        (/^\d+$/.test(item.amount)
-          ? BigInt(item.amount) * BigInt(item.units) * 100n
-          : 0n),
+        (entryCents(item.amount) ?? 0n) *
+          BigInt(item.package_zodiacs?.length || item.units),
       0n,
     ),
   );
@@ -55,12 +52,20 @@
       period,
       bettor: bettor.trim(),
       items: items.map(
-        ({ play_id, play_version, selections, compound, amount }) => ({
+        ({
           play_id,
           play_version,
           selections,
           compound,
           amount,
+          package_zodiacs,
+        }) => ({
+          play_id,
+          play_version,
+          selections,
+          compound,
+          amount,
+          ...(package_zodiacs?.length ? { package_zodiacs } : {}),
         }),
       ),
     };
@@ -101,7 +106,11 @@
           <div>
             <strong>{index + 1}. {item.rule.name}</strong>
             <p>
-              {item.selections.map((v) => label(item.rule.kind, v)).join(" · ")}
+              {item.package_zodiacs?.length
+                ? `包肖：${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}`
+                : item.selections
+                    .map((v) => label(item.rule.kind, v))
+                    .join(" · ")}
             </p>
             <small
               >{item.units} 注 · V{item.play_version}{item.compound
@@ -110,10 +119,12 @@
             >
           </div>
           <label
-            >每注金额（元）<input
+            >{item.package_zodiacs?.length
+              ? "每肖金额（元）"
+              : "每注金额（元）"}<input
               aria-label={`组合单第${index + 1}项每注金额`}
               bind:value={item.amount}
-              inputmode="numeric"
+              inputmode="decimal"
               maxlength="15"
               disabled={busy}
             /></label

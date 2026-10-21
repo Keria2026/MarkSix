@@ -846,6 +846,7 @@ mod tests {
                 selections: vec![0, 1, 2, 3, 4, 5, 6],
                 compound: true,
                 amount: "100".into(),
+                package_zodiacs: vec![],
                 request_id: "test".into(),
                 bettor: "测试投注人".into(),
             },

@@ -411,4 +411,89 @@ async fn atomic_slips_order_statements_and_capacity() {
     ok(&app, "POST", "/api/slips", slip(&next, thousand), &cookie).await;
     let units:i64=sqlx::query_scalar("SELECT CAST(SUM(unit_count) AS SIGNED) FROM bets WHERE period_id=? AND status<>'cancelled'").bind(next).fetch_one(&pool).await.unwrap();
     assert_eq!(units, 10000);
+    // Package intent survives SQL snapshots, retries, corrections, layoffs and settlement.
+    *clock.write().unwrap() = date
+        .succ_opt()
+        .unwrap()
+        .succ_opt()
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let package_period = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await["today"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let package = |amount: &str| json!({"period":package_period,"play_id":number_id,"play_version":1,"selections":[],"package_zodiacs":[10],"compound":false,"amount":amount,"bettor":"包肖测试","request_id":uuid::Uuid::new_v4()});
+    let body = package("100.1");
+    let created = ok(&app, "POST", "/api/bets", body.clone(), &cookie).await;
+    assert_eq!(
+        created["id"],
+        ok(&app, "POST", "/api/bets", body, &cookie).await["id"]
+    );
+    let package_path = format!("/api/bets/{}", created["id"].as_str().unwrap());
+    let detail = ok(&app, "GET", &package_path, json!({}), &cookie).await;
+    assert_eq!(detail["record"]["package_zodiacs"], json!([10]));
+    assert_eq!(detail["record"]["amount"], 10010);
+    assert_eq!(detail["record"]["stake"], 10010);
+    assert_eq!(
+        detail["atoms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["stake"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![2503, 2503, 2502, 2502]
+    );
+    ok(
+        &app,
+        "PUT",
+        &format!("{package_path}/amount"),
+        json!({"revision":1,"amount":"100.2","receiver":null,"request_id":uuid::Uuid::new_v4()}),
+        &cookie,
+    )
+    .await;
+    ok(
+        &app,
+        "PUT",
+        &format!("{package_path}/amount"),
+        json!({"revision":2,"amount":"100.1","receiver":null,"request_id":uuid::Uuid::new_v4()}),
+        &cookie,
+    )
+    .await;
+    let tiny = ok(&app, "POST", "/api/bets", package("0.1"), &cookie).await;
+    let tiny_path = format!("/api/bets/{}", tiny["id"].as_str().unwrap());
+    let tiny_fly = ok(&app,"POST",&format!("{tiny_path}/layoffs"),json!({"revision":1,"amount":"0.05","receiver":"包肖受注方","request_id":uuid::Uuid::new_v4()}),&cookie).await;
+    assert_eq!(call(&app,"POST",&format!("{tiny_path}/layoffs"),json!({"revision":2,"amount":"0.05","receiver":"包肖受注方","request_id":uuid::Uuid::new_v4()}),&cookie).await.0,StatusCode::CONFLICT);
+    ok(
+        &app,
+        "POST",
+        &format!("/api/layoffs/{}/cancel", tiny_fly["id"].as_str().unwrap()),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    ok(
+        &app,
+        "POST",
+        &format!("{tiny_path}/cancel"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    let invalid = package("10.01");
+    assert_eq!(
+        call(&app, "POST", "/api/bets", invalid, &cookie).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let package_date = clock.read().unwrap().date();
+    *clock.write().unwrap() = package_date.and_hms_opt(21, 34, 0).unwrap();
+    let mut package_draw = Draw::predicted([1, 2, 3, 4, 5, 6, 9], &Mapping::for_year(2026));
+    package_draw.expect = package_period;
+    package_draw.open_time = *clock.read().unwrap();
+    worker::accept_draw(&state, &package_draw, &json!({"test":"package"}))
+        .await
+        .unwrap();
+    let settled = ok(&app, "GET", &package_path, json!({}), &cookie).await;
+    assert_eq!(settled["record"]["payout"], 107629);
+    assert_eq!(settled["record"]["rebate"], 1000);
 }

@@ -100,6 +100,7 @@
   let tab = $state<Tab>("overview");
   let boot = $state<Bootstrap | null>(null);
   let betDraft = $state<BetDraft>({
+    packageMode: false,
     playId: 0,
     selections: [],
     compound: false,
@@ -1525,7 +1526,8 @@
           ></span
         >
         <span>基础注 <strong>{detail.atoms.length}</strong></span><span
-          >每注本金 <strong>{money(detail.record.amount)}</strong></span
+          >{detail.record.package_zodiacs?.length ? "每肖本金" : "每注本金"}
+          <strong>{money(detail.record.amount)}</strong></span
         ><span
           >反水比例 <strong>{detail.record.rule.rebate_percent}%</strong></span
         ><span
@@ -1548,9 +1550,9 @@
         <table>
           <thead
             ><tr
-              ><th>组合</th><th>赔率</th><th>结果</th><th>含本返还</th><th
-                >反水</th
-              ><th>盘口净盈亏</th></tr
+              ><th>组合</th><th>本金</th><th>赔率</th><th>结果</th><th
+                >含本返还</th
+              ><th>反水</th><th>盘口净盈亏</th></tr
             ></thead
           ><tbody
             >{#each detail.atoms.slice((detailPage - 1) * 50, detailPage * 50) as atom, offset}{@const result =
@@ -1559,7 +1561,7 @@
                   >{atom.options
                     .map((v) => label(detail!.record.rule.kind, v))
                     .join(" · ")}</td
-                ><td
+                ><td>{money(atom.stake)}</td><td
                   >{atom.odds}×{#if atom.special_hit_odds}<small>
                       / 含特 {atom.special_hit_odds}×</small
                     >{/if}</td
@@ -1616,9 +1618,11 @@
             <table>
               <thead
                 ><tr
-                  ><th>受注方</th><th>每注金额</th><th>飞出总额</th><th
-                    >状态 / 本方盈亏</th
-                  ><th>操作</th></tr
+                  ><th>受注方</th><th
+                    >{detail.record.package_zodiacs?.length
+                      ? "每肖金额"
+                      : "每注金额"}</th
+                  ><th>飞出总额</th><th>状态 / 本方盈亏</th><th>操作</th></tr
                 ></thead
               ><tbody
                 >{#each detail.layoffs as row}<tr
@@ -1717,7 +1721,10 @@
         </div>
         <p class="modal-description">
           {mutationTarget.bettor || "未登记"} · {mutationTarget.rule.name} · {mutationTarget.unit_count}
-          条基础注 · 原每注 {money(mutationTarget.amount)}
+          条基础注 · 原{mutationTarget.package_zodiacs?.length
+            ? "每肖"
+            : "每注"}
+          {money(mutationTarget.amount)}
         </p>
         {#if mutationMode === "layoffs"}<label
             >飞出受注方<input
@@ -1729,18 +1736,24 @@
             /></label
           >{/if}
         <label
-          >{mutationMode === "amount"
-            ? "修改后的每注金额（整数元）"
-            : "每条基础注飞出金额（元）"}<input
+          >{mutationTarget.package_zodiacs?.length
+            ? mutationMode === "amount"
+              ? "修改后的每肖金额（最多一位小数）"
+              : "每肖飞出金额（元）"
+            : mutationMode === "amount"
+              ? "修改后的每注金额（最多一位小数）"
+              : "每条基础注飞出金额（元）"}<input
             bind:value={mutationAmount}
             inputmode="decimal"
             required
           /></label
         >
         <p class="field-help">
-          {mutationMode === "amount"
-            ? "保留原规则和赔率，记录修改前后金额；不能低于已飞出金额。"
-            : "原投注保留，所有基础注按相同每注金额飞出。沿用原注赔率、反水，逐注四舍五入；累计不得超过原注。"}
+          {mutationTarget.package_zodiacs?.length
+            ? "按每肖金额重新均分到原包号，余分按号码升序分配；逐号核验不得超过原注或低于已飞出金额。"
+            : mutationMode === "amount"
+              ? "保留原规则和赔率，记录修改前后金额；不能低于已飞出金额。"
+              : "原投注保留，所有基础注按相同每注金额飞出。沿用原注赔率、反水，逐注四舍五入；累计不得超过原注。"}
         </p>
         {#if mutationError}<div class="inline-error" role="alert">
             {mutationError}

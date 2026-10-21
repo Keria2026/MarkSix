@@ -69,11 +69,17 @@
         <div>
           <strong>{index + 1}. {item.rule.name}</strong>
           <p>
-            {item.selections.map((v) => label(item.rule.kind, v)).join(" · ")}
+            {item.package_zodiacs?.length
+              ? `包肖 ${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}`
+              : item.selections
+                  .map((v) => label(item.rule.kind, v))
+                  .join(" · ")}
           </p>
           <small
-            >{item.unit_count} 条基础注 · 每注 {money(item.amount)} · {item.status ===
-            "cancelled"
+            >{item.unit_count} 条基础注 · {item.package_zodiacs?.length
+              ? "每肖"
+              : "每注"}
+            {money(item.amount)} · {item.status === "cancelled"
               ? "已作废"
               : item.status === "settled"
                 ? "已结算"
