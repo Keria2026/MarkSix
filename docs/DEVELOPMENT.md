@@ -32,7 +32,7 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 | App / Workspace | 客户认证壳／账号内导航与账本协调 |
 | BetEntry / PlayEditor / BatchEditor / SystemSettings | 投注草稿与报价／单条编辑／批量变更／配置及历史清空 |
 | SlipComposer / SlipDetail / PlayOrder / PasswordChange | 组合单草稿／分项入口／排序／客户改密 |
-| BettorExport / bettor-pdf | 导出任务与取消／中文 PDF 排版及 ZIP 命名 |
+| BettorExport / bettor-statement | 格式选择、导出与取消／PDF、PNG 共享排版及 ZIP 命名 |
 | selection / modal | 文本选项解析／共享弹窗滚动锁与动效 |
 | requests / Management | 可销毁请求作用域／auth 管理界面 |
 

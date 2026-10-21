@@ -1,8 +1,9 @@
 import { test, expect } from "./authenticated";
 import { readFile } from "node:fs/promises";
+import type { BettorStatement } from "../src/lib/bettor-statement";
 import { unzipSync } from "fflate";
 import { PDFDocument, PDFDict, PDFName } from "pdf-lib";
-import { pdfFilename } from "../src/lib/bettor-pdf";
+import { statementFilename, statementRows } from "../src/lib/bettor-statement";
 
 const headers = { "X-MarkSix": "1" };
 test("custom rule ordering survives reload without invalidating rule versions", async ({
@@ -173,7 +174,7 @@ test("PDF archive contains each bettor under safe distinct filenames with embedd
     .click();
   const download = page.waitForEvent("download");
   await page
-    .getByRole("button", { name: "导出全部投注人 PDF", exact: true })
+    .getByRole("button", { name: "导出全部投注人账单", exact: true })
     .click();
   const result = await download;
   expect(result.suggestedFilename()).toContain(boot.today.id);
@@ -198,15 +199,18 @@ test("PDF archive contains each bettor under safe distinct filenames with embedd
 
 test("PDF names reject archive paths, reserved Windows names and case collisions", () => {
   const used = new Set<string>();
-  expect(pdfFilename("../甲:乙", used)).toBe("_甲_乙.pdf");
-  expect(pdfFilename("CON", used)).toBe("投注人-CON.pdf");
-  expect(pdfFilename("CON.ledger", used)).toBe("投注人-CON.ledger.pdf");
-  expect(pdfFilename("σ", used)).toBe("σ.pdf");
-  expect(pdfFilename("ς", used)).toBe("ς (2).pdf");
-  expect(pdfFilename("A", used)).toBe("A.pdf");
-  expect(pdfFilename("a", used)).toBe("a (2).pdf");
+  expect(statementFilename("../甲:乙", used, "pdf")).toBe("_甲_乙.pdf");
+  expect(statementFilename("CON", used, "pdf")).toBe("投注人-CON.pdf");
+  expect(statementFilename("CON.ledger", used, "pdf")).toBe(
+    "投注人-CON.ledger.pdf",
+  );
+  expect(statementFilename("σ", used, "pdf")).toBe("σ.pdf");
+  expect(statementFilename("ς", used, "pdf")).toBe("ς (2).pdf");
+  expect(statementFilename("A", used, "pdf")).toBe("A.pdf");
+  expect(statementFilename("a", used, "pdf")).toBe("a (2).pdf");
   expect(
-    new TextEncoder().encode(pdfFilename("😀".repeat(80), used)).length,
+    new TextEncoder().encode(statementFilename("😀".repeat(80), used, "pdf"))
+      .length,
   ).toBeLessThanOrEqual(255);
 });
 
@@ -291,4 +295,182 @@ test("Chinese PDF font keeps glyph boundaries aligned for compact subsets", asyn
     if (offset % 4 !== 0) misaligned++;
   }
   expect(misaligned).toBe(0);
+});
+
+async function statementFixture(): Promise<BettorStatement> {
+  return JSON.parse(await readFile("../test-results/slip-export.json", "utf8"));
+}
+
+test("statement sums receipts, excludes cancellation, handles refunded 49 and refuses inconsistent totals", async () => {
+  const data = await statementFixture(),
+    bettor = data.bettors[0];
+  const rows = statementRows(bettor, true);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    stake: 119000n,
+    rebate: 11900n,
+    net: 265900n,
+  });
+  const wrong = structuredClone(bettor);
+  wrong.totals.rebate++;
+  expect(() => statementRows(wrong, true)).toThrow("明细与汇总不一致");
+  const pending = structuredClone(bettor);
+  pending.totals.net = null;
+  for (const b of pending.bets)
+    if (b.record.status !== "cancelled") {
+      b.record.status = "pending";
+      b.record.payout = null;
+    }
+  expect(statementRows(pending, false)[0].net).toBeNull();
+  expect(() => statementRows(pending, true)).toThrow("结算记录不完整");
+  const refunded = structuredClone(bettor);
+  refunded.bets = [refunded.bets[0]];
+  Object.assign(refunded.bets[0].record, {
+    stake: 10000,
+    payout: 10000,
+    rebate: 0,
+    void_stake: 10000,
+  });
+  Object.assign(refunded.totals, {
+    stake: 0,
+    refunded: 10000,
+    payout: 0,
+    rebate: 0,
+    net: 0,
+  });
+  expect(statementRows(refunded, true)[0]).toMatchObject({
+    stake: 10000n,
+    rebate: 0n,
+    net: 0n,
+  });
+  const partial = structuredClone(bettor);
+  partial.bets[0].record.status = "cancelled";
+  Object.assign(partial.totals, { stake: 99000, rebate: 9900, net: -243900 });
+  const remaining = statementRows(partial, true);
+  expect(remaining[0].stake).toBe(99000n);
+  expect(remaining[0].createdAt).toBe(bettor.bets[0].record.created_at);
+});
+
+test("PDF and PNG use the compact receipt layout, paginate and release temporary fonts", async ({
+  page,
+}, testInfo) => {
+  const data = await statementFixture();
+  const bettor = data.bettors[0],
+    original = bettor.bets[0];
+  bettor.name = "分页对账客户";
+  bettor.bets = Array.from({ length: 38 }, (_, i) => {
+    const entry = structuredClone(original);
+    Object.assign(entry.record, {
+      id: `record-${String(i).padStart(3, "0")}`,
+      slip_id: null,
+      created_at: `2026-10-14T18:${String(i).padStart(2, "0")}:00`,
+      stake: 1000,
+      rebate: 100,
+      payout: i % 2 ? 0 : 2000,
+      status: "settled",
+      void_stake: 0,
+    });
+    return entry;
+  }).reverse();
+  Object.assign(bettor.totals, {
+    stake: 38000,
+    refunded: 0,
+    rebate: 3800,
+    payout: 38000,
+    net: -3800,
+  });
+  await page.route("**/api/periods/*/bettor-export", (route) =>
+    route.fulfill({ json: data }),
+  );
+  await page.goto("/");
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
+  await nav
+    .getByRole("button", { name: "投注人分类统计", exact: true })
+    .click();
+  await page.setViewportSize({ width: 320, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  let pdfPages = 0;
+  for (const format of ["pdf", "png"]) {
+    await page.getByLabel("账单导出格式").selectOption(format);
+    const download = page.waitForEvent("download");
+    await page
+      .getByRole("button", { name: "导出全部投注人账单", exact: true })
+      .click();
+    await expect(page.getByLabel("账单导出格式")).toBeDisabled();
+    const result = await download;
+    const path = testInfo.outputPath(`compact-${format}.zip`);
+    await result.saveAs(path);
+    const files = unzipSync(new Uint8Array(await readFile(path)));
+    if (format === "pdf") {
+      const doc = await PDFDocument.load(files["分页对账客户.pdf"]);
+      pdfPages = doc.getPageCount();
+      expect(pdfPages).toBeGreaterThan(1);
+    } else {
+      expect(Object.keys(files)).toHaveLength(pdfPages);
+      for (let i = 0; i < pdfPages; i++) {
+        const bytes =
+          files[`分页对账客户/${String(i + 1).padStart(3, "0")}.png`];
+        expect([...bytes.slice(0, 8)]).toEqual([
+          137, 80, 78, 71, 13, 10, 26, 10,
+        ]);
+        const view = new DataView(
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength,
+        );
+        expect(view.getUint32(16)).toBe(1191);
+        expect(view.getUint32(20)).toBe(1684);
+      }
+      expect(
+        await page.evaluate(
+          () =>
+            [...document.fonts].filter((f) =>
+              f.family.startsWith("MarkSixStatement-"),
+            ).length,
+        ),
+      ).toBe(0);
+    }
+    await expect(page.getByLabel("账单导出格式")).toBeEnabled();
+  }
+});
+
+test("statement export cancellation never downloads partial PNG files", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
+  await nav
+    .getByRole("button", { name: "投注人分类统计", exact: true })
+    .click();
+  await page.getByLabel("账单导出格式").selectOption("png");
+  let resolveRequest!: () => void;
+  const pending = new Promise<void>((resolve) => (resolveRequest = resolve));
+  await page.route("**/api/periods/*/bettor-export", async (route) => {
+    await pending;
+    await route.fulfill({ json: await statementFixture() }).catch(() => {});
+  });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  await page
+    .getByRole("button", { name: "导出全部投注人账单", exact: true })
+    .click();
+  await page.getByRole("button", { name: "取消导出", exact: true }).click();
+  resolveRequest();
+  await expect(page.locator(".bettor-export [role=status]")).toHaveText(
+    "已取消导出",
+  );
+  await expect(page.getByLabel("账单导出格式")).toBeEnabled();
+  expect(downloads).toBe(0);
 });
