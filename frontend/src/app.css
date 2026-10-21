@@ -3909,3 +3909,16 @@ body {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+.bettor-export .export-format {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+.bettor-export .export-format select {
+  width: auto;
+  min-width: 120px;
+  min-height: 44px;
+}
