@@ -15,6 +15,7 @@
   import {
     ApiError,
     money,
+    entryCents,
     signed,
     label,
     options,
@@ -68,11 +69,25 @@
     selectionError = $state("");
   let selectionText = $state("");
   let textInvalid = $state(false);
+  function boundary(values: number[]) {
+    if (!currentPlay) return null;
+    const selected = draft.packageMode
+      ? today.mapping.zodiac.flatMap((z, i) =>
+          values.includes(z) ? [i + 1] : [],
+        )
+      : values;
+    return selectionBoundary(currentPlay.rule, selected, draft.compound);
+  }
+  function setPackageMode(value: boolean) {
+    draft.packageMode = value;
+    draft.compound = false;
+    draft.selections = [];
+    selectionError = "";
+    syncSelectionText();
+  }
   function syncSelectionText() {
     selectionText = currentPlay
-      ? draft.selections
-          .map((value) => label(currentPlay.rule.kind, value))
-          .join(" ")
+      ? draft.selections.map((value) => label(selectionKind, value)).join(" ")
       : "";
     textInvalid = false;
   }
@@ -80,13 +95,13 @@
     selectionText = value;
     if (!currentPlay) return;
     try {
-      const next = parseSelections(currentPlay.rule.kind, value);
+      const next = parseSelections(selectionKind, value);
       if (
         currentPlay.rule.kind === "zodiac_count" &&
         next.some((n) => n !== currentPlay.rule.zodiac_count)
       )
         throw new Error(`本玩法只允许 ${currentPlay.rule.zodiac_count} 种生肖`);
-      const error = selectionBoundary(currentPlay.rule, next, draft.compound);
+      const error = boundary(next);
       if (error) throw new Error(error);
       draft.selections = next;
       selectionError = "";
@@ -115,8 +130,19 @@
     boot?.plays.find((p) => p.id === draft.playId && p.enabled) ??
       boot?.plays.find((p) => p.enabled),
   );
+  const selectionKind = $derived(
+    draft.packageMode ? "zodiac" : (currentPlay?.rule.kind ?? "number"),
+  );
+  const packageAvailable = $derived(
+    currentPlay?.rule.kind === "number" && currentPlay.rule.quantity === 1,
+  );
+  const packageNumbers = $derived(
+    today.mapping.zodiac.flatMap((z, i) =>
+      draft.selections.includes(z) ? [i + 1] : [],
+    ),
+  );
   $effect(() => {
-    const kind = currentPlay?.rule.kind;
+    const kind = selectionKind;
     const selections = [...draft.selections];
     untrack(() => {
       if (!kind || textInvalid) return;
@@ -135,21 +161,24 @@
   });
   const selectedCount = $derived(
     currentPlay
-      ? basicCount(currentPlay.rule, draft.selections, draft.compound)
+      ? basicCount(
+          currentPlay.rule,
+          draft.packageMode ? packageNumbers : draft.selections,
+          draft.compound,
+        )
       : 0,
   );
   const inputValid = $derived(
     !!currentPlay &&
+      (!draft.packageMode || packageAvailable) &&
       !textInvalid &&
       selectedCount > 0 &&
       selectedCount <= 1000 &&
-      /^\d+$/.test(draft.amount) &&
-      BigInt(draft.amount) > 0n,
+      entryCents(draft.amount) !== null,
   );
   const stakePreview = $derived(
-    /^\d+$/.test(draft.amount)
-      ? BigInt(draft.amount) * BigInt(selectedCount) * 100n
-      : 0n,
+    (entryCents(draft.amount) ?? 0n) *
+      BigInt(draft.packageMode ? draft.selections.length : selectedCount),
   );
   const quoteKey = $derived(
     inputValid && today && currentPlay
@@ -157,8 +186,12 @@
           period: today.id,
           play_id: currentPlay.id,
           play_version: currentPlay.version,
-          selections:
-            currentPlay.rule.condition === "hard_pair"
+          ...(draft.packageMode
+            ? { package_zodiacs: [...draft.selections].sort((a, b) => a - b) }
+            : {}),
+          selections: draft.packageMode
+            ? []
+            : currentPlay.rule.condition === "hard_pair"
               ? [...draft.selections]
               : [...draft.selections].sort((a, b) => a - b),
           bettor: draft.bettor.trim(),
@@ -177,6 +210,7 @@
         ? [selectedRule.zodiac_count]
         : [];
     draft.compound = false;
+    draft.packageMode = false;
     selectionError = "";
     syncSelectionText();
   }
@@ -200,9 +234,7 @@
       return;
     }
     const next = [...draft.selections, value];
-    const error = currentPlay
-      ? selectionBoundary(currentPlay.rule, next, draft.compound)
-      : null;
+    const error = currentPlay ? boundary(next) : null;
     if (error) {
       selectionError = error;
       notify(error);
@@ -283,7 +315,7 @@
       controller.abort();
     };
   });
-  const validAmount = $derived(/^\d+$/.test(draft.amount));
+  const validAmount = $derived(entryCents(draft.amount) !== null);
 </script>
 
 <div class="bet-layout">
@@ -352,7 +384,9 @@
       </div>
       <div class="section-head selection-heading">
         <h2><span class="step">02</span> 选择投注项</h2>
-        {#if currentPlay.rule.compound_enabled}<div class="segmented">
+        {#if currentPlay.rule.compound_enabled && !draft.packageMode}<div
+            class="segmented"
+          >
             <button
               class:active={!draft.compound}
               aria-pressed={!draft.compound}
@@ -364,6 +398,21 @@
             >
           </div>{/if}
       </div>
+      {#if packageAvailable}<div class="segmented" aria-label="号码投注方式">
+          <button
+            class:active={!draft.packageMode}
+            aria-pressed={!draft.packageMode}
+            onclick={() => setPackageMode(false)}>直接选号</button
+          >
+          <button
+            class:active={draft.packageMode}
+            aria-pressed={draft.packageMode}
+            onclick={() => setPackageMode(true)}>包肖投注</button
+          >
+        </div>{/if}
+      {#if draft.packageMode}<p class="field-help">
+          金额按每肖填写，按当期生肖表平均分配到各号码；余下的分按号码升序分配。各号码分别结算。
+        </p>{/if}
       {#if currentPlay.rule.kind === "zodiac_count"}<p class="field-help">
           全部 7 个开奖号码恰好出现 {currentPlay.rule.zodiac_count} 种不同生肖时中奖；同一生肖出现多次只计一种。
         </p>{/if}
@@ -386,9 +435,11 @@
         </p>{/if}
       <div class="selection-description">
         <span
-          >{draft.compound
-            ? `从候选项中每 ${currentPlay.rule.combination_size} 个拆成一注`
-            : `选择数量${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个${currentPlay.rule.quantity === 1 ? "；多选逐项拆注" : "；允许的超额选择按阈值拆注"}`}</span
+          >{draft.packageMode
+            ? "选择生肖，每肖金额独立包号"
+            : draft.compound
+              ? `从候选项中每 ${currentPlay.rule.combination_size} 个拆成一注`
+              : `选择数量${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个${currentPlay.rule.quantity === 1 ? "；多选逐项拆注" : "；允许的超额选择按阈值拆注"}`}</span
         ><button
           class="text-button"
           onclick={() => {
@@ -415,9 +466,9 @@
               enterSelections(event.currentTarget.value);
             }
           }}
-          placeholder={currentPlay.rule.kind === "number"
+          placeholder={selectionKind === "number"
             ? "例如：01 02，03、04"
-            : currentPlay.rule.kind === "zodiac"
+            : selectionKind === "zodiac"
               ? "例如：鼠 牛，虎、兔"
               : "输入选项，以空格或标点分隔"}
         /></label
@@ -427,22 +478,21 @@
       </p>
       <div
         class="option-grid"
-        class:number-grid={currentPlay.rule.kind === "number"}
-        class:zodiac-grid={currentPlay.rule.kind === "zodiac"}
+        class:number-grid={selectionKind === "number"}
+        class:zodiac-grid={selectionKind === "zodiac"}
       >
-        {#each options(currentPlay.rule.kind).filter((value) => currentPlay.rule.kind !== "zodiac_count" || value === currentPlay.rule.zodiac_count) as value}<button
+        {#each options(selectionKind).filter((value) => currentPlay.rule.kind !== "zodiac_count" || value === currentPlay.rule.zodiac_count) as value}<button
             class="option"
             class:selected={draft.selections.includes(value)}
             aria-pressed={draft.selections.includes(value)}
-            aria-label={`${label(currentPlay.rule.kind, value)}${currentPlay.rule.kind === "number" ? ` ${zodiacs[today.mapping.zodiac[value - 1]]}` : ""}`}
+            aria-label={`${label(selectionKind, value)}${selectionKind === "number" ? ` ${zodiacs[today.mapping.zodiac[value - 1]]}` : ""}`}
             onclick={() => toggleOption(value)}
-            >{#if currentPlay.rule.kind === "number"}<span
+            >{#if selectionKind === "number"}<span
                 class="number-option"
-                data-wave={wave(value)}
-                >{label(currentPlay.rule.kind, value)}</span
+                data-wave={wave(value)}>{label(selectionKind, value)}</span
               ><small>{zodiacs[today.mapping.zodiac[value - 1]]}</small
-              >{:else}<span>{label(currentPlay.rule.kind, value)}</span
-              >{#if currentPlay.rule.kind === "zodiac" && value === today.mapping.natal}<small
+              >{:else}<span>{label(selectionKind, value)}</span
+              >{#if selectionKind === "zodiac" && value === today.mapping.natal}<small
                   >本命</small
                 >{/if}{/if}{#if draft.selections.includes(value)}<span
                 class="selection-check"><Check size={10} /></span
@@ -470,7 +520,11 @@
       </div>
       <div class="section-head amount-heading">
         <h2><span class="step">03</span> 填写金额</h2>
-        <span class="muted small">每条基础注的本金</span>
+        <span class="muted small"
+          >{draft.packageMode
+            ? "每肖总本金，逐号均分"
+            : "每条基础注的本金"}</span
+        >
       </div>
       <label class="bettor-input"
         >投注人<input
@@ -484,12 +538,12 @@
       >
       <label class="amount-input"
         ><span>¥</span><input
-          aria-label="每注金额"
-          inputmode="numeric"
-          pattern="[0-9]*"
+          aria-label={draft.packageMode ? "每肖金额" : "每注金额"}
+          inputmode="decimal"
+          pattern="[0-9]+([.][0-9])?"
           bind:value={draft.amount}
           maxlength="16"
-        /><small>元 / 注</small></label
+        /><small>{draft.packageMode ? "元 / 肖" : "元 / 注"}</small></label
       >
       <div class="quick-amounts">
         {#each ["10", "50", "100", "500", "1000"] as value}<button
@@ -508,23 +562,32 @@
     </div>
     <div class="summary-name">
       {currentPlay?.rule.name ?? "选择一个玩法"}<span class="soft-chip"
-        >{draft.compound ? "复式" : selectedCount > 1 ? "多选" : "单注"}</span
+        >{draft.packageMode
+          ? "包肖"
+          : draft.compound
+            ? "复式"
+            : selectedCount > 1
+              ? "多选"
+              : "单注"}</span
       >
     </div>
     <div class="selected-tags">
       {#if draft.selections.length}{#each draft.selections.slice(0, 20) as value}<span
-            >{label(currentPlay!.rule.kind, value)}</span
+            >{label(selectionKind, value)}</span
           >{/each}{#if draft.selections.length > 20}<span
             >+{draft.selections.length - 20}</span
           >{/if}{:else}<p>选择投注项后，在这里查看汇总。</p>{/if}
     </div>
+    {#if draft.packageMode}<p class="field-help">
+        包号：{packageNumbers.map((n) => label("number", n)).join(" · ")}
+      </p>{/if}
     <div class="ledger-row">
       <span>基础注数量</span><strong>{selectedCount.toLocaleString()} 注</strong
       >
     </div>
     <div class="ledger-row">
-      <span>每注本金</span><strong
-        >{validAmount ? money(BigInt(draft.amount) * 100n) : "—"}</strong
+      <span>{draft.packageMode ? "每肖本金" : "每注本金"}</span><strong
+        >{validAmount ? money(entryCents(draft.amount)!) : "—"}</strong
       >
     </div>
     <div class="summary-total">
@@ -586,7 +649,10 @@
           rule: structuredClone($state.snapshot(currentPlay.rule)),
           play_id: currentPlay.id,
           play_version: currentPlay.version,
-          selections: [...draft.selections],
+          selections: draft.packageMode ? [] : [...draft.selections],
+          ...(draft.packageMode
+            ? { package_zodiacs: [...draft.selections] }
+            : {}),
           compound: draft.compound,
           amount: draft.amount,
           units: selectedCount,

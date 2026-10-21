@@ -52,7 +52,7 @@ test("administrator records compound bets, cancels atomically, configures rules,
     page.getByRole("dialog", { name: "投注记录详情" }).locator("tbody tr"),
   ).toHaveCount(21);
   await page.getByRole("button", { name: "修改金额", exact: true }).click();
-  await page.getByLabel("修改后的每注金额（整数元）").fill("150");
+  await page.getByLabel("修改后的每注金额（最多一位小数）").fill("150");
   await page.getByRole("button", { name: "确认修改", exact: true }).click();
   await expect(
     page.getByRole("dialog", { name: "投注记录详情" }),

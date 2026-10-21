@@ -333,7 +333,9 @@ pub struct BetInput {
     pub play_version: i64,
     pub selections: Vec<u8>, // number: 1..49; all other kinds: zero-based option index
     pub compound: bool,
-    pub amount: String, // integer yuan
+    pub amount: String, // yuan, at most one decimal place
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub package_zodiacs: Vec<u8>, // empty for ordinary bets; otherwise total per zodiac
     pub request_id: String,
     #[serde(default)]
     pub bettor: String,
@@ -383,12 +385,29 @@ pub struct BetPlan {
 pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetPlan> {
     rule.validate()?;
     mapping.validate()?;
-    if input.amount.is_empty() || !input.amount.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("每注金额必须是正整数元".into());
-    }
-    let amount = scaled(&input.amount, 2)?;
-    if amount < 100 {
-        return Err("每注最少 1 元".into());
+    let amount = entry_amount(&input.amount)?;
+    if !input.package_zodiacs.is_empty() {
+        if rule.kind != Kind::Number
+            || rule.quantity != 1
+            || input.compound
+            || !input.selections.is_empty()
+            || !rule.relation.accepts(1, rule.quantity)
+        {
+            return Err("包肖仅适用于单号码玩法，不能同时选择普通号码或复式".into());
+        }
+        let mut zodiacs = input.package_zodiacs.clone();
+        zodiacs.sort_unstable();
+        if zodiacs.iter().any(|z| *z >= 12) || zodiacs.windows(2).any(|w| w[0] == w[1]) {
+            return Err("包肖生肖重复或不合法".into());
+        }
+        let mut regular = input.clone();
+        regular.package_zodiacs.clear();
+        regular.selections = (1..=49)
+            .filter(|n| zodiacs.contains(&mapping.zodiac[*n as usize - 1]))
+            .collect();
+        let mut planned = plan(rule, &regular, mapping)?;
+        price_package(&mut planned.atoms, &zodiacs, mapping, amount)?;
+        return total_plan(planned.atoms);
     }
     let mut options = input.selections.clone();
     if rule.condition != Condition::HardPair {
@@ -503,6 +522,65 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
                 .transpose()?,
         });
     }
+    total_plan(atoms)
+}
+pub fn entry_amount(value: &str) -> RuleResult<i64> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || (value.contains('.')
+            && (fraction.len() != 1 || !fraction.bytes().all(|b| b.is_ascii_digit())))
+    {
+        return Err("投注金额须为正数，最多一位小数".into());
+    }
+    let amount = scaled(value, 2)?;
+    if amount < 10 {
+        return Err("投注金额最少 0.1 元".into());
+    }
+    Ok(amount)
+}
+pub fn price_atom(a: &mut Atom, amount: i64) -> RuleResult<()> {
+    if amount <= 0 {
+        return Err("基础注金额必须大于零".into());
+    }
+    a.stake = amount;
+    a.payout = rounded_product(amount, scaled(&a.odds, 4)?)?;
+    a.special_hit_payout = a
+        .special_hit_odds
+        .as_ref()
+        .map(|v| scaled(v, 4).and_then(|v| rounded_product(amount, v)))
+        .transpose()?;
+    a.rebate = rounded_product(amount, scaled(&a.rebate_percent, 2)?)?;
+    Ok(())
+}
+pub fn price_package(
+    atoms: &mut [Atom],
+    packages: &[u8],
+    mapping: &Mapping,
+    amount: i64,
+) -> RuleResult<()> {
+    for zodiac in packages {
+        let mut indices: Vec<usize> = atoms
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| mapping.zodiac[a.options[0] as usize - 1] == *zodiac)
+            .map(|(i, _)| i)
+            .collect();
+        indices.sort_unstable_by_key(|i| atoms[*i].options[0]);
+        if indices.is_empty() || amount < indices.len() as i64 {
+            return Err("包肖分配后每个号码至少一分钱".into());
+        }
+        for (position, index) in indices.iter().enumerate() {
+            price_atom(
+                &mut atoms[*index],
+                amount / indices.len() as i64
+                    + i64::from((position as i64) < amount % indices.len() as i64),
+            )?;
+        }
+    }
+    Ok(())
+}
+pub fn total_plan(atoms: Vec<Atom>) -> RuleResult<BetPlan> {
     Ok(BetPlan {
         stake: checked_sum(atoms.iter().map(|a| a.stake))?,
         rebate: checked_sum(atoms.iter().map(|a| a.rebate))?,
@@ -510,6 +588,7 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
         atoms,
     })
 }
+
 pub fn choose(n: usize, k: usize) -> u64 {
     if k > n {
         return 0;
@@ -795,6 +874,83 @@ mod tests {
             assert!(rule.validate().is_err(), "{value}");
         }
     }
+    #[test]
+    fn decimal_stakes_and_zodiac_packages_conserve_principal() {
+        let m = Mapping::for_year(2026);
+        let rule = defaults()
+            .into_iter()
+            .find(|r| r.kind == Kind::Number && r.quantity == 1 && r.scope == Scope::Special)
+            .unwrap();
+        let mut bet = input(vec![9], false);
+        for amount in ["0.1", "10.5", "100"] {
+            bet.amount = amount.into();
+            assert_eq!(
+                plan(&rule, &bet, &m).unwrap().stake,
+                scaled(amount, 2).unwrap()
+            );
+        }
+        for amount in ["0", "0.01", "1.00", "-1", "1.", ".5", "1e2", "NaN"] {
+            bet.amount = amount.into();
+            assert!(plan(&rule, &bet, &m).is_err(), "{amount}");
+        }
+        bet.amount = "100.1".into();
+        bet.selections.clear();
+        bet.package_zodiacs = vec![10];
+        let p = plan(&rule, &bet, &m).unwrap();
+        assert_eq!(
+            p.atoms.iter().map(|a| a.options[0]).collect::<Vec<_>>(),
+            vec![9, 21, 33, 45]
+        );
+        assert_eq!(
+            p.atoms.iter().map(|a| a.stake).collect::<Vec<_>>(),
+            vec![2503, 2503, 2502, 2502]
+        );
+        assert_eq!(p.stake, 10010);
+        let d = Draw::predicted([1, 2, 3, 4, 5, 6, 9], &m);
+        let results = settle(&p.atoms, &d);
+        assert_eq!(results.iter().filter(|r| r.payout > 0).count(), 1);
+        assert_eq!(
+            results.iter().map(|r| r.payout).sum::<i64>(),
+            p.atoms[0].payout
+        );
+        bet.package_zodiacs.push(m.natal);
+        let p = plan(&rule, &bet, &m).unwrap();
+        assert_eq!(p.atoms.len(), 9);
+        assert_eq!(p.stake, 20020);
+        let mut special = rule.clone();
+        special.special_odds = Some("20".into());
+        special.special_rebate_percent = Some("5".into());
+        let p = plan(&special, &bet, &m).unwrap();
+        for atom in &p.atoms {
+            if m.zodiac[atom.options[0] as usize - 1] == m.natal {
+                assert_eq!(atom.odds, "20");
+                assert_eq!(atom.rebate_percent, "5");
+            }
+        }
+        special.selection_limit = Some(1);
+        assert!(plan(&special, &bet, &m).is_err());
+        let next_year = plan(&rule, &bet, &Mapping::for_year(2027)).unwrap();
+        assert_ne!(
+            next_year
+                .atoms
+                .iter()
+                .map(|a| a.options[0])
+                .collect::<Vec<_>>(),
+            p.atoms.iter().map(|a| a.options[0]).collect::<Vec<_>>()
+        );
+        bet.amount = "0.1".into();
+        assert_eq!(plan(&rule, &bet, &m).unwrap().stake, 20);
+        bet.package_zodiacs.push(10);
+        assert!(plan(&rule, &bet, &m).is_err());
+        bet.package_zodiacs = vec![12];
+        assert!(plan(&rule, &bet, &m).is_err());
+        bet.package_zodiacs = vec![10];
+        bet.selections = vec![9];
+        assert!(plan(&rule, &bet, &m).is_err());
+        bet.selections.clear();
+        bet.compound = true;
+        assert!(plan(&rule, &bet, &m).is_err());
+    }
     fn input(selections: Vec<u8>, compound: bool) -> BetInput {
         BetInput {
             period: "2026287".into(),
@@ -803,6 +959,7 @@ mod tests {
             selections,
             compound,
             amount: "100".into(),
+            package_zodiacs: vec![],
             request_id: "test".into(),
             bettor: "测试投注人".into(),
         }

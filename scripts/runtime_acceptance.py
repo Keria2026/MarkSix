@@ -237,7 +237,7 @@ class Acceptance:
             id=response["id"],
             rule=copy.deepcopy(play["rule"]),
             options=atomic_options(play["rule"], options, compound),
-            amount=int(amount) * 100,
+            amount=int(Decimal(amount) * 100),
             bettor=bettor,
             cancelled=False,
             layoffs=[],
@@ -754,7 +754,10 @@ class Acceptance:
                 "conditional pair quote best banker net",
             )
             m = next(m for m in self.models if m["rule"]["name"] == "二中二含特")
-            self.revise(m, "1.01", expected=409)
+            self.revise(m, "1.01", expected=422)
+            decimal_bet = self.add(base, [9, 21], amount="10.5")
+            self.revise(decimal_bet, "12.3")
+            self.add(base, [49], amount="0.1")
             self.revise(m, "99999", receiver="受注方甲", expected=409)
             self.control("time", time=date + "T07:59:59")
             self.request("POST", "/api/bets", self.payload(base, [1]), 409)

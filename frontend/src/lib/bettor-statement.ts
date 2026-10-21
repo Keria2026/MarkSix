@@ -239,19 +239,6 @@ function layout(
           : `[U+${c.codePointAt(0)!.toString(16).toUpperCase()}]`,
       )
       .join("");
-  const wrap = (value: string, size: number, width: number) => {
-    const lines: string[] = [];
-    let current = "";
-    for (const c of printable(value)) {
-      if (current && font.widthOfTextAtSize(current + c, size) > width) {
-        lines.push(current);
-        current = "";
-      }
-      current += c;
-    }
-    lines.push(current);
-    return lines;
-  };
   function text(
     value: string,
     x: number,
@@ -321,84 +308,15 @@ function layout(
     return y - 67;
   }
   start();
-  text("基本信息", LEFT, 685, 13);
-  text("期号", LEFT, 651, 9, muted);
-  text(data.period, LEFT, 628, 15);
-  text("投注人", 310, 651, 9, muted);
   const name = bettor.name || "未登记";
-  const nameSize = wrap(name, 12, RIGHT - 310).length > 4 ? 10 : 12;
-  const names = wrap(name, nameSize, RIGHT - 310);
-  const nameHeight = nameSize + 2;
-  names.forEach((line, i) => text(line, 310, 630 - i * nameHeight, nameSize));
-  const offset = Math.max(0, names.length - 2) * nameHeight;
-  rect(LEFT, 509 - offset, RIGHT - LEFT, 91, pale);
-  text("总净输赢", 59, 577 - offset, 9, muted);
   const total = statementTotals(rows, data.settled);
-  const net = total.net;
-  text(
-    net === null ? "待结算" : `¥ ${netText(net)}`,
-    59,
-    543 - offset,
-    23,
-    netColor(net),
-    185,
-  );
-  text(data.settled ? "水钱（反水）" : "预计水钱", 262, 577 - offset, 9, muted);
-  text(money(cents(bettor.totals.rebate)), 262, 545 - offset, 17, ink, 128);
-  text("本金", 406, 577 - offset, 9, muted);
-  text(money(sum(rows.map((r) => r.stake))), 406, 545 - offset, 17, ink, 130);
   function continuation() {
     start();
-    const heading = wrap(`第 ${data.period} 期 · ${name}`, 10, RIGHT - LEFT);
-    heading.forEach((line, n) => text(line, LEFT, 685 - n * 15, 10, muted));
-    return Math.min(640, 685 - heading.length * 15 - 20);
+    text(`投注人：${name}  ｜  第 ${data.period} 期`, LEFT, 688, 11);
+    return 652;
   }
-  let cursor = 486 - offset;
-  function bandHeader() {
-    text("水钱拆分", LEFT, cursor, 10);
-    text("水钱比例", 59, cursor - 20, 8.5, muted);
-    end("本金基数", 330, cursor - 20, 8.5, muted);
-    end(data.settled ? "水钱小计" : "预计水钱", 538, cursor - 20, 8.5, muted);
-    cursor -= 40;
-  }
-  bandHeader();
-  for (const band of total.bands) {
-    if (cursor < 100) {
-      cursor = continuation();
-      bandHeader();
-    }
-    text(`${band.rate}%`, 59, cursor, 10);
-    end(money(band.base, false), 330, cursor, 10);
-    end(money(band.amount, false), 538, cursor, 10);
-    cursor -= 20;
-  }
-  if (!total.bands.length) {
-    text("无计水钱的有效基础注", 59, cursor, 9, muted);
-    cursor -= 20;
-  }
-  if (cursor < 140) cursor = continuation();
-  text(
-    data.settled
-      ? "中奖金额按含本返还列示（含和局退本）；净输赢＝中奖金额＋水钱－本金。"
-      : "尚未结算，中奖金额和净输赢显示待结算，水钱为预计值。",
-    LEFT,
-    cursor - 2,
-    7.5,
-    muted,
-  );
-  if (bettor.totals.refunded > 0) {
-    cursor -= 15;
-    text(
-      `和局退本 ${money(cents(bettor.totals.refunded))}，不计入水钱基数。`,
-      LEFT,
-      cursor,
-      8,
-      muted,
-    );
-  }
-  cursor -= 28;
-  if (cursor < 155) cursor = continuation();
-  let y = header(cursor);
+  text(`投注人：${name}  ｜  第 ${data.period} 期`, LEFT, 688, 11);
+  let y = header(652);
   if (!rows.length) {
     text("暂无有效投注单", LEFT, y, 10, muted);
     y -= 33;

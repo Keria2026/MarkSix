@@ -118,6 +118,7 @@ export interface Bet {
   play_version: number;
   rule: Rule;
   selections: number[];
+  package_zodiacs?: number[];
   compound: boolean;
   amount: number;
   unit_count: number;
@@ -433,6 +434,7 @@ export function selectionBoundary(
 }
 
 export interface BetDraft {
+  packageMode: boolean;
   playId: number;
   selections: number[];
   compound: boolean;
@@ -455,12 +457,20 @@ export interface RecordGroup {
   totals: LedgerTotals;
   items: Bet[];
 }
+export function entryCents(value: string): bigint | null {
+  if (!/^\d+(?:\.\d)?$/.test(value)) return null;
+  const [whole, fraction = ""] = value.split(".");
+  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  return cents > 0n ? cents : null;
+}
+
 export interface SlipLine {
   play_id: number;
   play_version: number;
   selections: number[];
   compound: boolean;
   amount: string;
+  package_zodiacs?: number[];
 }
 export interface SlipDraftLine extends SlipLine {
   key: string;

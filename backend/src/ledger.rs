@@ -50,31 +50,27 @@ pub struct Mutation {
     pub amount: String,
     pub receiver: Option<String>,
 }
-fn reprice(atoms: &[Atom], amount: i64, rule: &Rule) -> RuleResult<BetPlan> {
-    let atoms = atoms
-        .iter()
-        .map(|a| {
-            let mut a = a.clone();
-            a.stake = amount;
-            a.payout = rounded_product(amount, scaled(&a.odds, 4)?)?;
-            a.special_hit_payout = a
-                .special_hit_odds
-                .as_ref()
-                .map(|v| scaled(v, 4).and_then(|v| rounded_product(amount, v)))
-                .transpose()?;
-            if a.rebate_percent.is_empty() {
-                a.rebate_percent = rule.rebate_percent.clone();
-            }
-            a.rebate = rounded_product(amount, scaled(&a.rebate_percent, 2)?)?;
-            Ok(a)
-        })
-        .collect::<RuleResult<Vec<_>>>()?;
-    Ok(BetPlan {
-        stake: checked_sum(atoms.iter().map(|a| a.stake))?,
-        rebate: checked_sum(atoms.iter().map(|a| a.rebate))?,
-        exposure: checked_sum(atoms.iter().map(Atom::max_payout))?,
-        atoms,
-    })
+fn reprice(
+    atoms: &[Atom],
+    amount: i64,
+    rule: &Rule,
+    packages: &[u8],
+    mapping: &Mapping,
+) -> RuleResult<BetPlan> {
+    let mut atoms = atoms.to_vec();
+    for a in &mut atoms {
+        if a.rebate_percent.is_empty() {
+            a.rebate_percent = rule.rebate_percent.clone();
+        }
+    }
+    if packages.is_empty() {
+        for a in &mut atoms {
+            price_atom(a, amount)?;
+        }
+    } else {
+        price_package(&mut atoms, packages, mapping, amount)?;
+    }
+    total_plan(atoms)
 }
 pub(crate) async fn invalidate(
     tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
@@ -112,9 +108,13 @@ async fn mutate(
     fly: bool,
 ) -> ApiResult<Json<Value>> {
     uuid::Uuid::parse_str(&input.request_id).map_err(|_| conflict("提交标识不合法"))?;
-    let amount = scaled(&input.amount, 2)?;
-    if amount <= 0 || (!fly && (amount % 100 != 0 || amount < 100)) {
-        return Err(conflict("原投注金额须为正整数元；飞出金额最少一分钱"));
+    let amount = if fly {
+        scaled(&input.amount, 2)?
+    } else {
+        entry_amount(&input.amount)?
+    };
+    if amount <= 0 {
+        return Err(conflict("飞出金额最少一分钱"));
     }
     if fly {
         input.receiver = Some(party(input.receiver.as_deref().unwrap_or(""))?);
@@ -167,7 +167,31 @@ async fn mutate(
         .bind(&id)
         .fetch_one(&mut *tx)
         .await?;
-    let plan = reprice(&atoms, amount, &bet.rule)?;
+    let plan = reprice(&atoms, amount, &bet.rule, &bet.package_zodiacs, &p.mapping)?;
+    if !bet.package_zodiacs.is_empty() {
+        let previous: Vec<DbJson<Vec<Atom>>> =
+            sqlx::query_scalar("SELECT atoms FROM layoffs WHERE bet_id=? AND status<>'cancelled'")
+                .bind(&id)
+                .fetch_all(&mut *tx)
+                .await?;
+        if previous.iter().any(|row| row.len() != atoms.len()) {
+            return Err(conflict("飞出基础注快照不一致，请检查记录"));
+        }
+        for (i, original) in atoms.iter().enumerate() {
+            let already = checked_sum(previous.iter().map(|row| row[i].stake))?;
+            let limit = if fly {
+                original.stake
+            } else {
+                plan.atoms[i].stake
+            };
+            let used = checked_sum([already, if fly { plan.atoms[i].stake } else { 0 }])?;
+            if used > limit {
+                return Err(conflict(
+                    "包肖逐号飞出金额超过原注，请调整金额（含分配余分）",
+                ));
+            }
+        }
+    }
     let totals = sqlx::query("SELECT CAST(COALESCE(SUM(stake),0) AS SIGNED) stake,CAST(COALESCE(SUM(exposure),0) AS SIGNED) exposure FROM bets WHERE period_id=? AND status<>'cancelled'").bind(&period).fetch_one(&mut *tx).await?;
     let fly_totals = sqlx::query("SELECT COUNT(*) records,CAST(COALESCE(SUM(unit_count),0) AS SIGNED) units,CAST(COALESCE(SUM(stake+exposure),0) AS SIGNED) exposure FROM layoffs WHERE period_id=? AND status<>'cancelled'").bind(&period).fetch_one(&mut *tx).await?;
     if fly
