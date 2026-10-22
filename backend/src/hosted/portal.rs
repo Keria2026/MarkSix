@@ -228,7 +228,7 @@ fn license_status(a: &Account) -> Value {
     let end = a
         .authorized_through
         .and_then(|d| d.checked_add_days(Days::new(1)))
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .and_then(|d| d.and_hms_opt(6, 0, 0))
         .and_then(|d| {
             chrono::FixedOffset::east_opt(8 * 3600)
                 .unwrap()
@@ -281,4 +281,38 @@ async fn dispatch(State(r): State<Registry>, mut request: Request) -> ApiResult<
         .oneshot(request)
         .await
         .unwrap_or_else(|never| match never {}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::business_date;
+    use chrono::{FixedOffset, NaiveDate};
+
+    #[test]
+    fn license_access_and_countdown_end_at_next_beijing_six() {
+        let last = NaiveDate::from_ymd_opt(2026, 12, 31).unwrap();
+        let a = Account {
+            id: "test".into(),
+            username: "test".into(),
+            password_hash: String::new(),
+            credential_version: 1,
+            permanent: false,
+            authorized_through: Some(last),
+            disabled: false,
+            state: "ready".into(),
+            database_name: String::new(),
+            database_user: String::new(),
+            database_password: String::new(),
+        };
+        let next = last.succ_opt().unwrap();
+        assert!(a.active(business_date(next.and_hms_opt(5, 59, 59).unwrap())));
+        assert!(!a.active(business_date(next.and_hms_opt(6, 0, 0).unwrap())));
+        let expiry = license_status(&a)["expires_at"].as_i64().unwrap();
+        let displayed = chrono::DateTime::from_timestamp(expiry, 0)
+            .unwrap()
+            .with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
+            .naive_local();
+        assert_eq!(displayed, next.and_hms_opt(5, 59, 59).unwrap());
+    }
 }

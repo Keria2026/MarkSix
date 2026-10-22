@@ -14,14 +14,12 @@
   import type { Settings, Mapping, Period, api as Api } from "../lib/types";
   import { createRequestScope } from "../lib/requests";
   let {
-    username,
     today,
     licenseStatus,
     api: accountApi,
     notify,
     oncleared,
   }: {
-    username: string;
     today: Period;
     licenseStatus: LicenseStatus;
     api: typeof Api;
@@ -39,16 +37,12 @@
   function fail(e: unknown) {
     return e instanceof Error ? e.message : "操作失败，请重试";
   }
-  let config = $state<Settings | null>(null),
-    closeTime = $state("21:28");
+  let config = $state<Settings | null>(null);
   let mapping = $state<Mapping>({
       zodiac: Array.from({ length: 49 }, (_, i) => (18 - (i % 12)) % 12),
       natal: 6,
     }),
     effectiveDate = $state("");
-  let openTime = $state("08:00"),
-    settingsUsername = $state(""),
-    settingsPassword = $state("");
   let clearHistoryOpen = $state(false);
   let clearHistoryPassword = $state("");
   let clearHistoryConfirmation = $state("");
@@ -97,58 +91,8 @@
   }
   async function loadSettings() {
     config = await api<Settings>("/settings");
-    closeTime = config.closing[0]?.close_time ?? "21:28";
-    openTime = config.closing[0]?.open_time ?? "08:00";
-    settingsUsername = username;
-    settingsPassword = "";
     effectiveDate = config.tomorrow;
     mapping = structuredClone($state.snapshot(today?.mapping ?? mapping));
-  }
-  let closingDraft = $state<{ open_time: string; close_time: string } | null>(
-    null,
-  );
-  let closingError = $state("");
-  function requestClosing(event: SubmitEvent) {
-    event.preventDefault();
-    if (closeTime <= openTime) {
-      notify("封盘时间须晚于开始时间，不能跨日");
-      return;
-    }
-    closingDraft = { open_time: openTime, close_time: closeTime };
-    settingsUsername = username;
-    settingsPassword = "";
-    closingError = "";
-  }
-  function closeClosing() {
-    if (busy) return;
-    closingDraft = null;
-    settingsPassword = "";
-    closingError = "";
-  }
-  async function saveClosing(event: SubmitEvent) {
-    event.preventDefault();
-    if (!closingDraft) return;
-    busy = true;
-    closingError = "";
-    try {
-      await api("/settings/closing", {
-        method: "PUT",
-        body: JSON.stringify({
-          ...closingDraft,
-          username: settingsUsername,
-          password: settingsPassword,
-        }),
-      });
-      closingDraft = null;
-      settingsPassword = "";
-      await loadSettings();
-      notify("投注时间已安排，从下一期生效");
-    } catch (e) {
-      closingError = fail(e);
-      settingsPassword = "";
-    } finally {
-      busy = false;
-    }
   }
   async function saveMapping(event: SubmitEvent) {
     event.preventDefault();
@@ -212,36 +156,17 @@
       <h2><Clock3 size={19} /> 投注时间</h2>
     </div>
     <div class="schedule-rail">
-      <span>{today.open_time}<small>开始投注</small></span>
+      <span>06:00<small>当前期开始</small></span>
       <div></div>
-      <span>{today.close_time}<small>本期封盘</small></span>
+      <span>21:34<small>开始获取开奖</small></span>
       <div></div>
-      <span>21:34<small>获取开奖</small></span>
+      <span>次日 06:00<small>归档并切换下一期</small></span>
     </div>
-    <form onsubmit={requestClosing}>
-      <label
-        >新的开始时间<input type="time" bind:value={openTime} required /></label
-      >
-      <label
-        >新的封盘时间<input
-          type="time"
-          bind:value={closeTime}
-          required
-        /></label
-      >
-      <p class="field-help">
-        从下一期生效，当前期不会重新开放。保存前请验证管理员身份。
-      </p>
-      <button class="button secondary" disabled={busy}
-        >保存时间 <ArrowRight size={15} /></button
-      >
-    </form>
-    {#if config}<div class="scheduled-list">
-        {#each config.closing.filter((c) => c.effective_date >= today!.business_date) as c}<span
-            >{c.effective_date} 生效
-            <strong>{c.open_time} – {c.close_time}</strong></span
-          >{/each}
-      </div>{/if}
+    <p class="field-help">
+      北京时间每日 06:00
+      切期，全天可录入。开奖后使用该期已确认结果立即结算；至次日 06:00
+      前仍可改额、飞出和撤销。没有有效开奖结果时保留待结算，不猜测结果。
+    </p>
   </section>
   <section class="glass mapping-panel">
     <div class="section-head">
@@ -249,7 +174,7 @@
       <span class="soft-chip">本期本命 · {zodiacs[today.mapping.natal]}</span>
     </div>
     <p class="field-help">
-      每年 1 月 1 日自动换肖，01、13、25、37、49
+      每年 1 月 1 日 06:00 自动换肖，01、13、25、37、49
       对应当年本命肖；每期映射固定，实际结算以接口为准。
     </p>
     <form onsubmit={saveMapping}>
@@ -292,7 +217,7 @@
         </div>
       </details>
       <p class="field-help">
-        指定日期 00:00 生效，整期固定；实际结算以接口为准。
+        指定业务日期 06:00 生效，整期固定；实际结算以接口为准。
       </p>
       <button class="button secondary" disabled={busy}
         >安排生效 <ArrowRight size={15} /></button
@@ -357,51 +282,6 @@
           class="button danger"
           disabled={busy || clearHistoryConfirmation !== "永久清空历史记录"}
           >{busy ? "正在永久清空…" : "确认永久清空"}</button
-        >
-      </div>
-    </form>
-  </Modal>{/if}
-
-{#if closingDraft}<Modal
-    title="验证身份并保存投注时间"
-    dismissible={!busy}
-    onclose={closeClosing}
-  >
-    <form class="rule-form" onsubmit={saveClosing}>
-      <p class="modal-description">
-        新的投注时间为 {closingDraft.open_time} – {closingDraft.close_time}，从下一期生效。请验证当前账号身份。
-      </p>
-      <label
-        >验证账号<input
-          bind:value={settingsUsername}
-          autocomplete="username"
-          required
-          maxlength="80"
-          disabled={busy}
-        /></label
-      >
-      <label
-        >验证密码<input
-          type="password"
-          bind:value={settingsPassword}
-          autocomplete="current-password"
-          required
-          maxlength="256"
-          disabled={busy}
-        /></label
-      >
-      {#if closingError}<p class="inline-error" role="alert">
-          {closingError}
-        </p>{/if}
-      <div class="modal-actions">
-        <button
-          type="button"
-          class="button secondary"
-          onclick={closeClosing}
-          disabled={busy}>取消</button
-        >
-        <button class="button primary" disabled={busy}
-          >{busy ? "正在验证…" : "验证并保存"}</button
         >
       </div>
     </form>

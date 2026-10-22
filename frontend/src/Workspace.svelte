@@ -1116,7 +1116,7 @@
           <p>
             第 <strong>{today.id}</strong> 期
             <span class="separator">·</span>
-            {today.close_time} 封盘
+            每日 06:00 切期，开奖后可补录
             <span class="status-badge" data-phase={today.phase}
               ><i></i>{phases[today.phase]}</span
             >
@@ -1463,7 +1463,6 @@
       {:else}
         <PasswordChange {api} onchanged={onlogout} />
         <SystemSettings
-          {username}
           {today}
           {licenseStatus}
           {api}
@@ -1485,7 +1484,8 @@
 {#if licenseStatus.active}
   {#if slipDetail}<SlipDetail
       record={slipDetail}
-      canCancel={today?.phase === "open" && today?.id === slipDetail.period_id}
+      canCancel={!!today?.accepting_entries &&
+        today?.id === slipDetail.period_id}
       {api}
       onclose={() => (slipDetail = null)}
       onshow={showDetail}
@@ -1635,7 +1635,7 @@
                           ? signed((row.payout ?? 0) + row.rebate - row.stake)
                           : "待开奖"}</td
                     ><td
-                      >{#if row.status === "pending" && today?.phase === "open" && row.period_id === today.id}<button
+                      >{#if row.status !== "cancelled" && today?.accepting_entries && row.period_id === today.id}<button
                           class="text-button"
                           onclick={() => {
                             flyCancel = row;
@@ -1667,7 +1667,7 @@
                 )}{/if}
             </p>{/each}
         </details>{/if}
-      {#if detail.record.status === "pending" && detail.record.period_id === today?.id && today.phase === "open"}<div
+      {#if detail.record.status !== "cancelled" && detail.record.period_id === today?.id && today.accepting_entries}<div
           class="modal-actions"
         >
           <button

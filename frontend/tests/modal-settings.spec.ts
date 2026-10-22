@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
   ).toBeVisible();
 });
 
-test("time changes request credentials only after submission; modal blocks background and restores scrolling", async ({
+test("recording schedule is fixed to Beijing 06:00 and has no obsolete time editor", async ({
   page,
 }) => {
   await page
@@ -14,85 +14,13 @@ test("time changes request credentials only after submission; modal blocks backg
     .getByRole("button", { name: "玩法与配置", exact: true })
     .click();
   await page.getByRole("button", { name: "配置设置", exact: false }).click();
-  const submissions: unknown[] = [];
-  page.on("request", (request) => {
-    if (request.url().endsWith("/api/settings/closing"))
-      submissions.push(request.postDataJSON());
-  });
-  for (const width of [390, 1440]) {
-    await page.setViewportSize({ width, height: 740 });
-    await expect(page.getByLabel("验证密码", { exact: true })).toHaveCount(0);
-    await page.getByLabel("新的开始时间").fill("09:00");
-    await page.getByLabel("新的封盘时间").fill("22:00");
-    await page
-      .getByRole("button", { name: "保存时间", exact: false })
-      .evaluate((element) =>
-        element.scrollIntoView({ block: "center", behavior: "instant" }),
-      );
-    const offset = await page.evaluate(() => window.scrollY);
-    const original = await page.locator(".closing-panel").boundingBox();
-    await page.getByRole("button", { name: "保存时间", exact: false }).click();
-    const dialog = page.getByRole("dialog", { name: "验证身份并保存投注时间" });
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("验证账号")).toHaveValue("test-admin");
-    await expect(dialog.getByLabel("验证密码")).toHaveValue("");
-    expect(submissions.length).toBe(width === 390 ? 0 : 2);
-    await expect
-      .poll(() => page.evaluate(() => document.body.style.position))
-      .toBe("fixed");
-    expect(
-      await page.evaluate(
-        () => getComputedStyle(document.documentElement).overflow,
-      ),
-    ).toBe("hidden");
-    await page.mouse.move(2, 100);
-    await page.mouse.wheel(0, 650);
-    const after = await page.locator(".closing-panel").boundingBox();
-    expect(Math.abs(after!.y - original!.y)).toBeLessThan(2);
-    expect(
-      await page.evaluate(() => {
-        const event = new Event("touchmove", {
-          cancelable: true,
-          bubbles: true,
-        });
-        document.body.dispatchEvent(event);
-        return event.defaultPrevented;
-      }),
-    ).toBe(true);
-    await dialog.getByRole("button", { name: "取消", exact: true }).click();
-    await expect(
-      page.locator('dialog[aria-label="验证身份并保存投注时间"]'),
-    ).toHaveCount(0);
-    expect(await page.evaluate(() => document.body.style.position)).not.toBe(
-      "fixed",
-    );
-    expect(
-      Math.abs((await page.evaluate(() => window.scrollY)) - offset),
-    ).toBeLessThan(2);
-    // Reauthentication is viewport-independent; exercise it once against the real server.
-    if (width === 1440) continue;
-    await page.getByRole("button", { name: "保存时间", exact: false }).click();
-    await dialog.getByLabel("验证密码").fill("incorrect-test-password");
-    await dialog
-      .getByRole("button", { name: "验证并保存", exact: true })
-      .click();
-    await expect(dialog.getByRole("alert")).toContainText("账号或密码错误");
-    await expect(dialog.getByLabel("验证密码")).toHaveValue("");
-    await dialog.getByLabel("验证密码").fill(process.env.TEST_ADMIN_PASSWORD!);
-    await dialog
-      .getByRole("button", { name: "验证并保存", exact: true })
-      .click();
-    await expect(
-      page.locator('dialog[aria-label="验证身份并保存投注时间"]'),
-    ).toHaveCount(0);
-    const last = submissions.at(-1) as {
-      open_time: string;
-      close_time: string;
-    };
-    expect(last.open_time).toBe("09:00");
-    expect(last.close_time).toBe("22:00");
-    await expect(page.getByLabel("验证密码", { exact: true })).toHaveCount(0);
-  }
+  const schedule = page.locator(".closing-panel");
+  await expect(schedule).toContainText("次日 06:00");
+  await expect(schedule).toContainText("开奖后");
+  await expect(schedule.locator("input")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "保存时间", exact: false }),
+  ).toHaveCount(0);
 });
 
 test("all shared dialogs animate, reduced motion is respected, and nested dialogs keep the page locked", async ({

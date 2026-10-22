@@ -107,7 +107,7 @@ async fn submit(
     }
     // Creating the period uses its own administrator transaction; release this connection first.
     tx.rollback().await?;
-    let current = ensure_period(state, received.date()).await?;
+    let current = ensure_period(state, business_date(received)).await?;
     if input.period != current.id {
         return Err(conflict("期次已切换，请刷新后重新录入"));
     }
@@ -119,15 +119,8 @@ async fn submit(
     if let Some(result) = replay(&mut tx, &input.request_id, &hash, grouped).await? {
         return Ok(result);
     }
-    if period.state != "pending"
-        || !is_open_between(
-            received,
-            period.business_date,
-            &period.open_time,
-            &period.close_time,
-        )
-    {
-        return Err(conflict("当前不在投注时间内，或本期已经封盘／接受开奖"));
+    if !accepts_entries(received, period.business_date) {
+        return Err(conflict("本期已于次日 06:00 归档，请刷新后录入当前期"));
     }
     let ids: BTreeSet<i64> = input.items.iter().map(|line| line.play_id).collect();
     let mut plays = HashMap::new();
@@ -237,6 +230,7 @@ async fn submit(
         .await?;
     }
     ledger::invalidate(&mut tx, &period.id).await?;
+    crate::worker::settle_recorded(&mut tx, &period).await?;
     tx.commit().await?;
     ledger::cancel_calculation(state, &period.id).await;
     Ok(json!({"id":slip_id.unwrap_or_else(||created[0].clone()),"replayed":false}))

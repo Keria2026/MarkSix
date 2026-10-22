@@ -86,6 +86,7 @@ export interface Period {
   mapping: Mapping;
   state: string;
   phase: string;
+  accepting_entries: boolean;
   bet_version: number;
   draw: Draw | null;
   error: string | null;
@@ -172,10 +173,11 @@ export interface Quote {
   rebate: number;
   max_return: number;
   max_profit: number;
-  result: Risk;
+  result: Risk | null;
+  settled?: boolean;
 }
 export interface Settings {
-  closing: { effective_date: string; open_time: string; close_time: string }[];
+  cutover_time: string;
   mappings: { effective_date: string; mapping: Mapping }[];
   tomorrow: string;
 }
@@ -241,9 +243,8 @@ export const relations: Record<Relation, string> = {
   ge: "大于等于",
 };
 export const phases: Record<string, string> = {
-  scheduled: "尚未开盘",
   open: "接受投注",
-  closed: "已封盘",
+  closed: "已归档待开奖",
   fetching: "等待开奖",
   settling: "结算中",
   settled: "已结算",

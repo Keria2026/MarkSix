@@ -76,7 +76,7 @@ pub(crate) async fn invalidate(
     tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
     period: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(period).execute(&mut **tx).await?;
+    sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status=IF(state='pending','queued','stale'),risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(period).execute(&mut **tx).await?;
     Ok(())
 }
 pub(crate) async fn cancel_calculation(state: &AppState, period: &str) {
@@ -143,10 +143,8 @@ async fn mutate(
         }
         return Ok(Json(row.try_get::<DbJson<Value>, _>("response")?.0));
     }
-    if p.state != "pending"
-        || !is_open_between(received, p.business_date, &p.open_time, &p.close_time)
-    {
-        return Err(conflict("封盘后不能修改金额或飞出"));
+    if !accepts_entries(received, p.business_date) {
+        return Err(conflict("本期已归档，不能修改金额或飞出"));
     }
     let bet: BetSummary = sqlx::query_as(&format!(
         "SELECT {BET_COLUMNS} FROM bets WHERE id=? FOR UPDATE"
@@ -154,7 +152,7 @@ async fn mutate(
     .bind(&id)
     .fetch_one(&mut *tx)
     .await?;
-    if bet.status != "pending" || bet.revision != input.revision {
+    if bet.status == "cancelled" || bet.revision != input.revision {
         return Err(conflict("投注已变更或作废，请刷新后重试"));
     }
     let flown: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(amount),0) AS SIGNED) FROM layoffs WHERE bet_id=? AND status<>'cancelled'").bind(&id).fetch_one(&mut *tx).await?;
@@ -224,7 +222,7 @@ async fn mutate(
         audit(&mut tx,Some(&period),"bet_flown",json!({"id":id,"layoff_id":fly_id,"receiver":input.receiver,"amount":amount,"stake":plan.stake,"revision":bet.revision+1})).await?;
         json!({"id":fly_id,"revision":bet.revision+1})
     } else {
-        sqlx::query("UPDATE bets SET amount=?,stake=?,rebate=?,exposure=?,atoms=? WHERE id=?")
+        sqlx::query("UPDATE bets SET amount=?,stake=?,rebate=?,exposure=?,atoms=?,status='pending',payout=NULL,winning_stake=NULL,void_stake=0,void_units=0,results=NULL WHERE id=?")
             .bind(amount)
             .bind(plan.stake)
             .bind(plan.rebate)
@@ -250,6 +248,7 @@ async fn mutate(
     .execute(&mut *tx)
     .await?;
     invalidate(&mut tx, &period).await?;
+    crate::worker::settle_recorded(&mut tx, &p).await?;
     tx.commit().await?;
     cancel_calculation(&state, &period).await;
     Ok(Json(response))
@@ -276,10 +275,8 @@ pub(crate) async fn cancel_layoff(
     if row.try_get::<String, _>("status")? == "cancelled" {
         return Ok(Json(json!({"ok":true})));
     }
-    if p.state != "pending"
-        || !is_open_between(received, p.business_date, &p.open_time, &p.close_time)
-    {
-        return Err(conflict("封盘后不能撤销飞出"));
+    if !accepts_entries(received, p.business_date) {
+        return Err(conflict("本期已归档，不能撤销飞出"));
     }
     sqlx::query("UPDATE layoffs SET status='cancelled',cancelled_at=UTC_TIMESTAMP(6) WHERE id=?")
         .bind(&id)
@@ -298,6 +295,7 @@ pub(crate) async fn cancel_layoff(
     )
     .await?;
     invalidate(&mut tx, &period).await?;
+    crate::worker::settle_recorded(&mut tx, &p).await?;
     tx.commit().await?;
     cancel_calculation(&state, &period).await;
     Ok(Json(json!({"ok":true})))

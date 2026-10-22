@@ -628,3 +628,52 @@ test("zodiac packages split per zodiac, preserve draft mode and accept one decim
   expect(detail.items[1].amount).toBe(1050);
   await expect(draft).toHaveCount(0);
 });
+
+test("settled current period still accepts entry and shows actual settlement preview", async ({
+  page,
+}) => {
+  await page.route("**/api/bootstrap", async (route) => {
+    const data = await (await route.fetch()).json();
+    Object.assign(data.today, {
+      state: "settled",
+      phase: "settled",
+      accepting_entries: true,
+      draw: {
+        numbers: [1, 2, 3, 4, 5, 6, 9],
+        zodiac: [6, 5, 4, 3, 2, 1, 10],
+        wave: [0, 0, 1, 1, 2, 2, 0],
+        expect: data.today.id,
+        open_time: "2026-10-14T21:34:00",
+      },
+    });
+    await route.fulfill({ json: data });
+  });
+  await page.route("**/api/quote", (route) =>
+    route.fulfill({
+      json: {
+        units: 1,
+        stake: 1000,
+        rebate: 100,
+        max_return: 43000,
+        max_profit: 42100,
+        result: null,
+        settled: true,
+      },
+    }),
+  );
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主要导航" })
+    .getByRole("button", { name: "录入投注", exact: true })
+    .click();
+  await page.getByLabel("搜索玩法名称").fill("特码直选");
+  await page.getByLabel("投注人", { exact: true }).fill("开奖后客户");
+  await page.getByLabel("输入投注项", { exact: true }).fill("09");
+  await page.getByLabel("每注金额", { exact: true }).fill("10");
+  await expect(
+    page.getByRole("button", { name: "确认录入投注", exact: true }),
+  ).toBeEnabled();
+  await expect(page.locator(".quote-box")).toContainText("实际含本返还");
+  await expect(page.locator(".quote-box")).toContainText("实际净输赢");
+  await expect(page.locator(".quote-box")).toContainText("已确认开奖结果");
+});

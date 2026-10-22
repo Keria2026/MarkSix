@@ -27,7 +27,6 @@
     scopes,
     conditions,
     relations,
-    phases,
   } from "../lib/types";
   import type {
     Bootstrap,
@@ -270,7 +269,11 @@
       draft.pendingSubmission = null;
       draft.selections = [];
       syncSelectionText();
-      notify("投注已记录，正在更新本期风险");
+      notify(
+        today.draw
+          ? "投注已记录并按本期开奖结果结算"
+          : "投注已记录，正在更新本期风险",
+      );
       await onrecorded();
     } catch (e) {
       notify(fail(e));
@@ -278,9 +281,11 @@
       busy = false;
     }
   }
+  const quoteDraw = $derived(JSON.stringify(today.draw));
   $effect(() => {
     const key = quoteKey;
-    const isBetting = true;
+    const isBetting = today.accepting_entries;
+    void quoteDraw;
     const controller = new AbortController();
     let retry: ReturnType<typeof setTimeout>;
     quote = null;
@@ -602,13 +607,21 @@
           />{/if}
       </div>
       <div class="ledger-row">
-        <span>最大含本返还</span><strong>{money(quote?.max_return)}</strong>
+        <span>{quote?.settled ? "实际含本返还" : "最大含本返还"}</span><strong
+          >{money(quote?.max_return)}</strong
+        >
       </div>
       <div class="ledger-row">
-        <span>预计反水</span><strong>{money(quote?.rebate)}</strong>
+        <span>{quote?.settled ? "实际反水" : "预计反水"}</span><strong
+          >{money(quote?.rebate)}</strong
+        >
       </div>
       <div class="ledger-row">
-        <span>最大净盈利（含反水）</span><strong
+        <span
+          >{quote?.settled
+            ? "实际净输赢（含反水）"
+            : "最大净盈利（含反水）"}</span
+        ><strong
           class:positive={(quote?.max_profit ?? 0) > 0}
           class:negative={(quote?.max_profit ?? 0) < 0}
           >{quote ? signed(quote.max_profit) : "—"}</strong
@@ -616,21 +629,24 @@
       </div>
       {#if quoteError}<p class:negative={quoteState === "error"}>
           {quoteError}
-        </p>{:else}<p>基于同一个合法开奖结果精确计算。</p>{/if}
+        </p>{:else}<p>
+          {quote?.settled
+            ? "按本期已确认开奖结果计算。"
+            : "基于同一个合法开奖结果精确计算。"}
+        </p>{/if}
     </div>
     {#if selectedCount > 1000}<div class="inline-error">
         <AlertCircle size={15} />单次最多 1000 条基础注，请减少选项。
-      </div>{/if}{#if today.phase !== "open"}<div class="notice compact-notice">
-        <Clock3 size={16} /><span
-          >当前{phases[today.phase]}，{today.open_time} 至 {today.close_time}
-          可提交。</span
-        >
+      </div>{/if}{#if !today.accepting_entries}<div
+        class="notice compact-notice"
+      >
+        <Clock3 size={16} /><span>本期已归档，请刷新后录入当前期。</span>
       </div>{/if}<button
       class="button primary submit-bet"
       disabled={busy ||
         !inputValid ||
         !draft.bettor.trim() ||
-        today.phase !== "open"}
+        !today.accepting_entries}
       onclick={submitBet}
       >{#if busy}<LoaderCircle size={17} class="spin" />{:else}<Plus
           size={17}
@@ -641,7 +657,7 @@
       disabled={busy ||
         !inputValid ||
         !draft.bettor.trim() ||
-        today.phase !== "open"}
+        !today.accepting_entries}
       onclick={() => {
         if (!currentPlay || !inputValid) return;
         const added = onadd({

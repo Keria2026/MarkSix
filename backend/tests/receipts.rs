@@ -340,6 +340,7 @@ async fn atomic_slips_order_statements_and_capacity() {
         ok(&app, "POST", "/api/slips", data, &cookie).await["id"],
         id
     );
+    *clock.write().unwrap() = date.succ_opt().unwrap().and_hms_opt(6, 0, 0).unwrap();
     assert_eq!(
         call(
             &app,
@@ -496,4 +497,35 @@ async fn atomic_slips_order_statements_and_capacity() {
     let settled = ok(&app, "GET", &package_path, json!({}), &cookie).await;
     assert_eq!(settled["record"]["payout"], 107629);
     assert_eq!(settled["record"]["rebate"], 1000);
+    let late_slip = ok(
+        &app,
+        "POST",
+        "/api/slips",
+        slip(
+            &package_draw.expect,
+            vec![
+                line(number, json!([9]), "10.5"),
+                line(number, json!([21]), "0.1"),
+            ],
+        ),
+        &cookie,
+    )
+    .await;
+    let late_path = format!("/api/slips/{}", late_slip["id"].as_str().unwrap());
+    let late_detail = ok(&app, "GET", &late_path, json!({}), &cookie).await;
+    assert_eq!(late_detail["status"], "settled");
+    assert_eq!(late_detail["totals"]["payout"], 45150);
+    assert_eq!(late_detail["totals"]["rebate"], 106);
+    ok(
+        &app,
+        "POST",
+        &format!("{late_path}/cancel"),
+        versions(&late_detail),
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        ok(&app, "GET", &late_path, json!({}), &cookie).await["status"],
+        "cancelled"
+    );
 }
