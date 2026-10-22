@@ -46,7 +46,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
     if active {
-        ensure_period(state, state.now().date()).await?;
+        ensure_period(state, business_date(state.now())).await?;
     }
     let settling: Vec<String> = sqlx::query_scalar("SELECT id FROM periods WHERE state='settling'")
         .fetch_all(&state.pool)
@@ -245,21 +245,31 @@ pub async fn settle_period(state: &AppState, id: &str) -> anyhow::Result<()> {
         tx.commit().await?;
         return Ok(());
     }
-    let draw = p
-        .draw
-        .ok_or_else(|| anyhow::anyhow!("结算期次缺少开奖快照"))?;
+    anyhow::ensure!(p.draw.is_some(), "结算期次缺少开奖快照");
+    settle_recorded(&mut tx, &p).await?;
+    tx.commit().await?;
+    Ok(())
+}
+pub(crate) async fn settle_recorded(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    p: &Period,
+) -> anyhow::Result<()> {
+    let Some(draw) = &p.draw else {
+        return Ok(());
+    };
+    let id = &p.id;
     // Both ledgers commit with the period, so reports never observe half a settlement.
     for table in ["bets", "layoffs"] {
         let rows = sqlx::query(&format!(
             "SELECT id,atoms FROM {table} WHERE period_id=? AND status='pending' FOR UPDATE"
         ))
         .bind(id)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         for row in rows {
             let bet_id: String = row.try_get("id")?;
             let atoms: Json<Vec<Atom>> = row.try_get("atoms")?;
-            let results = settle(&atoms, &draw);
+            let results = settle(&atoms, draw);
             let sum = |values: Vec<i64>| checked_sum(values).map_err(anyhow::Error::msg);
             let payout = sum(results.iter().map(|r| r.payout).collect())?;
             let rebate = sum(results.iter().map(|r| r.rebate).collect())?;
@@ -277,21 +287,18 @@ pub async fn settle_period(state: &AppState, id: &str) -> anyhow::Result<()> {
                 .collect())?;
             let void_units = results.iter().filter(|r| r.voided).count() as i32;
             sqlx::query(&format!("UPDATE {table} SET status='settled',payout=?,rebate=?,winning_stake=?,void_stake=?,void_units=?,results=? WHERE id=?"))
-                .bind(payout).bind(rebate).bind(winning).bind(refunded).bind(void_units).bind(Json(results)).bind(bet_id).execute(&mut *tx).await?;
+                .bind(payout).bind(rebate).bind(winning).bind(refunded).bind(void_units).bind(Json(results)).bind(bet_id).execute(&mut **tx).await?;
         }
     }
-    sqlx::query("UPDATE periods SET state='settled',settled_at=UTC_TIMESTAMP(6) WHERE id=?")
+    sqlx::query("UPDATE periods SET state='settled',risk_status='stale',settled_at=UTC_TIMESTAMP(6) WHERE id=?")
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-    audit(
-        &mut tx,
-        Some(id),
-        "period_settled",
-        json!({"version":p.bet_version}),
-    )
-    .await?;
-    tx.commit().await?;
+    let version: i64 = sqlx::query_scalar("SELECT bet_version FROM periods WHERE id=?")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+    audit(tx, Some(id), "period_settled", json!({"version":version})).await?;
     Ok(())
 }
 

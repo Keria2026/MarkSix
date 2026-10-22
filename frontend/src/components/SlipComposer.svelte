@@ -47,7 +47,7 @@
     ),
   );
   async function submit() {
-    if (!valid || busy || !bettor.trim() || today.phase !== "open") return;
+    if (!valid || busy || !bettor.trim() || !today.accepting_entries) return;
     const body = {
       period,
       bettor: bettor.trim(),
@@ -156,7 +156,7 @@
         onclick={() => (items = [])}>清空组合单草稿</button
       ><button
         class="button primary"
-        disabled={busy || !valid || !bettor.trim() || today.phase !== "open"}
+        disabled={busy || !valid || !bettor.trim() || !today.accepting_entries}
         onclick={submit}>{busy ? "整单提交中…" : "确认录入组合单"}</button
       >
     </div>

@@ -80,7 +80,9 @@ pub(crate) async fn search(
     Json(q): Json<BetQuery>,
 ) -> ApiResult<Json<Value>> {
     let (min, max) = q.validate()?;
-    let period = q.period.unwrap_or_else(|| period_id(state.now().date()));
+    let period = q
+        .period
+        .unwrap_or_else(|| period_id(business_date(state.now())));
     let page = q.page.unwrap_or(1).clamp(1, 100000);
     let bettors = serde_json::to_string(&q.bettors).map_err(anyhow::Error::from)?;
     let plays = serde_json::to_string(&q.play_ids).map_err(anyhow::Error::from)?;
@@ -197,10 +199,8 @@ pub(crate) async fn cancel(
     if items.iter().all(|b| b.status == "cancelled") {
         return Ok(Json(json!({"ok":true})));
     }
-    if p.state != "pending"
-        || !is_open_between(received, p.business_date, &p.open_time, &p.close_time)
-    {
-        return Err(conflict("封盘后不能撤销组合单"));
+    if !accepts_entries(received, p.business_date) {
+        return Err(conflict("本期已归档，不能撤销组合单"));
     }
     let versions: HashMap<_, _> = input.versions.iter().map(|v| (&v.id, v.revision)).collect();
     if versions.len() != items.len()
@@ -229,6 +229,7 @@ pub(crate) async fn cancel(
     }
     audit(&mut tx, Some(&period), "slip_cancelled", json!({"id":id})).await?;
     ledger::invalidate(&mut tx, &period).await?;
+    crate::worker::settle_recorded(&mut tx, &p).await?;
     tx.commit().await?;
     ledger::cancel_calculation(&state, &period).await;
     Ok(Json(json!({"ok":true})))

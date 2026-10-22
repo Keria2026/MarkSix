@@ -1,5 +1,5 @@
 //! Pure business rules. Money is integer cents; multipliers are fixed at 1/10,000.
-use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 
 pub const ZODIACS: [&str; 12] = [
@@ -758,13 +758,12 @@ pub fn settle(atoms: &[Atom], draw: &Draw) -> Vec<AtomResult> {
 pub fn period_id(date: NaiveDate) -> String {
     format!("{}{:03}", date.year(), date.ordinal())
 }
-pub fn is_open(now: NaiveDateTime, date: NaiveDate, close: &str) -> bool {
-    is_open_between(now, date, "08:00", close)
+/// Input is the server's Beijing civil time. A draw date owns [06:00, next 06:00).
+pub fn business_date(now: NaiveDateTime) -> NaiveDate {
+    (now - chrono::Duration::hours(6)).date()
 }
-pub fn is_open_between(now: NaiveDateTime, date: NaiveDate, open: &str, close: &str) -> bool {
-    now.date() == date
-        && NaiveTime::parse_from_str(open, "%H:%M").is_ok_and(|start| now.time() >= start)
-        && NaiveTime::parse_from_str(close, "%H:%M").is_ok_and(|end| now.time() < end)
+pub fn accepts_entries(now: NaiveDateTime, date: NaiveDate) -> bool {
+    business_date(now) == date
 }
 pub fn normalize_zodiac(s: &str) -> Option<u8> {
     let s = match s {
@@ -1177,9 +1176,26 @@ mod tests {
             "2027001"
         );
         let d = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
-        assert!(is_open(d.and_hms_opt(8, 0, 0).unwrap(), d, "21:28"));
-        assert!(is_open(d.and_hms_opt(21, 27, 59).unwrap(), d, "21:28"));
-        assert!(!is_open(d.and_hms_opt(21, 28, 0).unwrap(), d, "21:28"));
+        assert!(!accepts_entries(d.and_hms_opt(5, 59, 59).unwrap(), d));
+        assert!(accepts_entries(d.and_hms_opt(6, 0, 0).unwrap(), d));
+        assert!(accepts_entries(d.and_hms_opt(21, 34, 0).unwrap(), d));
+        assert!(accepts_entries(
+            d.succ_opt().unwrap().and_hms_opt(5, 59, 59).unwrap(),
+            d
+        ));
+        assert!(!accepts_entries(
+            d.succ_opt().unwrap().and_hms_opt(6, 0, 0).unwrap(),
+            d
+        ));
+        let new_year = NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        assert_eq!(
+            period_id(business_date(new_year.and_hms_opt(5, 59, 59).unwrap())),
+            "2026365"
+        );
+        assert_eq!(
+            period_id(business_date(new_year.and_hms_opt(6, 0, 0).unwrap())),
+            "2027001"
+        );
     }
     #[test]
     fn strict_draw_validation() {

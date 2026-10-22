@@ -129,7 +129,6 @@ pub async fn initialize(
     sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
-    sqlx::query("INSERT IGNORE INTO closing_configs(effective_date,close_time) VALUES('1970-01-01','21:28')").execute(&mut *tx).await?;
     sqlx::query(
         "INSERT IGNORE INTO mapping_configs(effective_date,mapping) VALUES('1970-01-01',?)",
     )
@@ -213,6 +212,7 @@ pub struct PeriodView {
     #[serde(flatten)]
     pub period: Period,
     pub phase: String,
+    pub accepting_entries: bool,
     pub totals: Totals,
     pub server_time: String,
 }
@@ -263,14 +263,11 @@ pub async fn ensure_period(state: &AppState, date: NaiveDate) -> anyhow::Result<
     sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
-    let times = sqlx::query("SELECT open_time,close_time FROM closing_configs WHERE effective_date<=? ORDER BY effective_date DESC LIMIT 1").bind(date).fetch_one(&mut *tx).await?;
-    let open: String = times.try_get("open_time")?;
-    let close: String = times.try_get("close_time")?;
     let mapping: Option<Json<Mapping>> = sqlx::query_scalar("SELECT mapping FROM mapping_configs WHERE effective_date BETWEEN ? AND ? ORDER BY effective_date DESC LIMIT 1")
         .bind(NaiveDate::from_ymd_opt(date.year(),1,1).unwrap()).bind(date).fetch_optional(&mut *tx).await?;
     let mapping = mapping.unwrap_or_else(|| Json(Mapping::for_year(date.year())));
     sqlx::query("INSERT IGNORE INTO periods(id,business_date,open_time,close_time,mapping) VALUES(?,?,?,?,?)")
-        .bind(&id).bind(date).bind(open).bind(close).bind(mapping).execute(&mut *tx).await?;
+        .bind(&id).bind(date).bind("06:00").bind("06:00").bind(mapping).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(sqlx::query_as("SELECT * FROM periods WHERE id=?")
         .bind(id)
@@ -318,29 +315,20 @@ pub async fn view(state: &AppState, period: Period) -> anyhow::Result<PeriodView
     let now = state.now();
     let phase = if period.state != "pending" {
         period.state.clone()
-    } else if now.date() < period.business_date
-        || (now.date() == period.business_date
-            && chrono::NaiveTime::parse_from_str(&period.open_time, "%H:%M")
-                .is_ok_and(|open| now.time() < open))
-    {
-        "scheduled".into()
-    } else if is_open_between(
-        now,
-        period.business_date,
-        &period.open_time,
-        &period.close_time,
-    ) {
-        "open".into()
     } else if now >= period.business_date.and_hms_opt(21, 34, 0).unwrap() {
         "fetching".into()
+    } else if accepts_entries(now, period.business_date) {
+        "open".into()
     } else {
         "closed".into()
     };
+    let accepting_entries = accepts_entries(now, period.business_date);
     let totals = totals(&mut tx, &period.id, period.state == "settled").await?;
     tx.commit().await?;
     Ok(PeriodView {
         period,
         phase,
+        accepting_entries,
         totals,
         server_time: format!("{}+08:00", now.format("%Y-%m-%dT%H:%M:%S")),
     })

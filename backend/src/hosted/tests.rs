@@ -518,12 +518,12 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
     // Arrival time must be captured before waiting for the shared work gate.
-    *clock.write().unwrap() = date.and_hms_opt(21, 27, 59).unwrap();
+    *clock.write().unwrap() = date.succ_opt().unwrap().and_hms_opt(5, 59, 59).unwrap();
     let blocked = registry.work_gate.acquire_many(8).await.unwrap();
     let reads = clock_reads.load(std::sync::atomic::Ordering::SeqCst);
     let queued_app = app.clone();
     let queued_cookie = ca.clone();
-    let queued_payload = json!({"period":period,"play_id":play["id"],"play_version":play["version"],"selections":[7],"compound":false,"bettor":"封盘前到达的排队投注","amount":"100","request_id":uuid::Uuid::new_v4()});
+    let queued_payload = json!({"period":period,"play_id":play["id"],"play_version":play["version"],"selections":[7],"compound":false,"bettor":"切期前到达的排队投注","amount":"100","request_id":uuid::Uuid::new_v4()});
     let queued = tokio::spawn(async move {
         request(
             &queued_app,
@@ -541,13 +541,13 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
     })
     .await
     .unwrap();
-    *clock.write().unwrap() = date.and_hms_opt(21, 28, 1).unwrap();
+    *clock.write().unwrap() = date.succ_opt().unwrap().and_hms_opt(6, 0, 1).unwrap();
     drop(blocked);
     let queued = queued.await.unwrap();
     assert_eq!(
         queued.0,
         StatusCode::OK,
-        "queue must not move receipt past the closing boundary: {}",
+        "queue must not move receipt past the 06:00 period boundary: {}",
         queued.1
     );
     *clock.write().unwrap() = date.and_hms_opt(12, 0, 0).unwrap();

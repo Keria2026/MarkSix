@@ -123,9 +123,11 @@ impl Account {
     }
 }
 pub(super) fn today() -> NaiveDate {
-    Utc::now()
-        .with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
-        .date_naive()
+    crate::domain::business_date(
+        Utc::now()
+            .with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
+            .naive_local(),
+    )
 }
 pub(super) fn random_token() -> String {
     let mut bytes = [0u8; 32];

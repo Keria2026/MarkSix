@@ -351,7 +351,8 @@ class Acceptance:
             detail = self.request("GET", "/api/bets/" + m["id"])
             if m["cancelled"]:
                 self.equal(detail["record"]["status"], "cancelled", "cancel permanent")
-                self.equal(detail["results"], None, "cancel not settled")
+                if not m.get("postdraw_cancelled"):
+                    self.equal(detail["results"], None, "cancel not settled")
                 continue
             results = [
                 oracle(m["rule"], opts, m["amount"], draw, self.year)
@@ -654,6 +655,35 @@ class Acceptance:
                     "settled",
                     "real worker settled",
                 )
+                if day == 0:
+                    late = self.add(self.plays["特码"], [numbers[6]], amount="10.5")
+                    self.equal(self.request("GET", "/api/bets/" + late["id"])["record"]["status"], "settled", "late bet settles atomically")
+                    self.revise(late, "12.3")
+                    self.revise(late, "0.1", receiver="开奖后受注方")
+                    self.verify_settlement(draw)
+                    fly = late["layoffs"][0]
+                    self.request("POST", "/api/layoffs/" + fly["id"] + "/cancel", {})
+                    fly["cancelled"] = True
+                    self.request("POST", "/api/bets/" + late["id"] + "/cancel", {})
+                    late["cancelled"] = True
+                    late["postdraw_cancelled"] = True
+                    tomorrow = (dt.date.fromisoformat(date) + dt.timedelta(days=1)).isoformat()
+                    self.control("time", time=tomorrow + "T05:59:59")
+                    self.equal(self.request("GET", "/api/bootstrap")["today"]["id"], self.period, "pre-06 belongs to previous draw")
+                    self.add(self.plays["特码"], [numbers[6]], amount="0.1")
+                    quote = self.request("POST", "/api/quote", self.payload(self.plays["特码"], [numbers[6]], amount="0.1"))
+                    self.equal(quote["settled"], True, "postdraw quote uses known result")
+                    self.control("time", time=tomorrow + "T06:00:00")
+                    self.request("POST", "/api/bets", self.payload(self.plays["特码"], [1]), 409)
+                    self.equal(self.request("GET", "/api/bootstrap")["today"]["business_date"], tomorrow, "06 starts next draw period")
+                    self.control("time", time=date + "T21:34:00")
+                    self.cases.append("postdraw entry / correction / outgoing / cancellation and next 06:00 archive")
+                if day == 5:
+                    size = next(p for p in self.extra if p["rule"]["kind"] == "size" and p["rule"]["scope"] == "special")
+                    void_bet = self.add(size, [1], amount="1.5")
+                    self.revise(void_bet, "2.7")
+                    self.revise(void_bet, "0.1", receiver="和局后受注方")
+                    self.cases.append("postdraw 49 refunds recompute principal and suppress rebate")
                 stats = self.verify_settlement(draw)
                 self.control("replay", draw=raw)
                 self.equal(
@@ -759,12 +789,12 @@ class Acceptance:
             self.revise(decimal_bet, "12.3")
             self.add(base, [49], amount="0.1")
             self.revise(m, "99999", receiver="受注方甲", expected=409)
-            self.control("time", time=date + "T07:59:59")
+            self.control("time", time=date + "T05:59:59")
             self.request("POST", "/api/bets", self.payload(base, [1]), 409)
-            self.control("time", time=date + "T08:00:00")
+            self.control("time", time=date + "T06:00:00")
             self.add(base, [49], amount="1")
             self.cases += [
-                "open inclusive / close exclusive",
+                "Beijing 06:00 inclusive / next 06:00 exclusive",
                 "invalid options and amounts",
                 "strict vs multi-select vs compound",
                 "natal rates per split unit",
@@ -777,7 +807,7 @@ class Acceptance:
                 "three-hit-two exact 2 / 3 and special excluded",
                 "bettor / receiver / retained aggregation",
             ]
-        self.control("time", time=date + "T21:28:00")
+        self.control("time", time=(dt.date.fromisoformat(date) + dt.timedelta(days=1)).isoformat() + "T06:00:00")
         self.request("POST", "/api/bets", self.payload(base, [1]), 409)
         active = next(m for m in self.models if not m["cancelled"] and not m["layoffs"])
         self.request("POST", "/api/bets/" + active["id"] + "/cancel", {}, 409)

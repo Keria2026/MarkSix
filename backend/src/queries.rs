@@ -106,7 +106,9 @@ pub(crate) async fn search_bets(
     Json(q): Json<BetQuery>,
 ) -> ApiResult<Json<Value>> {
     let (min, max) = q.validate()?;
-    let id = q.period.unwrap_or_else(|| period_id(state.now().date()));
+    let id = q
+        .period
+        .unwrap_or_else(|| period_id(business_date(state.now())));
     let page = q.page.unwrap_or(1).clamp(1, 100000);
     let bettors = q.bettors;
     let plays = q.play_ids;

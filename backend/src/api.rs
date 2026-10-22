@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use chrono::{NaiveDate, NaiveTime};
+use chrono::NaiveDate;
 use rand::RngCore;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -122,7 +122,6 @@ pub fn router(state: AppState) -> Router {
         .route("/plays/batch", post(crate::configuration::batch))
         .route("/plays/order", put(crate::configuration::reorder))
         .route("/settings", get(settings))
-        .route("/settings/closing", put(update_closing))
         .route("/settings/mapping", put(update_mapping))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
@@ -304,7 +303,7 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     ))
 }
 async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    let today = ensure_period(&state, state.now().date()).await?;
+    let today = ensure_period(&state, business_date(state.now())).await?;
     let plays: Vec<Play> = sqlx::query_as(
         "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY sort_order,id",
     )
@@ -374,7 +373,7 @@ async fn bet_detail(
     ))
 }
 async fn current_plan(state: &AppState, input: &BetInput) -> ApiResult<(Period, Play, BetPlan)> {
-    let p = ensure_period(state, state.now().date()).await?;
+    let p = ensure_period(state, business_date(state.now())).await?;
     if input.period != p.id {
         return Err(conflict("期次已切换，请刷新后重新录入"));
     }
@@ -414,10 +413,8 @@ async fn cancel_bet(
         tx.commit().await?;
         return Ok(Json(json!({"ok":true})));
     }
-    if p.state != "pending"
-        || !is_open_between(received, p.business_date, &p.open_time, &p.close_time)
-    {
-        return Err(conflict("封盘后不能撤销投注"));
+    if !accepts_entries(received, p.business_date) {
+        return Err(conflict("本期已归档，不能撤销投注"));
     }
     let outgoing: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM layoffs WHERE bet_id=? AND status<>'cancelled'")
@@ -431,8 +428,9 @@ async fn cancel_bet(
         .bind(&id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(&period).execute(&mut *tx).await?;
+    sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status=IF(state='pending','queued','stale'),risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(&period).execute(&mut *tx).await?;
     audit(&mut tx, Some(&period), "bet_cancelled", json!({"id":id})).await?;
+    crate::worker::settle_recorded(&mut tx, &p).await?;
     tx.commit().await?;
     if let Some(flag) = state.cancellations.lock().await.get(&period) {
         flag.store(true, Ordering::Relaxed);
@@ -445,6 +443,15 @@ async fn quote(
 ) -> ApiResult<Json<Value>> {
     let started = Instant::now();
     let (period, _, plan) = current_plan(&state, &input).await?;
+    if let Some(draw) = &period.draw {
+        let results = settle(&plan.atoms, draw);
+        let payout = checked_sum(results.iter().map(|r| r.payout))?;
+        let rebate = checked_sum(results.iter().map(|r| r.rebate))?;
+        return Ok(Json(
+            json!({"units":plan.atoms.len(),"stake":plan.stake,"rebate":rebate,"max_return":payout,"max_profit":checked_sum([payout,rebate,-plan.stake])?,"result":null,"settled":true}),
+        ));
+    }
+
     let permit = state.risk_gate.clone().try_acquire_owned().map_err(|_| {
         ApiError(
             StatusCode::TOO_MANY_REQUESTS,
@@ -568,8 +575,6 @@ async fn update_play(
     Ok(Json(json!({"id":id,"version":version})))
 }
 async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    let rows=sqlx::query("SELECT effective_date,open_time,close_time FROM closing_configs ORDER BY effective_date DESC LIMIT 50").fetch_all(&state.pool).await?;
-    let closing:Vec<Value>=rows.into_iter().map(|r|Ok(json!({"effective_date":r.try_get::<NaiveDate,_>("effective_date")?,"close_time":r.try_get::<String,_>("close_time")?,"open_time":r.try_get::<String,_>("open_time")?}))).collect::<Result<_,sqlx::Error>>()?;
     let rows = sqlx::query(
         "SELECT effective_date,mapping FROM mapping_configs ORDER BY effective_date DESC LIMIT 50",
     )
@@ -577,67 +582,15 @@ async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     .await?;
     let mappings:Vec<Value>=rows.into_iter().map(|r|Ok(json!({"effective_date":r.try_get::<NaiveDate,_>("effective_date")?,"mapping":r.try_get::<DbJson<Mapping>,_>("mapping")?}))).collect::<Result<_,sqlx::Error>>()?;
     Ok(Json(
-        json!({"closing":closing,"mappings":mappings,"tomorrow":state.now().date().succ_opt()}),
+        json!({"cutover_time":"06:00","mappings":mappings,"tomorrow":business_date(state.now()).succ_opt()}),
     ))
-}
-#[derive(Deserialize)]
-struct CloseInput {
-    open_time: String,
-    close_time: String,
-    username: String,
-    password: String,
-}
-async fn update_closing(
-    State(state): State<AppState>,
-    Json(input): Json<CloseInput>,
-) -> ApiResult<Json<Value>> {
-    verify_admin(
-        &state,
-        Login {
-            username: input.username,
-            password: input.password,
-        },
-    )
-    .await
-    .map_err(|e| {
-        if e.0 == StatusCode::UNAUTHORIZED {
-            ApiError(
-                StatusCode::FORBIDDEN,
-                "账号或密码错误，时间配置未修改".into(),
-            )
-        } else {
-            e
-        }
-    })?;
-    let open = NaiveTime::parse_from_str(&input.open_time, "%H:%M")
-        .map_err(|_| conflict("开始时间格式应为 HH:MM"))?;
-    let close = NaiveTime::parse_from_str(&input.close_time, "%H:%M")
-        .map_err(|_| conflict("封盘时间格式应为 HH:MM"))?;
-    if input.open_time.len() != 5 || input.close_time.len() != 5 || close <= open {
-        return Err(conflict("封盘时间须晚于开始时间，不能跨日"));
-    }
-    let date = state.now().date().succ_opt().unwrap();
-    let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
-        .fetch_one(&mut *tx)
-        .await?;
-    sqlx::query("INSERT INTO closing_configs(effective_date,open_time,close_time) VALUES(?,?,?) ON DUPLICATE KEY UPDATE open_time=VALUES(open_time),close_time=VALUES(close_time),created_at=UTC_TIMESTAMP(6)").bind(date).bind(&input.open_time).bind(&input.close_time).execute(&mut *tx).await?;
-    audit(
-        &mut tx,
-        None,
-        "closing_scheduled",
-        json!({"date":date,"open_time":input.open_time,"close_time":input.close_time}),
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(Json(json!({"effective_date":date})))
 }
 async fn update_mapping(
     State(state): State<AppState>,
     Json(input): Json<FutureMapping>,
 ) -> ApiResult<Json<Value>> {
     input.mapping.validate()?;
-    if input.effective_date <= state.now().date() {
+    if input.effective_date <= business_date(state.now()) {
         return Err(ApiError(
             StatusCode::UNPROCESSABLE_ENTITY,
             "映射只能在未来业务日期生效".into(),

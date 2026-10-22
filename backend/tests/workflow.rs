@@ -251,18 +251,6 @@ async fn transactional_workflow_and_recovery() {
     assert_eq!(p["risk_result"]["max_payout"], 1800000);
     assert_eq!(p["risk_version"], p["bet_version"]);
     // Future configuration never mutates today's immutable period snapshot.
-    assert_eq!(
-        request(
-            &app,
-            Method::PUT,
-            "/api/settings/closing",
-            json!({"open_time":"09:00","close_time":"20:00","username":"test-admin","password":password}),
-            &cookie
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
     let mapping = Mapping {
         natal: 5,
         ..Mapping::default()
@@ -292,9 +280,9 @@ async fn transactional_workflow_and_recovery() {
         StatusCode::OK
     );
     let today = ensure_period(&state, date).await.unwrap();
-    assert_eq!(today.close_time, "21:28");
+    assert_eq!(today.close_time, "06:00");
     assert_eq!(today.mapping.natal, 6);
-    *clock.write().unwrap() = date.and_hms_opt(21, 28, 0).unwrap();
+    *clock.write().unwrap() = date.succ_opt().unwrap().and_hms_opt(6, 0, 0).unwrap();
     assert_eq!(
         request(
             &app,
@@ -366,7 +354,7 @@ async fn transactional_workflow_and_recovery() {
     let next = date.succ_opt().unwrap();
     *clock.write().unwrap() = next.and_hms_opt(12, 0, 0).unwrap();
     let next_p = ensure_period(&state, next).await.unwrap();
-    assert_eq!(next_p.close_time, "20:00");
+    assert_eq!(next_p.close_time, "06:00");
     assert_eq!(next_p.mapping.natal, 5);
     let mut future_draw = draw.clone();
     future_draw.expect = next_p.id.clone();
@@ -589,8 +577,11 @@ async fn transactional_workflow_and_recovery() {
     assert_eq!(before["outgoing"]["stake"], 6000);
     assert!(before["retained"]["net"].is_null());
     assert_eq!(before["receivers"].as_array().unwrap().len(), 1);
-    assert_eq!(request(&app,Method::PUT,"/api/settings/closing",json!({"open_time":"08:00","close_time":"21:00","username":"test-admin","password":"wrong"}),&cookie).await.0,StatusCode::FORBIDDEN);
-    *clock.write().unwrap() = ledger_date.and_hms_opt(20, 0, 0).unwrap();
+    *clock.write().unwrap() = ledger_date
+        .succ_opt()
+        .unwrap()
+        .and_hms_opt(6, 0, 0)
+        .unwrap();
     for (method, path, body) in [
         (
             Method::PUT,
