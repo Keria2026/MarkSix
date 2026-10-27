@@ -17,6 +17,7 @@ fn main() {
         compound: true,
         amount: "100".into(),
         package_zodiacs: vec![],
+        drag: None,
         request_id: String::new(),
         bettor: "基准测试".into(),
     };

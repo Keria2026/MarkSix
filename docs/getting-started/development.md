@@ -1,6 +1,6 @@
 # 开发指南
 
-生产部署与恢复只在 [VPS 指南](../deploy/vps/README.md) 维护。业务定义见 [规范](SPECIFICATION.md)，发布门槛见 [测试指南](TESTING.md)。
+生产部署与恢复只在 [VPS 指南](../deployment/vps.md) 维护。业务定义见 [规范](../guides/betting.md)，发布门槛见 [测试指南](../guides/testing.md)。
 
 ## 环境
 
@@ -20,21 +20,21 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 
 ## 代码职责
 
-| 模块 | 职责 |
-| --- | --- |
-| domain / risk | 金额、规则、拆注和结算／同一合法开奖的精确极值 |
-| api / queries | 写入事务与 API 边界／类型化只读查询 |
-| betting / records | 单笔与组合单原子提交／按单分页、整单撤销及对账快照 |
-| ledger / configuration | 金额、飞出与统计／玩法版本、导入导出和批量变更 |
-| store / worker | 业务库及期次快照／抓取、结算和风险任务生命周期 |
-| hosted/accounts / portal / tenancy | 中央身份及激活／按有效会话分派／账本池与 Router 缓存 |
-| hosted/management / history | auth 管理／历史清空与备份凭据 |
-| App / Workspace | 客户认证壳／账号内导航与账本协调 |
-| BetEntry / PlayEditor / BatchEditor / SystemSettings | 投注草稿与报价／单条编辑／批量变更／配置及历史清空 |
-| SlipComposer / SlipDetail / PlayOrder / PasswordChange | 组合单草稿／分项入口／排序／客户改密 |
-| BettorExport / bettor-statement | 格式选择、导出与取消／PDF、PNG 共享排版及 ZIP 命名 |
-| selection / modal | 文本选项解析／共享弹窗滚动锁与动效 |
-| requests / Management | 可销毁请求作用域／auth 管理界面 |
+| 模块                                                   | 职责                                                 |
+| ------------------------------------------------------ | ---------------------------------------------------- |
+| domain / risk                                          | 金额、规则、拆注和结算／同一合法开奖的精确极值       |
+| api / queries                                          | 写入事务与 API 边界／类型化只读查询                  |
+| betting / records                                      | 单笔与组合单原子提交／按单分页、整单撤销及对账快照   |
+| ledger / configuration                                 | 金额、飞出与统计／玩法版本、导入导出和批量变更       |
+| store / worker                                         | 业务库及期次快照／抓取、结算和风险任务生命周期       |
+| hosted/accounts / portal / tenancy                     | 中央身份及激活／按有效会话分派／账本池与 Router 缓存 |
+| hosted/management / history                            | auth 管理／历史清空与备份凭据                        |
+| App / Workspace                                        | 客户认证壳／账号内导航与账本协调                     |
+| BetEntry / PlayEditor / BatchEditor / SystemSettings   | 投注草稿与报价／单条编辑／批量变更／配置及历史清空   |
+| SlipComposer / SlipDetail / PlayOrder / PasswordChange | 组合单草稿／分项入口／排序／客户改密                 |
+| BettorExport / bettor-statement                        | 格式选择、导出与取消／PDF、PNG 共享排版及 ZIP 命名   |
+| selection / drag / modal                               | 文本选项解析／拖的输入预览／共享弹窗滚动锁与动效     |
+| requests / Management                                  | 可销毁请求作用域／auth 管理界面                      |
 
 客户默认玩法来自 backend/src/default-plays.json，与 fixtures/customer-plays.json 逐字段一致；测试校验此契约。稳定计算夹具单独存于 backend/test_support，不进入生产业务默认值。
 
@@ -45,6 +45,7 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 ```bash
 # 仓库根目录
 python3 -m unittest discover -s scripts/tests -v
+python3 scripts/check_docs.py
 python3 scripts/audit_dependencies.py
 # backend
 cargo fmt --all --check
@@ -86,7 +87,7 @@ bun run test:e2e
 python3 scripts/hosted_acceptance.py --backend marksix-backend:v1-test --frontend marksix-frontend:v1-test --browser --bun /完整路径/bun
 ```
 
-实际结果与未执行项目记录在 [验收索引](ACCEPTANCE.md)，不把默认忽略的测试计为已执行。
+实际结果与未执行项目记录在 [验收索引](../guides/verification.md)，不把默认忽略的测试计为已执行。
 
 ## 附录：变量与契约
 
@@ -99,8 +100,8 @@ python3 scripts/hosted_acceptance.py --backend marksix-backend:v1-test --fronten
 - 历史 SQL 迁移不可改写。现有规则和基础注的缺省字段继续服务持久化快照；风险缓存通过 0008 失效，移除旧净额回退公式。
 - authority 容器标识、启动参数、环境变量和 cookie 属于当前部署契约；产品对外称 auth，内部标识无需为更名而迁移。
 
-## 附录：新增数据与字体
+## 附录：数据与字体
 
-0009 新增玩法排序及组合单父子关系。排序不写规则版本；已有投注的 slip_id 为空，直接作为独立单据读取。历史清空先删除分项，再删组合单，最后删期次。新字段不改写既有规则和金额快照。
+玩法排序及组合单父子关系使用 0009 迁移，包肖使用 0010，拖使用 0011。排序不写规则版本；已有投注的 slip_id 为空，直接作为独立单据读取。历史清空先删除分项，再删组合单，最后删期次。新字段不改写既有规则和金额快照。
 
 中文 PDF 使用 SIL OFL 1.1 的 Noto Sans SC，许可随 frontend/public/fonts/OFL.txt 交付。来源为 google/fonts 的 ofl/notosanssc/NotoSansSC[wght].ttf，提交 2894aab31764f10f29c421bdfd2340d3b382d384。使用 fontTools 4.61.1 固定 wght=400（updateFontNames=True），将 glyf.padding 设为 4 后保存为 NotoSansSC-Regular.ttf，以兼容 PDF 字体子集的短 loca 偏移。静态字体位于 frontend/src/assets，Vite 生成带内容摘要的 URL，首次导出才加载，避免缓存旧字体。静态文件随源码交付，部署无需安装字体工具；更新字体后必须实际渲染及提取文本验证，不能只检查 PDF 文件头。

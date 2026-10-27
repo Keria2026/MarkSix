@@ -79,9 +79,9 @@ def main():
         "prepare-server.sh",
         "release.sh",
         "nginx-main.conf",
-        "README.md",
     ]:
         shutil.copyfile(ROOT / "deploy/vps" / name, output / "hosted" / name)
+    shutil.copyfile(ROOT / "docs/deployment/vps.md", output / "hosted/README.md")
     (output / "fixtures").mkdir()
     shutil.copyfile(
         ROOT / "fixtures/customer-plays.json", output / "fixtures/customer-plays.json"

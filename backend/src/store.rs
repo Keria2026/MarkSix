@@ -231,6 +231,7 @@ pub struct BetSummary {
     pub rule: Json<Rule>,
     pub selections: Json<Vec<u8>>,
     pub package_zodiacs: Json<Vec<u8>>,
+    pub drag: Option<Json<DragInput>>,
     pub compound: bool,
     pub amount: i64,
     pub unit_count: i32,
@@ -243,7 +244,7 @@ pub struct BetSummary {
     pub cancelled_at: Option<NaiveDateTime>,
     pub natal: i8,
 }
-pub const BET_COLUMNS: &str = "slip_id,slip_position,bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,COALESCE(package_zodiacs,JSON_ARRAY()) AS package_zodiacs,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
+pub const BET_COLUMNS: &str = "slip_id,slip_position,bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,COALESCE(package_zodiacs,JSON_ARRAY()) AS package_zodiacs,drag,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FutureMapping {
     pub effective_date: NaiveDate,

@@ -1,7 +1,12 @@
 <script lang="ts">
+  import { dragLabel } from "./lib/drag";
   import { site } from "./lib/site";
   import { onMount, onDestroy, tick } from "svelte";
-  import { glassNavigation, pageFade } from "./lib/navigation";
+  import {
+    glassNavigation,
+    pageFade,
+    reserveNavigationSpace,
+  } from "./lib/navigation";
   import {
     LayoutDashboard,
     Plus,
@@ -90,16 +95,11 @@
   const api = requests.api;
   onDestroy(requests.dispose);
 
-  type Tab =
-    | "overview"
-    | "bet"
-    | "history"
-    | "settings"
-    | "statistics"
-    | "official";
+  type Tab = "overview" | "bet" | "history" | "settings" | "statistics";
   let tab = $state<Tab>("overview");
   let boot = $state<Bootstrap | null>(null);
   let betDraft = $state<BetDraft>({
+    drag: null,
     packageMode: false,
     playId: 0,
     selections: [],
@@ -128,16 +128,15 @@
   let submenuExpanded = $state({
     statistics: false,
     history: false,
-    official: false,
   });
   function loadNavigationPreferences() {
-    submenuExpanded = { statistics: false, history: false, official: false };
+    submenuExpanded = { statistics: false, history: false };
     try {
       const saved = JSON.parse(
         localStorage.getItem(`marksix:menus:${encodeURIComponent(username)}`) ??
           "{}",
       );
-      for (const key of ["statistics", "history", "official"] as const)
+      for (const key of ["statistics", "history"] as const)
         if (typeof saved[key] === "boolean") submenuExpanded[key] = saved[key];
     } catch {
       /* Storage can be unavailable in private browsers. */
@@ -156,23 +155,21 @@
     }
   }
   function menuIsOpen(id: Tab) {
-    return tab === id && submenuExpanded[id as keyof typeof submenuExpanded];
+    return !!submenuExpanded[id as keyof typeof submenuExpanded];
   }
   function hasSubmenu(id: Tab) {
-    return (
-      id === "statistics" ||
-      id === "official" ||
-      (id === "history" && historyTabs.length > 0)
-    );
+    return id === "statistics" || (id === "history" && historyTabs.length > 0);
   }
   async function closeHistoryTab(id: string) {
     const index = historyTabs.findIndex((p) => p.id === id);
     historyTabs = historyTabs.filter((p) => p.id !== id);
-    if (selectedPeriod?.id === id) {
+    const wasActive = tab === "history" && selectedPeriod?.id === id;
+    if (wasActive) {
       const next = historyTabs[Math.min(index, historyTabs.length - 1)];
       if (next) await openPeriod(next);
       else await navigate("history");
     }
+    if (!wasActive) return;
     await tick();
     const target = selectedPeriod
       ? document.getElementById(`history-period-${selectedPeriod.id}`)
@@ -276,12 +273,6 @@
       label: "玩法与配置",
       short: "配置",
       icon: Settings2,
-    },
-    {
-      id: "official" as Tab,
-      label: "官方频道",
-      short: "频道",
-      icon: ArrowUpRight,
     },
   ];
   const riskFresh = $derived(
@@ -399,7 +390,7 @@
         (tab === "history" && selectedPeriod)
       )
         await loadRecords(records.page);
-      if (active && tab !== "official")
+      if (active)
         await loadStatistics(
           report?.period === active.id ? report.layoffs_page : 1,
         );
@@ -443,7 +434,7 @@
     globalError = "";
     try {
       if (next === "history") await loadHistory();
-      else if (next !== "official" && next !== "settings") {
+      else if (next !== "settings") {
         await loadRecords();
         if (active) await loadStatistics();
       }
@@ -683,7 +674,7 @@
   ><title>{nav.find((n) => n.id === tab)?.label} · MarkSix</title></svelte:head
 >
 <div class="app-shell">
-  <aside class="sidebar glass">
+  <aside class="sidebar glass" use:reserveNavigationSpace>
     <a
       class="brand"
       href="#overview"
@@ -693,7 +684,7 @@
       }}
       ><div class="brand-mark">M</div>
       <span>MarkSix<span class="brand-dot">.</span></span></a
-    ><span class="sidebar-label">工作空间</span>
+    >
     <nav aria-label="主要导航" use:glassNavigation={tab}>
       <div class="nav-indicator" aria-hidden="true"></div>
       {#each nav as item}<div class="nav-item">
@@ -731,13 +722,7 @@
               aria-label={`${menuIsOpen(item.id) ? "收起" : "展开"}${item.label}二级菜单`}
               aria-expanded={menuIsOpen(item.id)}
               aria-controls={`submenu-${item.id}`}
-              onclick={() => {
-                if (tab !== item.id) {
-                  void navigate(item.id);
-                  if (!submenuExpanded[item.id as keyof typeof submenuExpanded])
-                    toggleSubmenu(item.id);
-                } else toggleSubmenu(item.id);
-              }}
+              onclick={() => toggleSubmenu(item.id)}
             >
               <ChevronDown
                 size={15}
@@ -745,24 +730,27 @@
               />
             </button>
           {/if}
-          {#if item.id === "statistics" && tab === "statistics" && submenuExpanded.statistics}<div
+          {#if item.id === "statistics" && submenuExpanded.statistics}<div
               class="nav-submenu"
               id="submenu-statistics"
               aria-label="本期统计分类"
             >
               {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }] as sub}<button
-                  class:active={statisticsCategory === sub.id}
-                  aria-current={statisticsCategory === sub.id
+                  class:active={tab === "statistics" &&
+                    statisticsCategory === sub.id}
+                  aria-current={tab === "statistics" &&
+                  statisticsCategory === sub.id
                     ? "location"
                     : undefined}
                   onclick={() => {
                     statisticsCategory = sub.id as typeof statisticsCategory;
-                    if (sub.id === "records")
+                    if (tab !== "statistics") void navigate("statistics");
+                    else if (sub.id === "records")
                       void loadRecords(1).catch((e) => notify(fail(e)));
                   }}>{sub.label}</button
                 >{/each}
             </div>{/if}
-          {#if item.id === "history" && tab === "history" && historyTabs.length && submenuExpanded.history}<div
+          {#if item.id === "history" && historyTabs.length && submenuExpanded.history}<div
               class="nav-submenu history-tabs"
               id="submenu-history"
               aria-label="已打开的历史期次"
@@ -788,12 +776,6 @@
                   >
                 </div>
               {/each}
-            </div>{/if}
-          {#if item.id === "official" && tab === "official" && submenuExpanded.official}<div
-              class="nav-submenu"
-              id="submenu-official"
-            >
-              <button class="active" aria-current="location">调码助手</button>
             </div>{/if}
         </div>{/each}
     </nav>
@@ -855,7 +837,7 @@
               class="text-button back-link"
               onclick={() => navigate("history")}
               ><ArrowLeft size={14} /> 返回历史统计</button
-            >{:else}<span class="eyebrow">YOUR DAILY OVERVIEW</span>{/if}
+            >{/if}
           <h1>
             {selectedPeriod ? `历史统计 · 第 ${active.id} 期` : "本期概览"}
           </h1>
@@ -943,7 +925,6 @@
         <section class="draw-panel glass">
           <div class="section-head">
             <div>
-              <span class="eyebrow">DRAW RESULTS</span>
               <h2>
                 {active.draw ? "当期开奖结果" : "静候开奖，数据就绪。"}
               </h2>
@@ -985,7 +966,6 @@
         <section class="risk-panel glass">
           <div class="section-head">
             <div>
-              <span class="eyebrow">EXPOSURE INSIGHT</span>
               <h2>
                 {active.state === "settled" ? "本期收支" : "盘口风险洞察"}
               </h2>
@@ -1111,7 +1091,6 @@
     {:else if tab === "bet"}
       <section class="page-heading">
         <div>
-          <span class="eyebrow">MAKE EVERY RECORD COUNT</span>
           <h1>录入投注</h1>
           <p>
             第 <strong>{today.id}</strong> 期
@@ -1152,7 +1131,6 @@
     {:else if tab === "history"}
       <section class="page-heading">
         <div>
-          <span class="eyebrow">EVERY PERIOD, IN PERSPECTIVE</span>
           <h1>历史统计</h1>
           <p>回看开奖记录与收支，只将已结算期次计入实际盈亏。</p>
         </div>
@@ -1243,7 +1221,6 @@
     {:else if tab === "statistics"}
       <section class="page-heading">
         <div>
-          <span class="eyebrow">CURRENT PERIOD</span>
           <h1>本期统计</h1>
           <p>
             第 <strong>{today.id}</strong> 期 · {statisticsCategory ===
@@ -1283,37 +1260,10 @@
           category={statisticsCategory}
           onpage={loadStatistics}
         />{:else}<div class="empty-panel glass">正在加载本期统计…</div>{/if}
-    {:else if tab === "official"}
-      <section class="page-heading">
-        <div>
-          <span class="eyebrow">OFFICIAL CHANNEL</span>
-          <h1>调码助手</h1>
-          <p>macaujc.com 官方网页 · 页面内容及生肖口径由外部网站提供。</p>
-        </div>
-        <a
-          class="button secondary"
-          href="https://macaujc.com/picker/"
-          target="_blank"
-          rel="noopener noreferrer">在新窗口打开 <ArrowUpRight size={16} /></a
-        >
-      </section>
-      <section class="glass official-panel">
-        <iframe
-          title="macaujc.com 官方调码助手"
-          src="https://macaujc.com/picker/"
-          referrerpolicy="no-referrer"
-          sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-        ></iframe>
-        <p class="field-help">
-          若官网限制内嵌或网络暂时不可用，请使用上方新窗口入口。
-        </p>
-      </section>
     {:else if tab === "settings"}
       <section class="page-heading">
         <div>
-          <span class="eyebrow">BUILT AROUND YOUR RULES</span>
           <h1>玩法与配置</h1>
-          <p>配置玩法与生效时间，已记录的投注始终保留原始规则。</p>
         </div>
         {#if settingsSection === "plays"}<div class="configuration-actions">
             <input
@@ -1348,16 +1298,12 @@
           class:active={settingsSection === "plays"}
           aria-pressed={settingsSection === "plays"}
           onclick={() => (settingsSection = "plays")}
-          ><Layers3 size={20} /><span
-            >玩法设置<small>导入、导出与批量管理</small></span
-          ></button
+          ><Layers3 size={20} /><span>玩法设置</span></button
         ><button
           class:active={settingsSection === "system"}
           aria-pressed={settingsSection === "system"}
           onclick={() => (settingsSection = "system")}
-          ><Settings2 size={20} /><span
-            >配置设置<small>投注时间、生肖及账号授权</small></span
-          ></button
+          ><Settings2 size={20} /><span>配置设置</span></button
         >
       </section>
       {#if settingsSection === "plays"}
@@ -1367,7 +1313,6 @@
               玩法配置 <span class="count-badge">{boot?.plays.length ?? 0}</span
               >
             </h2>
-            <span class="soft-chip"><ShieldCheck size={13} /> 版本留存</span>
           </div>
           <div class="play-management-toolbar">
             <label
@@ -1456,9 +1401,6 @@
                 >
               </div>{/each}
           </div>
-          <div class="panel-note">
-            <Info size={15} /> 默认采用 plays-prop 配置；同名导入会更新当前规则，正式录入前请核对赔率及反水。
-          </div>
         </section>
       {:else}
         <PasswordChange {api} onchanged={onlogout} />
@@ -1520,6 +1462,9 @@
         </div>
         <strong>{money(detail.record.stake)}</strong>
       </div>
+      {#if detail.record.drag}<p class="drag-summary">
+          {dragLabel(detail.record.rule.kind, detail.record.drag)}
+        </p>{/if}
       <div class="detail-info">
         <span
           >投注人 <strong>{detail.record.bettor || "未登记（旧记录）"}</strong

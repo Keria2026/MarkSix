@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dragLabel } from "../lib/drag";
   import { onDestroy } from "svelte";
   import { Trash2, Layers3 } from "lucide-svelte";
   import { money, label, entryCents } from "../lib/types";
@@ -59,6 +60,7 @@
           compound,
           amount,
           package_zodiacs,
+          drag,
         }) => ({
           play_id,
           play_version,
@@ -66,6 +68,7 @@
           compound,
           amount,
           ...(package_zodiacs?.length ? { package_zodiacs } : {}),
+          ...(drag ? { drag } : {}),
         }),
       ),
     };
@@ -106,11 +109,13 @@
           <div>
             <strong>{index + 1}. {item.rule.name}</strong>
             <p>
-              {item.package_zodiacs?.length
-                ? `包肖：${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}`
-                : item.selections
-                    .map((v) => label(item.rule.kind, v))
-                    .join(" · ")}
+              {item.drag
+                ? dragLabel(item.rule.kind, item.drag)
+                : item.package_zodiacs?.length
+                  ? `包肖：${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}`
+                  : item.selections
+                      .map((v) => label(item.rule.kind, v))
+                      .join(" · ")}
             </p>
             <small
               >{item.units} 注 · V{item.play_version}{item.compound

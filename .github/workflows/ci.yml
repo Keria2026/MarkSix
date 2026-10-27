@@ -80,6 +80,8 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/*.ts' '*.ts'
+          bun x prettier --check '../README.md' '../docs/**/*.md'
+          python3 ../scripts/check_docs.py
           bun audit
           bun run check
           bun x playwright test --list

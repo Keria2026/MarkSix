@@ -21,6 +21,8 @@ pub(crate) struct SlipLine {
     pub amount: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_zodiacs: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drag: Option<DragInput>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +51,7 @@ pub(crate) async fn single(
             compound: input.compound,
             amount: input.amount,
             package_zodiacs: input.package_zodiacs,
+            drag: input.drag,
         }],
     };
     submit(&state, received, slip, hash, false).await.map(Json)
@@ -149,6 +152,7 @@ async fn submit(
             compound: line.compound,
             amount: line.amount.clone(),
             package_zodiacs: line.package_zodiacs.clone(),
+            drag: line.drag.clone(),
         };
         let planned = plan(&play.rule, &bet, &period.mapping).map_err(|e| {
             ApiError(
@@ -206,11 +210,11 @@ async fn submit(
         } else {
             input.request_id.clone()
         };
-        sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor,slip_id,slip_position,package_zodiacs) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor,slip_id,slip_position,package_zodiacs,drag) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&id).bind(request).bind(&hash).bind(&period.id).bind(play.id).bind(play.version).bind(&play.rule)
             .bind(DbJson(&line.selections)).bind(line.compound).bind(entry_amount(&line.amount)?).bind(planned.atoms.len() as i32)
             .bind(planned.stake).bind(planned.rebate).bind(planned.exposure).bind(period.mapping.natal as i8)
-            .bind(DbJson(&planned.atoms)).bind(&input.bettor).bind(&slip_id).bind(grouped.then_some(position as i32)).bind(DbJson(&line.package_zodiacs)).execute(&mut *tx).await?;
+            .bind(DbJson(&planned.atoms)).bind(&input.bettor).bind(&slip_id).bind(grouped.then_some(position as i32)).bind(DbJson(&line.package_zodiacs)).bind(line.drag.as_ref().map(DbJson)).execute(&mut *tx).await?;
         audit(
             &mut tx,
             Some(&period.id),

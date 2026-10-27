@@ -77,7 +77,7 @@ async fn login(app: &Router, name: &str, password: &str) -> String {
 }
 
 #[tokio::test]
-#[ignore = "requires disposable marksix_test and TEST_PROVISION_DATABASE_URL; see docs/DEVELOPMENT.md"]
+#[ignore = "requires disposable marksix_test and TEST_PROVISION_DATABASE_URL; see docs/getting-started/development.md"]
 async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
     let url = std::env::var("TEST_DATABASE_URL").unwrap();
     assert!(url.ends_with("/marksix_test"));

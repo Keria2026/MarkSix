@@ -847,6 +847,7 @@ mod tests {
                 compound: true,
                 amount: "100".into(),
                 package_zodiacs: vec![],
+                drag: None,
                 request_id: "test".into(),
                 bettor: "测试投注人".into(),
             },
