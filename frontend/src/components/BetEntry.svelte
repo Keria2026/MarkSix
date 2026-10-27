@@ -1,4 +1,6 @@
 <script lang="ts">
+  import DragPicker from "./DragPicker.svelte";
+  import { dragAvailable, dragPreview, dragLabel } from "../lib/drag";
   import { onDestroy, untrack } from "svelte";
   import {
     AlertCircle,
@@ -9,7 +11,6 @@
     LoaderCircle,
     Plus,
     ReceiptText,
-    ShieldCheck,
     Sparkles,
   } from "lucide-svelte";
   import {
@@ -78,6 +79,7 @@
     return selectionBoundary(currentPlay.rule, selected, draft.compound);
   }
   function setPackageMode(value: boolean) {
+    draft.drag = null;
     draft.packageMode = value;
     draft.compound = false;
     draft.selections = [];
@@ -158,19 +160,26 @@
       }
     });
   });
+  const dragging = $derived(
+    currentPlay && draft.drag
+      ? dragPreview(currentPlay.rule, draft.drag, today.mapping)
+      : null,
+  );
   const selectedCount = $derived(
-    currentPlay
-      ? basicCount(
-          currentPlay.rule,
-          draft.packageMode ? packageNumbers : draft.selections,
-          draft.compound,
-        )
-      : 0,
+    dragging
+      ? dragging.units
+      : currentPlay
+        ? basicCount(
+            currentPlay.rule,
+            draft.packageMode ? packageNumbers : draft.selections,
+            draft.compound,
+          )
+        : 0,
   );
   const inputValid = $derived(
     !!currentPlay &&
       (!draft.packageMode || packageAvailable) &&
-      !textInvalid &&
+      (draft.drag ? !!dragging?.input : !textInvalid) &&
       selectedCount > 0 &&
       selectedCount <= 1000 &&
       entryCents(draft.amount) !== null,
@@ -188,11 +197,13 @@
           ...(draft.packageMode
             ? { package_zodiacs: [...draft.selections].sort((a, b) => a - b) }
             : {}),
-          selections: draft.packageMode
-            ? []
-            : currentPlay.rule.condition === "hard_pair"
-              ? [...draft.selections]
-              : [...draft.selections].sort((a, b) => a - b),
+          ...(dragging?.input ? { drag: dragging.input } : {}),
+          selections:
+            draft.drag || draft.packageMode
+              ? []
+              : currentPlay.rule.condition === "hard_pair"
+                ? [...draft.selections]
+                : [...draft.selections].sort((a, b) => a - b),
           bettor: draft.bettor.trim(),
           compound: draft.compound,
           amount: draft.amount,
@@ -210,7 +221,21 @@
         : [];
     draft.compound = false;
     draft.packageMode = false;
+    draft.drag = null;
     selectionError = "";
+    syncSelectionText();
+  }
+  function setDrag() {
+    draft.drag = { left: "", right: "", zodiac: false };
+    draft.compound = true;
+    draft.packageMode = false;
+    draft.selections = [];
+    selectionError = "";
+    syncSelectionText();
+  }
+  function clearSelection() {
+    draft.selections = [];
+    if (draft.drag) draft.drag = { ...draft.drag, left: "", right: "" };
     syncSelectionText();
   }
   function setCompound(next: boolean) {
@@ -224,6 +249,7 @@
     }
     selectionError = "";
     draft.compound = next;
+    draft.drag = null;
   }
   function toggleOption(value: number) {
     if (draft.selections.includes(value)) {
@@ -267,8 +293,7 @@
         }),
       });
       draft.pendingSubmission = null;
-      draft.selections = [];
-      syncSelectionText();
+      clearSelection();
       notify(
         today.draw
           ? "投注已记录并按本期开奖结果结算"
@@ -327,7 +352,6 @@
   <section class="bet-form glass">
     <div class="section-head">
       <h2><span class="step">01</span> 选择玩法</h2>
-      <span class="muted small">规则由管理员配置</span>
     </div>
     <label class="play-search"
       >搜索玩法名称<input
@@ -393,14 +417,18 @@
             class="segmented"
           >
             <button
-              class:active={!draft.compound}
-              aria-pressed={!draft.compound}
+              class:active={!draft.compound && !draft.drag}
+              aria-pressed={!draft.compound && !draft.drag}
               onclick={() => setCompound(false)}>普通 / 多选</button
             ><button
-              class:active={draft.compound}
-              aria-pressed={draft.compound}
+              class:active={draft.compound && !draft.drag}
+              aria-pressed={draft.compound && !draft.drag}
               onclick={() => setCompound(true)}>复式</button
-            >
+            >{#if dragAvailable(currentPlay.rule)}<button
+                class:active={!!draft.drag}
+                aria-pressed={!!draft.drag}
+                onclick={setDrag}>拖</button
+              >{/if}
           </div>{/if}
       </div>
       {#if packageAvailable}<div class="segmented" aria-label="号码投注方式">
@@ -438,91 +466,99 @@
         >
           所选开奖范围出现 49 时，本基础注和局退本，不计有效投注、无反水。
         </p>{/if}
-      <div class="selection-description">
-        <span
-          >{draft.packageMode
-            ? "选择生肖，每肖金额独立包号"
-            : draft.compound
-              ? `从候选项中每 ${currentPlay.rule.combination_size} 个拆成一注`
-              : `选择数量${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个${currentPlay.rule.quantity === 1 ? "；多选逐项拆注" : "；允许的超额选择按阈值拆注"}`}</span
-        ><button
-          class="text-button"
-          onclick={() => {
-            draft.selections = [];
-            selectionError = "";
-            syncSelectionText();
-          }}
-          disabled={!draft.selections.length && !selectionText}>清空选择</button
+      {#if draft.drag}<DragPicker
+          rule={currentPlay.rule}
+          mapping={today.mapping}
+          bind:draft={draft.drag}
+        />{:else}
+        <div class="selection-description">
+          <span
+            >{draft.packageMode
+              ? "选择生肖，每肖金额独立包号"
+              : draft.compound
+                ? `从候选项中每 ${currentPlay.rule.combination_size} 个拆成一注`
+                : `选择数量${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个${currentPlay.rule.quantity === 1 ? "；多选逐项拆注" : "；允许的超额选择按阈值拆注"}`}</span
+          ><button
+            class="text-button"
+            onclick={() => {
+              draft.selections = [];
+              selectionError = "";
+              syncSelectionText();
+            }}
+            disabled={!draft.selections.length && !selectionText}
+            >清空选择</button
+          >
+        </div>
+        <label class="play-search selection-input"
+          >输入投注项<input
+            type="text"
+            maxlength="2048"
+            value={selectionText}
+            aria-invalid={textInvalid}
+            aria-describedby={selectionError
+              ? "selection-error"
+              : "selection-input-help"}
+            oninput={(event) => enterSelections(event.currentTarget.value)}
+            onkeydown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                enterSelections(event.currentTarget.value);
+              }
+            }}
+            placeholder={selectionKind === "number"
+              ? "例如：01 02，03、04"
+              : selectionKind === "zodiac"
+                ? "例如：鼠 牛，虎、兔"
+                : "输入选项，以空格或标点分隔"}
+          /></label
         >
-      </div>
-      <label class="play-search selection-input"
-        >输入投注项<input
-          type="text"
-          maxlength="2048"
-          value={selectionText}
-          aria-invalid={textInvalid}
-          aria-describedby={selectionError
-            ? "selection-error"
-            : "selection-input-help"}
-          oninput={(event) => enterSelections(event.currentTarget.value)}
-          onkeydown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              enterSelections(event.currentTarget.value);
-            }
-          }}
-          placeholder={selectionKind === "number"
-            ? "例如：01 02，03、04"
-            : selectionKind === "zodiac"
-              ? "例如：鼠 牛，虎、兔"
-              : "输入选项，以空格或标点分隔"}
-        /></label
-      >
-      <p id="selection-input-help" class="field-help">
-        支持空格、中英文标点分隔，重复项只计一次；输入与下方选择同步，超过规则边界时不应用、不提交。
-      </p>
-      <div
-        class="option-grid"
-        class:number-grid={selectionKind === "number"}
-        class:zodiac-grid={selectionKind === "zodiac"}
-      >
-        {#each options(selectionKind).filter((value) => currentPlay.rule.kind !== "zodiac_count" || value === currentPlay.rule.zodiac_count) as value}<button
-            class="option"
-            class:selected={draft.selections.includes(value)}
-            aria-pressed={draft.selections.includes(value)}
-            aria-label={`${label(selectionKind, value)}${selectionKind === "number" ? ` ${zodiacs[today.mapping.zodiac[value - 1]]}` : ""}`}
-            onclick={() => toggleOption(value)}
-            >{#if selectionKind === "number"}<span
-                class="number-option"
-                data-wave={wave(value)}>{label(selectionKind, value)}</span
-              ><small>{zodiacs[today.mapping.zodiac[value - 1]]}</small
-              >{:else}<span>{label(selectionKind, value)}</span
-              >{#if selectionKind === "zodiac" && value === today.mapping.natal}<small
-                  >本命</small
-                >{/if}{/if}{#if draft.selections.includes(value)}<span
-                class="selection-check"><Check size={10} /></span
-              >{/if}</button
-          >{/each}
-      </div>
-      {#if selectionError}<p
-          id="selection-error"
-          class="inline-error"
-          role="alert"
+        <p id="selection-input-help" class="field-help">
+          支持空格、中英文标点分隔，重复项只计一次；输入与下方选择同步，超过规则边界时不应用、不提交。
+        </p>
+        <div
+          class="option-grid"
+          class:number-grid={selectionKind === "number"}
+          class:zodiac-grid={selectionKind === "zodiac"}
         >
-          {selectionError}
-        </p>{/if}
-      <div class="selection-meta">
-        {#if currentPlay.rule.zero_tail_odds != null}<span
-            >含 0 尾基础注赔率 <strong>{currentPlay.rule.zero_tail_odds}</strong
-            > 倍</span
-          >{/if}
-        <span>已选 <strong>{draft.selections.length}</strong> 项</span
-        >{#if currentPlay.rule.special_odds}<span
-            >含本命生肖基础注赔率 <strong
-              >{currentPlay.rule.special_odds}</strong
-            > 倍</span
-          >{/if}
-      </div>
+          {#each options(selectionKind).filter((value) => currentPlay.rule.kind !== "zodiac_count" || value === currentPlay.rule.zodiac_count) as value}<button
+              class="option"
+              class:selected={draft.selections.includes(value)}
+              aria-pressed={draft.selections.includes(value)}
+              aria-label={`${label(selectionKind, value)}${selectionKind === "number" ? ` ${zodiacs[today.mapping.zodiac[value - 1]]}` : ""}`}
+              onclick={() => toggleOption(value)}
+              >{#if selectionKind === "number"}<span
+                  class="number-option"
+                  data-wave={wave(value)}>{label(selectionKind, value)}</span
+                ><small>{zodiacs[today.mapping.zodiac[value - 1]]}</small
+                >{:else}<span>{label(selectionKind, value)}</span
+                >{#if selectionKind === "zodiac" && value === today.mapping.natal}<small
+                    >本命</small
+                  >{/if}{/if}{#if draft.selections.includes(value)}<span
+                  class="selection-check"><Check size={10} /></span
+                >{/if}</button
+            >{/each}
+        </div>
+        {#if selectionError}<p
+            id="selection-error"
+            class="inline-error"
+            role="alert"
+          >
+            {selectionError}
+          </p>{/if}
+        <div class="selection-meta">
+          {#if currentPlay.rule.zero_tail_odds != null}<span
+              >含 0 尾基础注赔率 <strong
+                >{currentPlay.rule.zero_tail_odds}</strong
+              > 倍</span
+            >{/if}
+          <span>已选 <strong>{draft.selections.length}</strong> 项</span
+          >{#if currentPlay.rule.special_odds}<span
+              >含本命生肖基础注赔率 <strong
+                >{currentPlay.rule.special_odds}</strong
+              > 倍</span
+            >{/if}
+        </div>
+      {/if}
       <div class="section-head amount-heading">
         <h2><span class="step">03</span> 填写金额</h2>
         <span class="muted small"
@@ -560,24 +596,27 @@
   <aside class="bet-summary glass">
     <div class="section-head">
       <div>
-        <span class="eyebrow">BET SUMMARY</span>
         <h2>本次投注</h2>
       </div>
       <ReceiptText size={21} class="muted" />
     </div>
     <div class="summary-name">
       {currentPlay?.rule.name ?? "选择一个玩法"}<span class="soft-chip"
-        >{draft.packageMode
-          ? "包肖"
-          : draft.compound
-            ? "复式"
-            : selectedCount > 1
-              ? "多选"
-              : "单注"}</span
+        >{draft.drag
+          ? "拖"
+          : draft.packageMode
+            ? "包肖"
+            : draft.compound
+              ? "复式"
+              : selectedCount > 1
+                ? "多选"
+                : "单注"}</span
       >
     </div>
     <div class="selected-tags">
-      {#if draft.selections.length}{#each draft.selections.slice(0, 20) as value}<span
+      {#if dragging?.input && currentPlay}<p>
+          {dragLabel(currentPlay.rule.kind, dragging.input)}
+        </p>{:else if draft.selections.length}{#each draft.selections.slice(0, 20) as value}<span
             >{label(selectionKind, value)}</span
           >{/each}{#if draft.selections.length > 20}<span
             >+{draft.selections.length - 20}</span
@@ -665,7 +704,9 @@
           rule: structuredClone($state.snapshot(currentPlay.rule)),
           play_id: currentPlay.id,
           play_version: currentPlay.version,
-          selections: draft.packageMode ? [] : [...draft.selections],
+          selections:
+            draft.drag || draft.packageMode ? [] : [...draft.selections],
+          ...(dragging?.input ? { drag: structuredClone(dragging.input) } : {}),
           ...(draft.packageMode
             ? { package_zodiacs: [...draft.selections] }
             : {}),
@@ -674,15 +715,11 @@
           units: selectedCount,
         });
         if (added) {
-          draft.selections = [];
+          clearSelection();
           draft.pendingSubmission = null;
-          syncSelectionText();
         }
       }}>加入组合单</button
     >
-    <p class="summary-note">
-      <ShieldCheck size={13} /> 规则与赔率在提交时留存快照
-    </p>
     <div class="quota">
       <span>本期容量</span><small
         >{today.totals.units.toLocaleString()} / 10,000 基础注</small

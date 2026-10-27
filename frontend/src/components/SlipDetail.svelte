@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dragLabel } from "../lib/drag";
   import { onDestroy } from "svelte";
   import { money, signed, label } from "../lib/types";
   import type { RecordGroup, Bet, api as Api } from "../lib/types";
@@ -69,16 +70,20 @@
         <div>
           <strong>{index + 1}. {item.rule.name}</strong>
           <p>
-            {item.package_zodiacs?.length
-              ? `包肖 ${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}`
-              : item.selections
-                  .map((v) => label(item.rule.kind, v))
-                  .join(" · ")}
+            {item.drag
+              ? dragLabel(item.rule.kind, item.drag)
+              : item.package_zodiacs?.length
+                ? `包肖 ${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}`
+                : item.selections
+                    .map((v) => label(item.rule.kind, v))
+                    .join(" · ")}
           </p>
           <small
-            >{item.unit_count} 条基础注 · {item.package_zodiacs?.length
-              ? "每肖"
-              : "每注"}
+            >{item.unit_count} 条基础注 · {item.drag
+              ? dragLabel(item.rule.kind, item.drag)
+              : item.package_zodiacs?.length
+                ? "每肖"
+                : "每注"}
             {money(item.amount)} · {item.status === "cancelled"
               ? "已作废"
               : item.status === "settled"

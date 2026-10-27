@@ -325,6 +325,94 @@ pub fn wave(n: u8) -> u8 {
     }
 }
 
+/// Pair plays cross the two pools; larger combinations keep all left options fixed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DragInput {
+    pub left: Vec<u8>,
+    pub right: Vec<u8>,
+    pub zodiac: bool,
+}
+impl DragInput {
+    fn sets(&self, rule: &Rule, mapping: &Mapping) -> RuleResult<Vec<Vec<u8>>> {
+        let k = rule.combination_size as usize;
+        if !rule.compound_enabled
+            || k < 2
+            || !matches!(rule.kind, Kind::Number | Kind::Zodiac | Kind::Tail)
+        {
+            return Err("拖仅适用于已启用复式且每注至少两项的号码、生肖或尾数玩法".into());
+        }
+        if self.zodiac && (rule.kind != Kind::Number || k != 2) {
+            return Err("生肖展开号码拖仅适用于每注两个号码的玩法".into());
+        }
+        let valid = |v: u8| {
+            if self.zodiac {
+                v < 12
+            } else if rule.kind == Kind::Number {
+                (1..=49).contains(&v)
+            } else {
+                v < rule.kind.size()
+            }
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        if self.left.is_empty()
+            || self.right.is_empty()
+            || self
+                .left
+                .iter()
+                .chain(&self.right)
+                .any(|v| !valid(*v) || !seen.insert(*v))
+        {
+            return Err("拖的两边不能为空，选项不能重复或重叠".into());
+        }
+        let expand = |values: &[u8]| -> Vec<u8> {
+            if self.zodiac {
+                (1..=49)
+                    .filter(|n| values.contains(&mapping.zodiac[*n as usize - 1]))
+                    .collect()
+            } else {
+                let mut result = values.to_vec();
+                result.sort_unstable();
+                result
+            }
+        };
+        let left = expand(&self.left);
+        let right = expand(&self.right);
+        if rule
+            .selection_limit
+            .is_some_and(|max| left.len() + right.len() > max as usize)
+        {
+            return Err("拖的总候选项超过玩法最多可选数量".into());
+        }
+        let (left_count, right_count) = if k == 2 {
+            (1, 1)
+        } else {
+            if left.len() >= k {
+                return Err("固定项须少于每注选项数".into());
+            }
+            (left.len(), k - left.len())
+        };
+        if right.len() < right_count {
+            return Err("拖项不足以补齐一条基础注".into());
+        }
+        let count = choose(left.len(), left_count) * choose(right.len(), right_count);
+        if count > MAX_UNITS as u64 {
+            return Err("单次提交最多 1000 条基础注，请减少拖项".into());
+        }
+        let mut sets = Vec::with_capacity(count as usize);
+        let right_sets = combinations(&right, right_count);
+        for fixed in combinations(&left, left_count) {
+            for trailing in &right_sets {
+                let mut set = fixed.clone();
+                set.extend(trailing);
+                set.sort_unstable();
+                sets.push(set);
+            }
+        }
+        Ok(sets)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BetInput {
@@ -336,6 +424,8 @@ pub struct BetInput {
     pub amount: String, // yuan, at most one decimal place
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_zodiacs: Vec<u8>, // empty for ordinary bets; otherwise total per zodiac
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drag: Option<DragInput>,
     pub request_id: String,
     #[serde(default)]
     pub bettor: String,
@@ -386,6 +476,11 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
     rule.validate()?;
     mapping.validate()?;
     let amount = entry_amount(&input.amount)?;
+    if input.drag.is_some()
+        && (!input.compound || !input.selections.is_empty() || !input.package_zodiacs.is_empty())
+    {
+        return Err("拖须选择复式，不能同时使用普通选项或包肖".into());
+    }
     if !input.package_zodiacs.is_empty() {
         if rule.kind != Kind::Number
             || rule.quantity != 1
@@ -409,70 +504,74 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
         price_package(&mut planned.atoms, &zodiacs, mapping, amount)?;
         return total_plan(planned.atoms);
     }
-    let mut options = input.selections.clone();
-    if rule.condition != Condition::HardPair {
-        options.sort_unstable();
-    }
-    if input.compound && !rule.compound_enabled {
-        return Err("此玩法未启用复式".into());
-    }
-    if rule.condition == Condition::HardPair && options.len() != 2 {
-        return Err("特碰请依次选择一个特码、一个平码，位置不可互换".into());
-    }
-    if options.is_empty()
-        || options
-            .iter()
-            .enumerate()
-            .any(|(i, n)| options[..i].contains(n))
-        || options.iter().any(|n| {
-            if rule.kind == Kind::Number {
-                !(1..=49).contains(n)
-            } else if rule.kind == Kind::ZodiacCount {
-                !(1..=7).contains(n)
-            } else {
-                *n >= rule.kind.size()
-            }
-        })
-    {
-        return Err("投注选项为空、重复或不合法".into());
-    }
-    if rule
-        .selection_limit
-        .is_some_and(|n| options.len() > n as usize)
-    {
-        return Err(format!(
-            "此玩法最多选择 {} 项",
-            rule.selection_limit.unwrap()
-        ));
-    }
-    if rule.kind == Kind::ZodiacCount && options.as_slice() != [rule.zodiac_count.unwrap()] {
-        return Err("请选择该玩法配置的目标生肖种数".into());
-    }
-    let k = if input.compound {
-        rule.combination_size as usize
-    } else if rule.quantity == 1 {
-        1 // Multi-select single-option plays produce independent basic bets.
+    let sets = if let Some(drag) = &input.drag {
+        drag.sets(rule, mapping)?
     } else {
-        if !rule.relation.accepts(options.len() as u8, rule.quantity) {
-            return Err("未启用复式时，选择数量必须满足配置的数量关系".into());
+        let mut options = input.selections.clone();
+        if rule.condition != Condition::HardPair {
+            options.sort_unstable();
         }
-        options.len().min(rule.quantity as usize)
-    };
-    if rule.condition == Condition::AtLeast && k < rule.minimum_hits as usize {
-        return Err("选项数量不能少于最少命中数".into());
-    }
-    let split = input.compound || k < options.len();
-    if k > options.len() || !rule.relation.accepts(k as u8, rule.quantity) {
-        return Err("选项数量不满足玩法配置".into());
-    }
-    let count = if split { choose(options.len(), k) } else { 1 };
-    if count > MAX_UNITS as u64 {
-        return Err("单次提交最多 1000 条基础注，请减少候选选项".into());
-    }
-    let sets = if split {
-        combinations(&options, k)
-    } else {
-        vec![options]
+        if input.compound && !rule.compound_enabled {
+            return Err("此玩法未启用复式".into());
+        }
+        if rule.condition == Condition::HardPair && options.len() != 2 {
+            return Err("特碰请依次选择一个特码、一个平码，位置不可互换".into());
+        }
+        if options.is_empty()
+            || options
+                .iter()
+                .enumerate()
+                .any(|(i, n)| options[..i].contains(n))
+            || options.iter().any(|n| {
+                if rule.kind == Kind::Number {
+                    !(1..=49).contains(n)
+                } else if rule.kind == Kind::ZodiacCount {
+                    !(1..=7).contains(n)
+                } else {
+                    *n >= rule.kind.size()
+                }
+            })
+        {
+            return Err("投注选项为空、重复或不合法".into());
+        }
+        if rule
+            .selection_limit
+            .is_some_and(|n| options.len() > n as usize)
+        {
+            return Err(format!(
+                "此玩法最多选择 {} 项",
+                rule.selection_limit.unwrap()
+            ));
+        }
+        if rule.kind == Kind::ZodiacCount && options.as_slice() != [rule.zodiac_count.unwrap()] {
+            return Err("请选择该玩法配置的目标生肖种数".into());
+        }
+        let k = if input.compound {
+            rule.combination_size as usize
+        } else if rule.quantity == 1 {
+            1 // Multi-select single-option plays produce independent basic bets.
+        } else {
+            if !rule.relation.accepts(options.len() as u8, rule.quantity) {
+                return Err("未启用复式时，选择数量必须满足配置的数量关系".into());
+            }
+            options.len().min(rule.quantity as usize)
+        };
+        if rule.condition == Condition::AtLeast && k < rule.minimum_hits as usize {
+            return Err("选项数量不能少于最少命中数".into());
+        }
+        let split = input.compound || k < options.len();
+        if k > options.len() || !rule.relation.accepts(k as u8, rule.quantity) {
+            return Err("选项数量不满足玩法配置".into());
+        }
+        let count = if split { choose(options.len(), k) } else { 1 };
+        if count > MAX_UNITS as u64 {
+            return Err("单次提交最多 1000 条基础注，请减少候选选项".into());
+        }
+        if split {
+            combinations(&options, k)
+        } else {
+            vec![options]
+        }
     };
     let mut atoms = Vec::with_capacity(sets.len());
     for opts in sets {
@@ -833,6 +932,136 @@ include!("../test_support/rules.rs");
 mod tests {
     use super::*;
     #[test]
+    fn drag_cross_pools_fixed_options_and_settlement() {
+        let mapping = Mapping::for_year(2026);
+        let mut rule = defaults()[0].clone();
+        rule.quantity = 2;
+        rule.combination_size = 2;
+        rule.scope = Scope::All;
+        rule.odds = "55".into();
+        rule.special_hit_odds = Some("25".into());
+        rule.rebate_percent = "10".into();
+        rule.compound_enabled = true;
+        let mut bet = input(vec![], true);
+        bet.amount = "15".into();
+        bet.drag = Some(DragInput {
+            left: vec![6, 18],
+            right: vec![27, 36],
+            zodiac: false,
+        });
+        let p = plan(&rule, &bet, &mapping).unwrap();
+        assert_eq!(
+            p.atoms
+                .iter()
+                .map(|a| a.options.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![6, 27], vec![6, 36], vec![18, 27], vec![18, 36]]
+        );
+        assert_eq!((p.stake, p.rebate), (6000, 600));
+        let results = settle(
+            &p.atoms,
+            &Draw::predicted([6, 18, 27, 1, 2, 3, 36], &mapping),
+        );
+        assert_eq!(results.iter().map(|r| r.payout).sum::<i64>(), 240000); // two × 15 × 55 + two × 15 × 25
+        bet.drag = Some(DragInput {
+            left: vec![1],
+            right: vec![4],
+            zodiac: true,
+        });
+        let p = plan(&rule, &bet, &mapping).unwrap();
+        assert_eq!((p.atoms.len(), p.stake, p.rebate), (16, 24000, 2400));
+        assert!(p.atoms.iter().all(|a| {
+            let z: Vec<_> = a
+                .options
+                .iter()
+                .map(|n| mapping.zodiac[*n as usize - 1])
+                .collect();
+            z.contains(&1) && z.contains(&4)
+        }));
+        // The natal zodiac expands to five numbers; no hard-coded four-number groups.
+        bet.drag.as_mut().unwrap().left = vec![mapping.natal];
+        rule.special_odds = Some("50".into());
+        let p = plan(&rule, &bet, &mapping).unwrap();
+        assert_eq!((p.atoms.len(), p.stake), (20, 30000));
+        assert!(p.atoms.iter().all(|a| a.odds == "50"));
+        rule.kind = Kind::Zodiac;
+        rule.quantity = 3;
+        rule.combination_size = 3;
+        rule.special_hit_odds = None;
+        bet.drag = Some(DragInput {
+            left: vec![0, 1],
+            right: vec![4, 3, 10],
+            zodiac: false,
+        });
+        let p = plan(&rule, &bet, &mapping).unwrap();
+        assert_eq!(
+            p.atoms
+                .iter()
+                .map(|a| a.options.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![0, 1, 3], vec![0, 1, 4], vec![0, 1, 10]]
+        );
+        rule.quantity = 5;
+        rule.combination_size = 5;
+        bet.drag.as_mut().unwrap().right.push(5);
+        assert_eq!(plan(&rule, &bet, &mapping).unwrap().atoms.len(), 4);
+    }
+    #[test]
+    fn drag_rejects_invalid_modes_overlap_and_capacity_before_expansion() {
+        let mapping = Mapping::default();
+        let mut rule = defaults()[0].clone();
+        rule.quantity = 3;
+        rule.combination_size = 3;
+        rule.compound_enabled = true;
+        let mut bet = input(vec![], true);
+        bet.drag = Some(DragInput {
+            left: vec![1],
+            right: (2..=49).collect(),
+            zodiac: false,
+        });
+        assert!(plan(&rule, &bet, &mapping).unwrap_err().contains("1000")); // C(48,2)=1128
+        bet.drag.as_mut().unwrap().right = (2..=46).collect();
+        assert_eq!(plan(&rule, &bet, &mapping).unwrap().atoms.len(), 990);
+        rule.selection_limit = Some(45);
+        assert!(plan(&rule, &bet, &mapping).is_err());
+        rule.selection_limit = None;
+        for (left, right) in [
+            (vec![], vec![2, 3]),
+            (vec![1], vec![]),
+            (vec![1], vec![1, 2]),
+            (vec![1, 1], vec![2]),
+            (vec![0], vec![2, 3]),
+            (vec![1, 2, 3], vec![4]),
+            (vec![1], vec![2]),
+        ] {
+            bet.drag = Some(DragInput {
+                left,
+                right,
+                zodiac: false,
+            });
+            assert!(plan(&rule, &bet, &mapping).is_err());
+        }
+        bet.drag = Some(DragInput {
+            left: vec![1],
+            right: vec![2, 3],
+            zodiac: false,
+        });
+        bet.compound = false;
+        assert!(plan(&rule, &bet, &mapping).is_err());
+        bet.compound = true;
+        bet.selections = vec![4];
+        assert!(plan(&rule, &bet, &mapping).is_err());
+        bet.selections.clear();
+        bet.package_zodiacs = vec![1];
+        assert!(plan(&rule, &bet, &mapping).is_err());
+        bet.package_zodiacs.clear();
+        rule.compound_enabled = false;
+        assert!(plan(&rule, &bet, &mapping).is_err());
+        rule.compound_enabled = true;
+        bet.drag.as_mut().unwrap().zodiac = true;
+        assert!(plan(&rule, &bet, &mapping).is_err());
+    }
+    #[test]
     fn zero_tail_rates_are_snapshotted_per_combination_and_validated() {
         let mapping = Mapping::default();
         let mut rule = defaults()[0].clone();
@@ -959,6 +1188,7 @@ mod tests {
             compound,
             amount: "100".into(),
             package_zodiacs: vec![],
+            drag: None,
             request_id: "test".into(),
             bettor: "测试投注人".into(),
         }

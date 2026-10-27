@@ -106,6 +106,11 @@ export interface Bootstrap {
   plays: Play[];
   zodiacs: string[];
 }
+export interface DragInput {
+  left: number[];
+  right: number[];
+  zodiac: boolean;
+}
 export interface Bet {
   slip_id: string | null;
   slip_position: number | null;
@@ -120,6 +125,7 @@ export interface Bet {
   rule: Rule;
   selections: number[];
   package_zodiacs?: number[];
+  drag?: DragInput | null;
   compound: boolean;
   amount: number;
   unit_count: number;
@@ -435,6 +441,7 @@ export function selectionBoundary(
 }
 
 export interface BetDraft {
+  drag: import("./drag").DragDraft | null;
   packageMode: boolean;
   playId: number;
   selections: number[];
@@ -472,6 +479,7 @@ export interface SlipLine {
   compound: boolean;
   amount: string;
   package_zodiacs?: number[];
+  drag?: DragInput | null;
 }
 export interface SlipDraftLine extends SlipLine {
   key: string;

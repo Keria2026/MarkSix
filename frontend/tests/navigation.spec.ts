@@ -45,7 +45,7 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
   await expect(bet.locator("svg.lucide-plus")).toHaveCount(0);
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 844 });
-    for (const name of ["录入投注", "本期统计", "官方频道"]) {
+    for (const name of ["录入投注", "本期统计", "玩法与配置"]) {
       const target = nav.getByRole("button", { name, exact: true });
       await target.click();
       await expect
@@ -62,7 +62,7 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
           );
         })
         .toBeLessThan(4);
-      if (name !== "录入投注") {
+      if (name === "本期统计") {
         const toggle = nav.getByRole("button", {
           name: new RegExp(`(展开|收起)${name}二级菜单`),
         });
@@ -85,9 +85,10 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
     .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
     .click();
   await nav.getByRole("button", { name: "本期概览", exact: true }).click();
-  await expect(statistics).toHaveAttribute("aria-expanded", "false");
+  await expect(statistics).toHaveAttribute("aria-expanded", "true");
+  await expect(nav.getByLabel("本期统计分类")).toBeVisible();
   const disclosure = nav.getByRole("button", {
-    name: "展开本期统计二级菜单",
+    name: "收起本期统计二级菜单",
     exact: true,
   });
   const primaryBox = (await statistics.boundingBox())!;
@@ -98,6 +99,10 @@ test("glass indicator follows navigation, submenus toggle, and reduced motion is
     ),
   ).toBeLessThan(3);
   await disclosure.click();
+  await expect(statistics).toHaveAttribute("aria-expanded", "false");
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
   await expect(statistics).toHaveAttribute("aria-expanded", "true");
   await expect(nav.getByLabel("本期统计分类")).toBeVisible();
   await nav
@@ -189,7 +194,7 @@ test("navigation selection updates immediately and remains aligned after rapid s
     // These clicks interrupt the indicator while removing/reinserting the submenu.
     await nav.evaluate(async (node) => {
       for (const name of [
-        "官方频道",
+        "玩法与配置",
         "本期统计",
         "录入投注",
         "本期统计",
@@ -415,4 +420,57 @@ test("historical periods remain individually closable navigation tabs without de
   await expect(history).toBeFocused();
   await expect(page.locator(".history-panel tbody tr")).toHaveCount(3);
   expect(mutations).toEqual([]);
+});
+
+test("open submenus persist across pages without overlap and inactive children navigate correctly", async ({
+  page,
+}) => {
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  await nav
+    .getByRole("button", { name: "展开本期统计二级菜单", exact: true })
+    .click();
+  await expect(
+    nav.getByRole("button", { name: "本期概览", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await nav.getByRole("button", { name: "投注记录", exact: true }).click();
+  await expect(
+    nav.getByRole("button", { name: "本期统计", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await nav.getByRole("button", { name: "历史统计", exact: true }).click();
+  await page
+    .locator(".history-panel tbody tr")
+    .first()
+    .getByRole("button")
+    .click();
+  await nav
+    .getByRole("button", { name: "展开历史统计二级菜单", exact: true })
+    .click();
+  await nav.getByRole("button", { name: "玩法与配置", exact: true }).click();
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 1080 });
+    const stats = nav.getByLabel("本期统计分类"),
+      history = nav.getByLabel("已打开的历史期次");
+    await expect(stats).toBeVisible();
+    await expect(history).toBeVisible();
+    const a = (await stats.boundingBox())!,
+      b = (await history.boundingBox())!;
+    expect(
+      a.y + a.height <= b.y ||
+        b.y + b.height <= a.y ||
+        a.x + a.width <= b.x ||
+        b.x + b.width <= a.x,
+    ).toBeTruthy();
+    await expect(nav.locator(".nav-submenu [aria-current]")).toHaveCount(0);
+  }
+  await page.screenshot({
+    path: "test-results/navigation-persistent.png",
+    fullPage: true,
+  });
+  await nav
+    .getByRole("button", { name: "投注人分类统计", exact: true })
+    .click();
+  await expect(
+    nav.getByRole("button", { name: "投注人分类统计", exact: true }),
+  ).toHaveAttribute("aria-current", "location");
+  await expect(nav.getByLabel("已打开的历史期次")).toBeVisible();
 });

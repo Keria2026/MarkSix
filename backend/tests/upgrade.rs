@@ -96,11 +96,12 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
             .is_none()
     );
     assert!((0..10).contains(&refreshed.get::<i64, _>("age")));
-    let row = sqlx::query("SELECT rule,atoms,bettor,revision FROM bets WHERE id=?")
+    let row = sqlx::query("SELECT rule,atoms,bettor,revision,drag FROM bets WHERE id=?")
         .bind(&id)
         .fetch_one(&pool)
         .await
         .unwrap();
+    assert!(row.get::<Option<Json<Value>>, _>("drag").is_none());
     assert_eq!(row.get::<Json<Value>, _>("rule").0, old_rule);
     assert_eq!(row.get::<Json<Value>, _>("atoms").0, old_atoms);
     assert_eq!(row.get::<String, _>("bettor"), "");

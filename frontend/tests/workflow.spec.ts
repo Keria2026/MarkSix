@@ -219,11 +219,10 @@ test("administrator records compound bets, cancels atomically, configures rules,
   await expect(
     nav.getByRole("button", { name: "历史统计", exact: true }),
   ).toHaveAttribute("aria-current", "page");
-  await nav.getByRole("button", { name: "官方频道", exact: true }).click();
-  await expect(page.locator("iframe")).toHaveAttribute(
-    "src",
-    "https://macaujc.com/picker/",
-  );
+  await expect(
+    nav.getByRole("button", { name: "官方频道", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator("iframe")).toHaveCount(0);
   // API waves take precedence over the local table: 01 is normally red.
   await page.route("**/api/bootstrap", async (route) => {
     const response = await route.fetch();
@@ -429,7 +428,7 @@ test("narrow mobile navigation retains readable labels and touch targets", async
   const nav = page.getByRole("navigation", { name: "主要导航" });
   await expect(nav).toBeVisible();
   const buttons = nav.locator(":scope > .nav-item > .nav-link");
-  await expect(buttons).toHaveCount(6);
+  await expect(buttons).toHaveCount(5);
   for (const button of await buttons.all()) {
     const rect = await button.boundingBox();
     expect(rect!.width).toBeGreaterThanOrEqual(44);

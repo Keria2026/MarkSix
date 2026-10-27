@@ -50,7 +50,7 @@ fn payload(period: &str, play_id: i64, version: i64) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "requires TEST_DATABASE_URL ending in /marksix_test; see docs/DEVELOPMENT.md"]
+#[ignore = "requires TEST_DATABASE_URL ending in /marksix_test; see docs/getting-started/development.md"]
 async fn transactional_workflow_and_recovery() {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::ERROR)

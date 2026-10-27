@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dragLabel } from "../lib/drag";
   import {
     ArrowRight,
     ArrowUpRight,
@@ -165,7 +166,7 @@
                   .slice(0, 3)
                   .map(
                     (item) =>
-                      `${bet.grouped ? `${item.rule.name}：` : ""}${item.package_zodiacs?.length ? `包肖 ${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}` : item.selections.map((v) => label(item.rule.kind, v)).join(" · ")}`,
+                      `${bet.grouped ? `${item.rule.name}：` : ""}${item.drag ? dragLabel(item.rule.kind, item.drag) : item.package_zodiacs?.length ? `包肖 ${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}` : item.selections.map((v) => label(item.rule.kind, v)).join(" · ")}`,
                   )
                   .join("；")}{bet.items.length > 3 ? "…" : ""}</small
               >

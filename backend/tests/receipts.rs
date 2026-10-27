@@ -528,4 +528,112 @@ async fn atomic_slips_order_statements_and_capacity() {
         ok(&app, "GET", &late_path, json!({}), &cookie).await["status"],
         "cancelled"
     );
+    // Drag intent is persisted, atomic with slips, and repriced using snapshotted atoms.
+    let mut rule = number["rule"].clone();
+    rule["name"] = json!("拖二中二含特");
+    rule["scope"] = json!("all");
+    rule["quantity"] = json!(2);
+    rule["combination_size"] = json!(2);
+    rule["compound_enabled"] = json!(true);
+    rule["odds"] = json!("55");
+    rule["special_hit_odds"] = json!("25");
+    let drag_id = ok(&app, "POST", "/api/plays", rule, &cookie).await["id"].clone();
+    let drag = json!({"left":[1,2],"right":[3,9],"zodiac":false});
+    let drag_line = json!({"play_id":drag_id,"play_version":1,"selections":[],"compound":true,"amount":"15","drag":drag});
+    let mut bad_line = drag_line.clone();
+    bad_line["drag"]["right"] = json!([1, 9]);
+    let count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/slips",
+            slip(&package_draw.expect, vec![drag_line.clone(), bad_line]),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        count_before
+    );
+    let body = slip(&package_draw.expect, vec![drag_line]);
+    let created = ok(&app, "POST", "/api/slips", body.clone(), &cookie).await;
+    assert_eq!(
+        created["id"],
+        ok(&app, "POST", "/api/slips", body, &cookie).await["id"]
+    );
+    let drag_slip_path = format!("/api/slips/{}", created["id"].as_str().unwrap());
+    let receipt = ok(&app, "GET", &drag_slip_path, json!({}), &cookie).await;
+    let bet = &receipt["items"][0];
+    assert_eq!(bet["drag"], drag);
+    assert_eq!(bet["stake"], 6000);
+    assert_eq!(bet["payout"], 240000);
+    assert_eq!(bet["rebate"], 600);
+    let path = format!("/api/bets/{}", bet["id"].as_str().unwrap());
+    ok(
+        &app,
+        "PUT",
+        &format!("{path}/amount"),
+        json!({"revision":1,"amount":"20","request_id":uuid::Uuid::new_v4()}),
+        &cookie,
+    )
+    .await;
+    let repriced = ok(&app, "GET", &path, json!({}), &cookie).await;
+    assert_eq!(repriced["record"]["drag"], drag);
+    assert_eq!(repriced["record"]["payout"], 320000);
+    assert_eq!(repriced["record"]["rebate"], 800);
+    let flown = ok(
+        &app,
+        "POST",
+        &format!("{path}/layoffs"),
+        json!({"revision":2,"amount":"5","receiver":"拖受注方","request_id":uuid::Uuid::new_v4()}),
+        &cookie,
+    )
+    .await;
+    let outgoing = sqlx::query("SELECT stake,payout,rebate,status FROM layoffs WHERE id=?")
+        .bind(flown["id"].as_str().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    use sqlx::Row;
+    assert_eq!(outgoing.get::<i64, _>("stake"), 2000);
+    assert_eq!(outgoing.get::<Option<i64>, _>("payout"), Some(80000));
+    assert_eq!(outgoing.get::<i64, _>("rebate"), 200);
+    assert_eq!(outgoing.get::<String, _>("status"), "settled");
+    assert_eq!(
+        call(&app, "POST", &format!("{path}/cancel"), json!({}), &cookie)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    ok(
+        &app,
+        "POST",
+        &format!("/api/layoffs/{}/cancel", flown["id"].as_str().unwrap()),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    let receipt = ok(&app, "GET", &drag_slip_path, json!({}), &cookie).await;
+    ok(
+        &app,
+        "POST",
+        &format!("{drag_slip_path}/cancel"),
+        versions(&receipt),
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        ok(&app, "GET", &drag_slip_path, json!({}), &cookie).await["status"],
+        "cancelled"
+    );
 }
