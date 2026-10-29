@@ -1,6 +1,7 @@
 import { basicCount, entryCents, zodiacs } from "../types";
 import type { Mapping, Play, SlipLine } from "../types";
 import { dragPreview } from "../drag";
+import { tokenize } from "./lexer";
 import type { TextRow } from "../text-entry";
 
 function values(body: string, kind: Play["rule"]["kind"]): number[] {
@@ -39,24 +40,18 @@ function values(body: string, kind: Play["rule"]["kind"]): number[] {
 }
 
 function bracketGroups(body: string) {
-  const pairs: Record<string, string> = {
-    "[": "]",
-    "【": "】",
-    "(": ")",
-    "{": "}",
-  };
   const groups: string[] = [];
   let close = "",
     start = 0,
     outside = "";
   for (let i = 0; i < body.length; i++) {
     const char = body[i];
-    if (Object.hasOwn(pairs, char)) {
+    if (/[\[【({]/u.test(char)) {
       if (close) throw new Error("请将嵌套括号展开为独立投注组");
-      close = pairs[char];
+      close = "open";
       start = i + 1;
     } else if (/[\]】)}]/u.test(char)) {
-      if (char !== close) throw new Error("投注括号不匹配，请核对分组");
+      if (!close) throw new Error("投注括号缺少左括号，请核对分组");
       const group = body.slice(start, i);
       if (!group.trim()) throw new Error("括号内没有投注项");
       groups.push(group);
@@ -83,9 +78,9 @@ export function compileRow(
     const cents = entryCents(row.amount);
     if (cents === null) throw new Error("请明确金额，须大于零且最多一位小数");
     const { rule } = play;
-    let body = row.body;
-    if (body.includes("托"))
-      throw new Error("“托”可能表示“拖”，请确认后在选项中改为“拖”");
+    let body = tokenize(row.body, [])
+      .map((token) => (token.kind === "compound" ? "复式" : token.text))
+      .join("");
     const compound = body.includes("复式");
     const postfixPackage =
       row.objectBeforePlay &&

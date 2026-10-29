@@ -398,7 +398,13 @@ mod tests {
                 .unwrap()
         );
         let file = bundled().unwrap();
-        assert_eq!(file.plays.len(), 33);
+        assert_eq!(file.plays.len(), 31);
+        let special = file
+            .plays
+            .iter()
+            .find(|p| p.rule.name == "特码45倍")
+            .unwrap();
+        assert_eq!(special.rule.odds, "45");
         let single = file.plays.iter().find(|p| p.rule.name == "一肖中").unwrap();
         assert_eq!(single.rule.rebate_percent, "5");
         assert!(

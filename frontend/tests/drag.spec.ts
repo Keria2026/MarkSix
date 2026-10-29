@@ -74,7 +74,9 @@ test("drag builds cross-pool and fixed-option slips, preserves drafts and reject
     await expect(
       page.getByRole("button", { name: "确认录入投注", exact: true }),
     ).toBeDisabled();
-    await expect(page.getByRole("status")).toContainText("重叠");
+    await expect(
+      page.getByRole("status").filter({ hasText: "重叠" }),
+    ).toContainText("重叠");
     await page
       .getByRole("button", { name: "生肖展开号码", exact: true })
       .click();

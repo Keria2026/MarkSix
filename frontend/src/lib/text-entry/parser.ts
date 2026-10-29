@@ -1,7 +1,7 @@
 import type { Play } from "../types";
 import type { TextPreference, TextRow } from "../text-entry";
 import { tokenize } from "./lexer";
-import { resolvePlay } from "./vocabulary";
+import { resolvePlay, playCandidates } from "./vocabulary";
 import type { Token } from "./lexer";
 
 interface Context {
@@ -32,10 +32,13 @@ export function parseText(
   const habits = learned.filter((h) =>
     active.some((p) => p.id === h.play_id && p.version === h.play_version),
   );
-  const tokens = tokenize(raw, [
-    ...active.map((p) => p.rule.name),
-    ...habits.map((h) => h.alias),
-  ]);
+  const tokens = tokenize(
+    raw,
+    [...active.map((p) => p.rule.name), ...habits.map((h) => h.alias)],
+    (label) =>
+      resolvePlay(label, active, habits).id > 0 ||
+      playCandidates(label, active).some((c) => c.suggested),
+  );
   const rows: TextRow[] = [];
   let inherited = empty();
   let start = 0;

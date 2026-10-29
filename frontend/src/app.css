@@ -1799,7 +1799,7 @@ details[open] > summary svg {
   max-height: 30rem;
 }
 .text-correction textarea {
-  min-height: 5rem;
+  min-height: 3.5rem;
   max-height: 18rem;
 }
 .text-entry-actions {
@@ -1820,7 +1820,12 @@ details[open] > summary svg {
   padding: 20px 0;
   border-top: 1px solid var(--line);
 }
+.text-entry[hidden] {
+  display: none;
+}
 .text-entry-rows {
+  display: grid;
+  gap: 12px;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1828,9 +1833,13 @@ details[open] > summary svg {
 .text-entry-rows > li {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-  gap: 24px;
-  padding: 24px 0;
-  border-top: 1px solid var(--line);
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.text-entry-rows > li.has-error {
+  border-color: var(--red);
 }
 .text-original > span {
   font-size: 12px;
@@ -1848,7 +1857,7 @@ details[open] > summary svg {
 .text-correction {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 .text-interpretation {

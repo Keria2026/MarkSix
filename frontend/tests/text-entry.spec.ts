@@ -257,7 +257,13 @@ test("domain grammar opens direct confirmation with exact server principal", asy
     } else {
       const response = await page.request.post("/api/plays", {
         headers: { "X-MarkSix": "1" },
-        data: defaults.plays.find((p: Play) => p.rule.name === name).rule,
+        data: defaults.plays.find((p: Play) => p.rule.name === name)?.rule ?? {
+          ...defaults.plays.find((p: Play) => p.rule.name === "三有").rule,
+          name,
+          quantity: 4,
+          combination_size: 4,
+          scope: "special",
+        },
       });
       expect(response.ok()).toBe(true);
       ids.set(name, (await response.json()).id);
