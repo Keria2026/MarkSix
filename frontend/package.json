@@ -15,6 +15,7 @@
     "fflate": "0.8.3",
     "lucide-svelte": "^0.468.0",
     "pdf-lib": "1.17.1",
+    "pinyin-pro": "3.29.5",
     "svelte": "^5.39.0"
   },
   "devDependencies": {

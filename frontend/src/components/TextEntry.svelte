@@ -9,6 +9,8 @@
     AlertCircle,
   } from "lucide-svelte";
   import Modal from "./Modal.svelte";
+  import { clipboardRows, watchClipboard } from "../lib/text-entry/clipboard";
+  import { phoneticKey } from "../lib/text-entry/phonetics";
   import { specialRatePlay } from "../lib/features";
   import { money, label, entryCents } from "../lib/types";
   import type { Bootstrap, Period, api as Api } from "../lib/types";
@@ -27,7 +29,15 @@
     api: accountApi,
     onrecorded,
     notify,
+    account,
+    active = true,
+    clipboardRequest = 0,
+    onactivate,
   }: {
+    account: string;
+    active?: boolean;
+    clipboardRequest?: number;
+    onactivate: () => void;
     draft: TextDraft;
     boot: Bootstrap;
     today: Period;
@@ -68,16 +78,17 @@
   let rateFor = $state("");
   let rateLoadedKey = "";
   let parseRevision = $state(0);
-  const genericSpecial = new Set(["特码", "特", "澳特", "特码直选"]);
+  const genericSpecial = (label: string) =>
+    ["特码", "特", "澳特", "特码直选"].some(
+      (name) => phoneticKey(name) === phoneticKey(label),
+    );
   const rates = $derived(boot.plays.filter(specialRatePlay));
   const rateRows = $derived(
     draft.rows.filter(
       (row) =>
         !row.excluded &&
         (rates.some((play) => play.id === row.playId) ||
-          (!row.playId &&
-            genericSpecial.has(row.playLabel) &&
-            rates.length > 0)),
+          (!row.playId && genericSpecial(row.playLabel) && rates.length > 0)),
     ),
   );
   const rateSignature = $derived(rateRows.map((row) => row.key).join("|"));
@@ -136,7 +147,7 @@
         ) {
           // Explicit fee names in the source take precedence over a bettor habit.
           for (const row of rateRows)
-            if (genericSpecial.has(row.playLabel)) {
+            if (genericSpecial(row.playLabel)) {
               row.playId = preference.play_id;
               if (!row.marker) row.mode = preference.amount_mode;
             }
@@ -230,7 +241,7 @@
           (r) =>
             !r.excluded &&
             !(
-              genericSpecial.has(r.playLabel) &&
+              genericSpecial(r.playLabel) &&
               rates.some((play) => play.id === r.playId)
             ) &&
             r.playLabel &&
@@ -255,8 +266,41 @@
       error = fail(e);
     }
   }
+  let clipboard: ReturnType<typeof watchClipboard> | undefined;
+  let destroyed = false;
   onMount(() => {
-    void loadPreferences();
+    clipboard = watchClipboard(
+      account,
+      () =>
+        preferencesReady &&
+        !busy &&
+        !reviewOpen &&
+        !draft.raw.trim() &&
+        today.accepting_entries &&
+        !document.querySelector("dialog[open]"),
+      (text) => {
+        const rows = clipboardRows(text, boot.plays, preferences);
+        if (!rows) return false;
+        draft.raw = text;
+        draft.rows = rows;
+        draft.recognized = text;
+        parseRevision++;
+        checkText();
+        onactivate();
+        return true;
+      },
+      notify,
+    );
+    void loadPreferences().then(() => {
+      if (!destroyed) void clipboard?.check();
+    });
+    return () => {
+      destroyed = true;
+      clipboard?.dispose();
+    };
+  });
+  $effect(() => {
+    if (clipboardRequest) void clipboard?.check(true);
   });
   function checkText() {
     if (busy || !preferencesReady) return;
@@ -377,7 +421,7 @@
         (row) =>
           !bettor_preference ||
           !selectedRows.includes(row) ||
-          !genericSpecial.has(row.playLabel),
+          !genericSpecial(row.playLabel),
       ),
       boot.plays,
     );
@@ -397,6 +441,7 @@
         method: "POST",
         body: JSON.stringify({ ...body, request_id: draft.pending.id }),
       });
+      await clipboard?.remember(draft.raw).catch(() => {});
       draft.raw = "";
       draft.recognized = "";
       draft.rows = [];
@@ -431,7 +476,12 @@
   }
 </script>
 
-<section class="glass text-entry" aria-label="文本录注" aria-busy={busy}>
+<section
+  class="glass text-entry"
+  hidden={!active}
+  aria-label="文本录注"
+  aria-busy={busy}
+>
   <div class="section-head"><h2><FileText size={19} />文本录注</h2></div>
   <label class="text-source"
     >投注原文<textarea
@@ -585,30 +635,34 @@
                   onclick={() => removeRow(index)}><Trash2 size={16} /></button
                 >
               </div>
-              {#if row.customAlias}<label
-                  >未识别的玩法简称（可选）<input
-                    bind:value={row.playLabel}
-                    maxlength="40"
-                    disabled={busy}
-                    placeholder="确认后可记住此简称"
-                  /></label
-                ><label
-                  >对应玩法<select
-                    bind:value={row.playId}
-                    onchange={(event) => {
-                      row.playId = Number(event.currentTarget.value);
-                      row.basePlayId = row.playId;
-                      const ids = new Set(rateRows.map((item) => item.playId));
-                      rateChoice = ids.size === 1 ? [...ids][0] : 0;
-                    }}
-                    disabled={busy}
-                    aria-invalid={!row.excluded && !row.playId}
-                    ><option value={0}>请选择玩法</option
-                    >{#each boot.plays.filter((p) => p.enabled) as play}<option
-                        value={play.id}>{play.rule.name}</option
-                      >{/each}</select
-                  ></label
-                >{/if}
+              {#if row.customAlias}<div class="form-two">
+                  <label
+                    >未识别的玩法简称（可选）<input
+                      bind:value={row.playLabel}
+                      maxlength="40"
+                      disabled={busy}
+                      placeholder="确认后可记住此简称"
+                    /></label
+                  ><label
+                    >对应玩法<select
+                      bind:value={row.playId}
+                      onchange={(event) => {
+                        row.playId = Number(event.currentTarget.value);
+                        row.basePlayId = row.playId;
+                        const ids = new Set(
+                          rateRows.map((item) => item.playId),
+                        );
+                        rateChoice = ids.size === 1 ? [...ids][0] : 0;
+                      }}
+                      disabled={busy}
+                      aria-invalid={!row.excluded && !row.playId}
+                      ><option value={0}>请选择玩法</option
+                      >{#each boot.plays.filter((p) => p.enabled) as play}<option
+                          value={play.id}>{play.rule.name}</option
+                        >{/each}</select
+                    ></label
+                  >
+                </div>{/if}
               <label
                 >投注项<textarea
                   aria-label={`第${index + 1}项投注项`}

@@ -7,6 +7,7 @@ import {
   playCandidates,
 } from "../src/lib/text-entry";
 import type { TextPreference } from "../src/lib/text-entry";
+import { clipboardRows } from "../src/lib/text-entry/clipboard";
 import { basicCount } from "../src/lib/types";
 import type { Play } from "../src/lib/types";
 const plays: Play[] = JSON.parse(
@@ -131,7 +132,6 @@ test("unknown text, missing amount, duplicates and concatenated numbers cannot d
     "特码01-03各10",
     "特码-1各10",
     "特码\n三有牛羊蛇300",
-    "三友牛虎托马蛇羊鸡各50",
   ]) {
     const rows = compile(text);
     expect(
@@ -256,15 +256,27 @@ test("partial tokens never become boundaries or silently disappear", () => {
 });
 
 test("confirmed domain shorthands use configured plays and current period mapping", () => {
-  const rows = parseText("新澳门四肖\n兔龙虎蛇100米", plays);
+  const four = {
+    ...plays.find((p) => p.rule.name === "三有")!,
+    id: 999,
+    rule: {
+      ...plays.find((p) => p.rule.name === "三有")!.rule,
+      name: "四肖中特",
+      quantity: 4,
+      combination_size: 4,
+      scope: "special" as const,
+    },
+  };
+  const configured = [...plays, four];
+  const rows = parseText("新澳门四肖\n兔龙虎蛇100米", configured);
   expect(rows).toHaveLength(1);
-  expect(compileRow(rows[0], plays, mapping)).toMatchObject({
+  expect(compileRow(rows[0], configured, mapping)).toMatchObject({
     error: "",
-    items: [
-      { play_id: id("四肖中特"), selections: [3, 4, 2, 5], amount: "100" },
-    ],
+    items: [{ play_id: four.id, selections: [3, 4, 2, 5], amount: "100" }],
   });
-  expect(compile("新澳门四肖兔龙虎100米")[0].error).toContain("4");
+  expect(compile("新澳门四肖兔龙虎蛇100米")[0].error).toContain("请确认");
+  const short = parseText("新澳门四肖兔龙虎100米", configured)[0];
+  expect(compileRow(short, configured, mapping).error).toContain("4");
   for (const raw of ["牛500特码", "500元牛特码", "500包牛特码"]) {
     const parsed = parseText(raw, plays);
     expect(parsed).toHaveLength(1);
@@ -287,7 +299,6 @@ test("confirmed domain aliases, market prefixes, currency and amount markers res
     ["新澳门特：07各100", "特码", [7], "100"],
     ["澳 特07各100", "特码", [7], "100"],
     ["二中特：06.18下100", "二中二含特", [6, 18], "100"],
-    ["新澳门四肖兔龙虎蛇100米", "四肖中特", [3, 4, 2, 5], "100"],
   ];
   for (const [raw, name, selections, amount] of cases) {
     const rows = parseText(raw, plays);
@@ -321,7 +332,6 @@ test("bracket groups keep their own quantity boundaries", () => {
   }
   for (const raw of [
     "八不中【01 02 03 04 05 06 07】【08 09 10 11 12 13 14 15 16】各100",
-    "八不中{01 02 03 04 05 06 07 08]各100",
     "八不中【01 02 03 04 05 06 07 08各100",
   ]) {
     expect(
@@ -377,4 +387,81 @@ test("exact names outrank aliases and disabled or ambiguous targets are not sele
       },
     ])[0].playId,
   ).toBe(id("特码"));
+});
+
+test("phonetic and traditional variants resolve complete domain words and preserve exact fee names", () => {
+  for (const [raw, name] of [
+    ["特碼45倍：07各100米", "特码45倍"],
+    ["壹肖鐘：嗎各50元", "一肖中"],
+    ["複三友：牛狗嗎豬各600斤", "三有"],
+    ["二種二：牛托龍各10米", "二中二"],
+    ["波色：紅各100", "波色"],
+  ]) {
+    const rows = parseText(raw, plays);
+    expect(rows, raw).toHaveLength(1);
+    expect(rows[0].playId, raw).toBe(id(name));
+    expect(rows[0].source).toBe(raw);
+    expect(compileRow(rows[0], plays, mapping).error, raw).toBe("");
+  }
+  const compound = compile("複三友：牛狗嗎豬各600斤")[0].items[0];
+  expect(compound.selections).toEqual([1, 10, 6, 11]);
+  expect(compound.compound).toBe(true);
+  const custom = {
+    ...plays.find((p) => p.rule.name === "三有")!,
+    id: 999,
+    rule: { ...plays.find((p) => p.rule.name === "三有")!.rule, name: "三友" },
+  };
+  const ambiguous = [...plays, custom];
+  expect(parseText("叁有牛狗马各100", ambiguous)[0].playId).toBe(0);
+  expect(parseText("三友牛狗马各100", ambiguous)[0].playId).toBe(custom.id);
+  expect(
+    parseText(
+      "特碼07各100",
+      plays.map((p) => ({ ...p, enabled: false })),
+    )[0].playId,
+  ).toBe(0);
+});
+
+test("mixed bracket shapes form separate groups but missing or nested ends still reject", () => {
+  const a = "01 02 03 04 05 06 07 08",
+    b = "09 10 11 12 13 14 15 16";
+  for (const raw of [`八不中{${a}]【${b}}各100`, `八不中(${a}】各100`]) {
+    const result = compile(raw)[0];
+    expect(result.error, raw).toBe("");
+    expect(result.items[0].selections).toHaveLength(8);
+  }
+  for (const raw of [
+    `八不中${a}]各100`,
+    `八不中{${a}各100`,
+    `八不中{{${a}}各100`,
+  ])
+    expect(
+      compile(raw).some((row) => !!row.error),
+      raw,
+    ).toBe(true);
+});
+
+test("clipboard classification needs a known play, selections and amount, without dropping other source rows", () => {
+  for (const text of [
+    "自动读取剪切板已取消",
+    "今天特码赔率改成44元",
+    "三有牛狗马",
+    "07各100",
+    "hello world",
+    "三有".repeat(101),
+  ])
+    expect(clipboardRows(text, plays, []), text).toBeNull();
+  for (const text of [
+    "複三友牛狗嗎豬各600米",
+    "特码07各100，未知玩法牛各10",
+    "三有牛牛龙各100",
+  ])
+    expect(clipboardRows(text, plays, []), text).not.toBeNull();
+});
+
+test("a homophone of an unconfigured shorthand cannot split ordinary trailing words", () => {
+  const rows = parseText("特码07各10 未知要求", plays);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].source).toContain("未知要求");
+  expect(compileRow(rows[0], plays, mapping).error).not.toBe("");
 });

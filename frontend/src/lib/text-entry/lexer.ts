@@ -1,4 +1,5 @@
 import { lexicalAliases } from "./vocabulary";
+import { phoneticKey } from "./phonetics";
 
 export type TokenKind =
   | "play"
@@ -69,7 +70,11 @@ const operators: [string, TokenKind][] = [
   ].map((s): [string, TokenKind] => [s, "connector"]),
 ];
 
-export function tokenize(raw: string, playNames: string[]): Token[] {
+export function tokenize(
+  raw: string,
+  playNames: string[],
+  canResolvePlay?: (label: string) => boolean,
+): Token[] {
   let normalized = "";
   const offsets: number[] = [];
   let offset = 0;
@@ -86,12 +91,54 @@ export function tokenize(raw: string, playNames: string[]): Token[] {
     .filter(Boolean)
     .map((name) => [name.normalize("NFKC"), "play"]);
   dictionary.push(...operators);
-  dictionary.sort(([a], [b]) => b.length - a.length);
+  dictionary.push(
+    ...[..."鼠牛虎兔龙蛇马羊猴鸡狗猪红蓝绿大小单双"].map(
+      (char): [string, TokenKind] => [char, "object"],
+    ),
+  );
+  const sounds = new Map<string, string>();
+  const sound = (text: string) =>
+    [...text]
+      .map((char) => {
+        if (!sounds.has(char)) sounds.set(char, phoneticKey(char));
+        return sounds.get(char)!;
+      })
+      .join("|");
+  const lengths = [...new Set(dictionary.map(([name]) => name.length))].sort(
+    (a, b) => b - a,
+  );
+  const phonetic = new Map<string, [string, TokenKind][]>();
+  for (const entry of dictionary) {
+    const key = sound(entry[0]);
+    const matches = phonetic.get(key) ?? [];
+    matches.push(entry);
+    phonetic.set(key, matches);
+  }
+  function match(rest: string): [string, TokenKind, number] | undefined {
+    for (const length of lengths) {
+      if (length > rest.length) continue;
+      const input = rest.slice(0, length);
+      const exact = dictionary.find(([name]) => name === input);
+      if (exact) return [...exact, length];
+      const matches = phonetic.get(sound(input));
+      if (!matches?.length) continue;
+      const kinds = new Set(matches.map(([, kind]) => kind));
+      if (kinds.size !== 1) continue;
+      const kind = matches[0][1];
+      // Keep the original play label so competing homophones stay unresolved.
+      if (kind === "play") {
+        if (canResolvePlay?.(input)) return [input, kind, length];
+        continue;
+      }
+      const names = new Set(matches.map(([name]) => name));
+      if (names.size === 1) return [matches[0][0], kind, length];
+    }
+  }
   const tokens: Token[] = [];
   let cursor = 0;
   while (cursor < normalized.length) {
     const rest = normalized.slice(cursor);
-    const word = dictionary.find(([text]) => rest.startsWith(text));
+    const word = match(rest);
     let text: string, kind: TokenKind;
     if (word) [text, kind] = word;
     else if (/^\d/u.test(rest)) {
@@ -109,7 +156,7 @@ export function tokenize(raw: string, playNames: string[]): Token[] {
               ? "separator"
               : "unknown";
     }
-    const end = cursor + text.length;
+    const end = cursor + (word?.[2] ?? text.length);
     tokens.push({
       kind,
       text: kind === "currency" ? "元" : text,

@@ -146,6 +146,10 @@ export async function generateCorpus(
     "star-tail",
     "grouped-eight",
     "invalid-group-count",
+    "phonetic-play",
+    "phonetic-drag",
+    "mixed-brackets",
+    "fee-name",
   ];
   for (const [split, target, baseStyle] of splits) {
     let attempts = 0;
@@ -360,9 +364,43 @@ export async function generateCorpus(
           raw = zs[z[0]] + "中" + money;
           items = [line("一肖中", [z[0]])];
           break;
+        case "phonetic-play":
+          raw =
+            "壹肖鐘" +
+            zs[z[0]]
+              .replace("马", "嗎")
+              .replace("龙", "龍")
+              .replace("鸡", "雞")
+              .replace("猪", "豬") +
+            "各" +
+            money;
+          items = [line("一肖中", [z[0]])];
+          break;
+        case "phonetic-drag":
+          raw = "二種二" + zs[z[0]] + "托" + zs[z[1]] + "各" + money;
+          items = [
+            {
+              ...line("二中二", [], money, 2, true),
+              drag: { left: [z[0]], right: [z[1]], zodiac: true },
+            },
+          ];
+          break;
+        case "mixed-brackets":
+          raw = "八不中{" + ntext(ns) + "]各" + money;
+          items = [line("八不中", ns, money, 8)];
+          break;
+        case "fee-name":
+          raw =
+            "特碼45倍" +
+            headerGap +
+            String(ns[0]).padStart(2, "0") +
+            "各" +
+            money;
+          items = [line("特码45倍", [ns[0]])];
+          break;
         case "four-special":
           raw = "新澳门四肖" + headerGap + ztext(z.slice(0, 4)) + money + "米";
-          items = [line("四肖中特", z.slice(0, 4), money, 4)];
+          accept = false; // The current customer defaults do not configure 四肖中特.
           break;
         case "eight-miss":
           raw = "八不中" + headerGap + ntext(ns) + "/" + money;

@@ -1,3 +1,4 @@
+import { phoneticKey } from "./phonetics";
 import type { Play } from "../types";
 import type { TextPreference } from "../text-entry";
 import trained from "../generated/text-entry-candidates.json" with { type: "json" };
@@ -67,7 +68,20 @@ export function playCandidates(alias: string, plays: Play[]) {
     .filter((p) => p.enabled)
     .map((play) => ({
       play,
-      suggested: play.rule.name === meaning || counts.has(play.rule.name),
+      suggested:
+        play.rule.name === meaning ||
+        counts.has(play.rule.name) ||
+        phoneticKey(play.rule.name) === phoneticKey(alias) ||
+        Object.entries(meanings).some(
+          ([label, name]) =>
+            name === play.rule.name &&
+            phoneticKey(label) === phoneticKey(alias),
+        ) ||
+        Object.entries(vocabulary).some(
+          ([label, targets]) =>
+            phoneticKey(label) === phoneticKey(alias) &&
+            targets.some((target) => target.name === play.rule.name),
+        ),
       count: counts.get(play.rule.name) ?? 0,
     }))
     .sort(
@@ -76,6 +90,7 @@ export function playCandidates(alias: string, plays: Play[]) {
           Number(a.play.rule.name === alias) ||
         Number(b.play.rule.name === meaning) -
           Number(a.play.rule.name === meaning) ||
+        Number(b.suggested) - Number(a.suggested) ||
         b.count - a.count,
     );
 }
@@ -100,11 +115,13 @@ export function resolvePlay(
       const candidates = playCandidates(label, active).filter(
         (c) => c.suggested,
       );
-      if (
-        candidates.length &&
-        (candidates.length === 1 || candidates[0].count > candidates[1].count)
-      )
-        id = candidates[0].play.id;
+      const ids = new Set([
+        ...candidates.map((candidate) => candidate.play.id),
+        ...habits
+          .filter((h) => phoneticKey(h.alias) === phoneticKey(label))
+          .map((h) => h.play_id),
+      ]);
+      if (ids.size === 1) id = [...ids][0];
     }
   }
   return {

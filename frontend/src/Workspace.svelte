@@ -21,6 +21,7 @@
     ChevronRight,
     ChevronDown,
     RefreshCw,
+    ClipboardPaste,
     LogOut,
     Wallet,
     Coins,
@@ -145,6 +146,7 @@
       entryModeSaving = false;
     }
   }
+  let clipboardRequest = $state(0);
   let textDraft = $state(newTextDraft());
   let betDraft = $state<BetDraft>({
     drag: null,
@@ -864,7 +866,14 @@
           ><i></i>{globalError ? "连接异常" : "已连接"}</span
         ><span class="top-clock"
           ><Clock3 size={14} />{serverClock}<small>北京</small></span
-        ><button
+        >{#if features?.text_entry}<button
+            class="icon-button"
+            aria-label="读取剪切板投注"
+            title="读取剪切板投注"
+            onclick={() => clipboardRequest++}
+            ><ClipboardPaste size={17} /></button
+          >{/if}
+        <button
           class="icon-button"
           aria-label="刷新数据"
           title="刷新数据"
@@ -1144,16 +1153,7 @@
             onclick={() => selectEntryMode("text")}>文本录注</button
           >{/if}
       </div>
-      {#if entryMode === "text"}
-        <TextEntry
-          bind:draft={textDraft}
-          boot={boot!}
-          {today}
-          {api}
-          {notify}
-          onrecorded={() => refresh()}
-        />
-      {:else}
+      {#if entryMode !== "text"}
         <BetEntry
           boot={boot!}
           {today}
@@ -1472,6 +1472,23 @@
           }}
         />
       {/if}
+    {/if}
+    {#if licenseStatus.active && boot && today && features?.text_entry}
+      <TextEntry
+        bind:draft={textDraft}
+        {boot}
+        {today}
+        {api}
+        {notify}
+        account={username}
+        active={tab === "bet" && entryMode === "text"}
+        {clipboardRequest}
+        onactivate={() => {
+          void navigate("bet");
+          void selectEntryMode("text");
+        }}
+        onrecorded={() => refresh()}
+      />
     {/if}
   </main>
 </div>
