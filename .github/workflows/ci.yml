@@ -13,7 +13,8 @@ permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # Playwright 1.58.2 supports Ubuntu 24.04; ubuntu-latest may select 26.04.
+    runs-on: ubuntu-24.04
     services:
       mysql:
         image: mysql:8.4
@@ -110,7 +111,7 @@ jobs:
           retention-days: 7
   images:
     needs: [verify]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       DOCKER_BUILD_RECORD_UPLOAD: "false"
     permissions:
