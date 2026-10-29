@@ -12,6 +12,29 @@ spec.loader.exec_module(audit)
 
 
 class AuditTests(unittest.TestCase):
+    def test_bun_scope_versions_and_advisories_fail_closed(self):
+        packages = audit.bun_packages(
+            '"deepmerge": ["deepmerge@4.3.1", "", {}],\n'
+            '"parent/deepmerge": ["deepmerge@4.3.2", "", {}],\n'
+            '"@scope/pkg": ["@scope/pkg@1.0.0", "", {}],\n'
+        )
+        self.assertIn(("@scope/pkg", "1.0.0"), packages)
+        result = audit.bun_results(packages, {"deepmerge": [
+            {"url": "https://github.com/advisories/GHSA-gcqx-w48m-w2h4"},
+            {"url": "https://github.com/advisories/GHSA-new-advisory"},
+        ]})
+        exceptions = json.loads((audit.ROOT / "scripts/security-exceptions.json").read_text())
+        findings, rejected = audit.evaluate(packages, result, exceptions, dt.date(2026, 10, 29), "npm")
+        self.assertEqual(len(findings), 4)
+        self.assertEqual(len(rejected), 3)
+        _, wrong_ecosystem = audit.evaluate(packages, result, exceptions, dt.date(2026, 10, 29))
+        self.assertEqual(len(wrong_ecosystem), 4)
+        for report in [[], {"unknown": []}, {"deepmerge": [{"url": "invalid"}]}]:
+            with self.assertRaises(RuntimeError):
+                audit.bun_results(packages, report)
+        with self.assertRaisesRegex(RuntimeError, "did not run"):
+            audit.bun_packages("")
+
     def test_lock_parser_ignores_local_package_and_preserves_exact_version(self):
         text = '[[package]]\nname = "local"\nversion = "1"\n[[package]]\nname = "rustls"\nversion = "0.23.46"\nsource = "registry+https://index"\n'
         self.assertEqual(audit.locked_packages(text), [("rustls", "0.23.46")])

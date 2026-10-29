@@ -240,6 +240,19 @@ async fn hosted_isolation_activation_sessions_expiry_and_permanent_deletion() {
         .unwrap();
     let sa = registry.state(&aa).await.unwrap();
     let sb = registry.state(&bb).await.unwrap();
+    let pa: (i64, i64) = sqlx::query_as("SELECT id,version FROM plays WHERE enabled=TRUE LIMIT 1")
+        .fetch_one(&sa.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO text_entry_preferences(alias,play_id,play_version,amount_mode) VALUES('隔离测试',?,?,'each')").bind(pa.0).bind(pa.1).execute(&sa.pool).await.unwrap();
+    // A confirmed alias in account A must never appear in account B's database.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM text_entry_preferences")
+            .fetch_one(&sb.pool)
+            .await
+            .unwrap(),
+        0
+    );
     // A cold tenant blocked in SQL must not hold the warm-cache map lock.
     let isolated = Registry::new(c.clone()).unwrap();
     let _warm = isolated.lease(&aa).await.unwrap();

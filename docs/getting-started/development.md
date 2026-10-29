@@ -18,6 +18,46 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 
 仅回环开发环境可不启用 SECURE_COOKIE；生产必须使用 HTTPS。客户通过 auth 创建并激活。
 
+### WSL Ubuntu 本地环境
+
+当前工作站使用 Ubuntu-24.04，复用 Windows checkout `/mnt/c/Users/zhang/projects/MarkSix`。Rust、Bun、Node.js 24 LTS、Docker Engine / Compose、MySQL 客户端及 Playwright Chromium 安装在 WSL 内。Node.js 只供开发工具运行，依赖仍统一由 Bun 管理。Rust 构建缓存位于 `~/.cache/marksix/target`，本地 `backend/target` 链接到该目录。
+
+本地配置集中在 `~/.config/marksix/`，不属于 Git 仓库；目录权限为 700，密码配置权限为 600。不要将这些文件或其内容复制到仓库、终端日志或提交中。
+
+| 用途         | 地址                           | 配置                                  |
+| ------------ | ------------------------------ | ------------------------------------- |
+| MarkSix 页面 | <http://localhost:5173>        | `portal.env`，API 为 `127.0.0.1:8080` |
+| auth 页面    | <http://localhost:5175>        | `auth.env`，API 为 `127.0.0.1:8090`   |
+| 开发数据库   | `127.0.0.1:13306/marksix_dev`  | `mysql-dev.env`                       |
+| 测试数据库   | `127.0.0.1:13307/marksix_test` | `mysql-test.env`、`test.env`          |
+
+两个数据库分别运行在 `marksix-local` Compose 项目的 MySQL 8.4 容器内，使用不同密码和持久化卷，`max_connections=128`，仅发布回环端口。开发客户的独立租户库也只创建在开发实例中。auth 使用迁移及租户管理连接，MarkSix 使用受限的 portal 连接。
+
+开发管理员用户名为 `dev-admin`，密码见本地 `auth.env`；已激活的开发客户为 `dev-user`，密码见本地 `customer.env`。测试账号密码仅见 `test.env`。
+
+在 PowerShell 中启动（或运行本地 VS Code 任务 `MarkSix: start WSL development`）：
+
+```powershell
+wsl -d Ubuntu-24.04 -- bash /home/ubuntu/.config/marksix/start.sh --keep-alive
+```
+
+启动脚本先等待数据库健康、构建后端，再启动 `marksix-local.target` 下的四个用户服务。`--keep-alive` 保持一个 WSL 客户端运行，防止 WSL 因空闲回收实例；同一用户的重复启动不会创建多个保活进程。首次配置已启用用户 linger。重启 Windows 或显式关闭 WSL 后，重新执行启动命令。
+
+在 WSL 内检查、停止应用或加载测试配置：
+
+```bash
+systemctl --user status marksix-local-{auth,api,web,auth-web}.service
+systemctl --user stop marksix-local.target
+# 仅停止本项目数据库，不删除卷：
+docker compose -f ~/.config/marksix/compose.yaml stop
+# 测试终端单独加载；不要同时运行数据库测试与浏览器夹具：
+set -a
+. ~/.config/marksix/test.env
+set +a
+```
+
+停止应用和数据库不会结束保活进程；需要结束时，在保活终端按 Ctrl+C，后台启动时可在 WSL 执行 `kill "$(cat ~/.local/state/marksix/wsl-keepalive.pid)"`。本次检查日志位于 `~/.local/state/marksix/`，运行时验收报告位于仓库忽略的 `test-results/`。
+
 ## 代码职责
 
 | 模块                                                   | 职责                                                 |
@@ -75,7 +115,7 @@ cargo run --locked --example e2e_server
 API_TARGET=http://127.0.0.1:8081 bun run dev --port 5174
 bun x playwright install chromium
 bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/*.ts' '*.ts'
-bun audit
+python3 ../scripts/audit_dependencies.py --frontend
 bun run check
 bun run build
 bun run test:e2e
@@ -88,6 +128,19 @@ python3 scripts/hosted_acceptance.py --backend marksix-backend:v1-test --fronten
 ```
 
 实际结果与未执行项目记录在 [验收索引](../guides/verification.md)，不把默认忽略的测试计为已执行。
+
+## 文本录注开发
+
+文本录注的使用、语法边界及确认式学习见[功能指南](../guides/text-entry-proposal.md)。合成语料保留在私有路径；在仓库根目录执行以下命令，候选产物仅包含词汇频次，不包含原文或账号数据：
+
+```bash
+bun scripts/train_text_entry.ts /私有路径/liuhe_synthetic_betting_records.jsonl
+bun scripts/evaluate_text_entry.ts /私有路径/liuhe_synthetic_betting_records.jsonl
+# frontend；浏览器测试须先启动上述独立测试夹具
+bun run test:e2e tests/text-entry-parser.spec.ts tests/text-entry.spec.ts tests/account-scope.spec.ts --trace off
+```
+
+生成文件 `frontend/src/lib/generated/text-entry-candidates.json` 不得手工修改。修改解析器后应重跑语料评估及以上测试；涉及学习持久化时另外执行 receipts、upgrade 和 hosted 数据库测试。录制 trace 可能保留输入及认证信息，本地真实文本验收应禁用 trace。
 
 ## 附录：变量与契约
 

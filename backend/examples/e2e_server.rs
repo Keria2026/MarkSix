@@ -12,6 +12,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let pool = store::connect(&url).await?;
     for table in [
+        "text_entry_preferences",
         "audit_events",
         "bet_mutations",
         "layoffs",

@@ -48,6 +48,8 @@
   import SlipComposer from "./components/SlipComposer.svelte";
   import SlipDetail from "./components/SlipDetail.svelte";
   import BetEntry from "./components/BetEntry.svelte";
+  import TextEntry from "./components/TextEntry.svelte";
+  import { newTextDraft } from "./lib/text-entry";
   import StatisticsPanel from "./components/Statistics.svelte";
   import Balls from "./components/Balls.svelte";
   import Modal from "./components/Modal.svelte";
@@ -98,6 +100,8 @@
   type Tab = "overview" | "bet" | "history" | "settings" | "statistics";
   let tab = $state<Tab>("overview");
   let boot = $state<Bootstrap | null>(null);
+  let entryMode = $state<"manual" | "text">("manual");
+  let textDraft = $state(newTextDraft());
   let betDraft = $state<BetDraft>({
     drag: null,
     packageMode: false,
@@ -687,7 +691,11 @@
     >
     <nav aria-label="主要导航" use:glassNavigation={tab}>
       <div class="nav-indicator" aria-hidden="true"></div>
-      {#each nav as item}<div class="nav-item">
+      {#each nav as item}<div
+          class="nav-item"
+          class:nav-group-start={item.id === "statistics" ||
+            item.id === "settings"}
+        >
           <button
             class="nav-link"
             class:active={tab === item.id}
@@ -1105,29 +1113,52 @@
           ><LayoutDashboard size={16} /> 本期概览</button
         >
       </section>
-      <BetEntry
-        boot={boot!}
-        {today}
-        bind:draft={betDraft}
-        {api}
-        {notify}
-        onrecorded={() => refresh()}
-        onconfigure={() => navigate("settings")}
-        onadd={addSlipItem}
-      />
-      <SlipComposer
-        bind:items={slipItems}
-        bind:busy={slipBusy}
-        bind:pending={slipPending}
-        period={slipPeriod}
-        bettor={betDraft.bettor}
-        {today}
-        {api}
-        onrecorded={async () => {
-          await refresh();
-          notify("组合单已完整入账");
-        }}
-      />
+      <div class="segmented entry-mode" aria-label="录注方式">
+        <button
+          class:active={entryMode === "manual"}
+          aria-pressed={entryMode === "manual"}
+          onclick={() => (entryMode = "manual")}>手工录注</button
+        >
+        <button
+          class:active={entryMode === "text"}
+          aria-pressed={entryMode === "text"}
+          onclick={() => (entryMode = "text")}>文本录注</button
+        >
+      </div>
+      {#if entryMode === "text"}
+        <TextEntry
+          bind:draft={textDraft}
+          boot={boot!}
+          {today}
+          {api}
+          {notify}
+          onrecorded={() => refresh()}
+        />
+      {:else}
+        <BetEntry
+          boot={boot!}
+          {today}
+          bind:draft={betDraft}
+          {api}
+          {notify}
+          onrecorded={() => refresh()}
+          onconfigure={() => navigate("settings")}
+          onadd={addSlipItem}
+        />
+        <SlipComposer
+          bind:items={slipItems}
+          bind:busy={slipBusy}
+          bind:pending={slipPending}
+          period={slipPeriod}
+          bettor={betDraft.bettor}
+          {today}
+          {api}
+          onrecorded={async () => {
+            await refresh();
+            notify("组合单已完整入账");
+          }}
+        />
+      {/if}
     {:else if tab === "history"}
       <section class="page-heading">
         <div>
