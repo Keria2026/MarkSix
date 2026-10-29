@@ -60,6 +60,7 @@ async fn atomic_slips_order_statements_and_capacity() {
     assert!(url.ends_with("/marksix_test"));
     let pool = connect(&url).await.unwrap();
     for table in [
+        "text_entry_preferences",
         "audit_events",
         "bet_mutations",
         "layoffs",
@@ -176,7 +177,7 @@ async fn atomic_slips_order_statements_and_capacity() {
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    let data = slip(
+    let mut data = slip(
         &period,
         vec![
             line(zodiac, json!([2]), "200"),
@@ -185,6 +186,45 @@ async fn atomic_slips_order_statements_and_capacity() {
             line(number, json!([44, 10, 9]), "10"),
             line(number, json!([4, 1, 8]), "20"),
         ],
+    );
+    data["text_preferences"] = json!([{"alias":"测试特","play_id":number["id"],"play_version":number["version"],"amount_mode":"each"}]);
+    let preview_body = json!({"period":period,"bettor":"组合客户甲","items":data["items"]});
+    let preview = ok(
+        &app,
+        "POST",
+        "/api/slips/preview",
+        preview_body.clone(),
+        &cookie,
+    )
+    .await;
+    assert_eq!(preview["valid"], true);
+    assert_eq!(preview["stake"], 119000);
+    assert_eq!(preview["units"], 9);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bet_slips")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let mut invalid_preview = preview_body.clone();
+    invalid_preview["items"][0]["selections"] = json!([99]);
+    let rejected = ok(&app, "POST", "/api/slips/preview", invalid_preview, &cookie).await;
+    assert_eq!(rejected["valid"], false);
+    assert!(rejected["items"][0]["error"].is_string());
+    let mut stale = preview_body.clone();
+    stale["items"][0]["play_version"] = json!(-1);
+    assert_eq!(
+        ok(&app, "POST", "/api/slips/preview", stale, &cookie).await["valid"],
+        false
+    );
+    let mut old = preview_body.clone();
+    old["period"] = json!("missing");
+    assert_eq!(
+        call(&app, "POST", "/api/slips/preview", old, &cookie)
+            .await
+            .0,
+        StatusCode::CONFLICT
     );
     let mut bad = data.clone();
     bad["request_id"] = json!(uuid::Uuid::new_v4());
@@ -200,6 +240,28 @@ async fn atomic_slips_order_statements_and_capacity() {
             .unwrap(),
         0
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM text_entry_preferences")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let mut bad_learning = data.clone();
+    bad_learning["text_preferences"][0]["play_id"] = json!(-1);
+    assert_eq!(
+        call(&app, "POST", "/api/slips", bad_learning, &cookie)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bet_slips")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
     let (a, b) = tokio::join!(
         call(&app, "POST", "/api/slips", data.clone(), &cookie),
         call(&app, "POST", "/api/slips", data.clone(), &cookie)
@@ -208,6 +270,56 @@ async fn atomic_slips_order_statements_and_capacity() {
     assert_eq!(b.0, StatusCode::OK);
     assert_eq!(a.1["id"], b.1["id"]);
     assert_ne!(a.1["replayed"], b.1["replayed"]);
+    let learned = ok(
+        &app,
+        "GET",
+        "/api/text-entry/preferences",
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(learned.as_array().unwrap().len(), 1);
+    assert_eq!(learned[0]["alias"], "测试特");
+    assert_eq!(learned[0]["amount_mode"], "each");
+    sqlx::query("UPDATE text_entry_preferences SET play_version=0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        ok(
+            &app,
+            "GET",
+            "/api/text-entry/preferences",
+            json!({}),
+            &cookie
+        )
+        .await[0]["play_version"],
+        json!(0)
+    );
+    sqlx::query("UPDATE text_entry_preferences SET play_version=?")
+        .bind(number["version"].as_i64().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    ok(
+        &app,
+        "DELETE",
+        "/api/text-entry/preferences/%E6%B5%8B%E8%AF%95%E7%89%B9",
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        ok(
+            &app,
+            "GET",
+            "/api/text-entry/preferences",
+            json!({}),
+            &cookie
+        )
+        .await,
+        json!([])
+    );
     let id = a.1["id"].as_str().unwrap();
     let path = format!("/api/slips/{id}");
     let record = ok(&app, "GET", &path, json!({}), &cookie).await;

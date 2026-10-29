@@ -72,7 +72,7 @@ pub async fn serve(pool: MySqlPool, address: &str) -> anyhow::Result<()> {
     .await?
     {
         let pool = super::tenancy::pool(&account, 2).await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        crate::store::MIGRATOR.run(&pool).await?;
         pool.close().await;
     }
     axum::serve(
@@ -318,7 +318,7 @@ async fn provision_inner(c: &Control, a: &Account) -> anyhow::Result<()> {
     .execute(root)
     .await?;
     let pool = super::tenancy::pool(a, 2).await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    crate::store::MIGRATOR.run(&pool).await?;
     crate::store::initialize(&pool, &a.username, Some(&random_token())).await?;
     sqlx::query("UPDATE administrators SET password_hash=? WHERE id=1")
         .bind(&a.password_hash)

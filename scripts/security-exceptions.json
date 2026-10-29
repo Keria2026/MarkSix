@@ -1,5 +1,13 @@
 [
   {
+    "ecosystem": "npm",
+    "package": "deepmerge",
+    "version": "4.3.1",
+    "id": "GHSA-gcqx-w48m-w2h4",
+    "review_by": "2026-11-29",
+    "reason": "No upstream patched release as of 2026-10-29. The only consumer is @sveltejs/vite-plugin-svelte/src/utils/options.js, merging trusted repository build configuration; it receives no HTTP, customer or betting input and is absent from the shipped Nginx runtime. The reported null-placeholder prototype poisoning is reproducible; this is a scoped build-time exposure exception, not a false-positive claim or a fix. Re-review on any new deepmerge consumer, build configuration trust change, version change or upstream release. https://github.com/advisories/GHSA-gcqx-w48m-w2h4"
+  },
+  {
     "package": "rsa",
     "version": "0.9.10",
     "id": "RUSTSEC-2023-0071",

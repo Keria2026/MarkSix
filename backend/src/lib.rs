@@ -6,6 +6,7 @@ mod queries;
 mod records;
 pub mod risk;
 pub mod store;
+mod text_entry;
 pub mod worker;
 
 pub mod ledger;

@@ -213,12 +213,16 @@ export async function api<T>(
   try {
     data = JSON.parse(text);
   } catch {
-    data = {
-      error: response.ok ? "响应格式错误" : `请求失败（${response.status}）`,
-    };
+    throw new ApiError(
+      response.status,
+      response.ok ? "响应格式错误" : `请求失败（${response.status}）`,
+    );
   }
   if (!response.ok)
-    throw new ApiError(response.status, data.error ?? "操作失败");
+    throw new ApiError(
+      response.status,
+      typeof data?.error === "string" ? data.error : "操作失败",
+    );
   return data as T;
 }
 export const kinds: Record<Kind, string> = {

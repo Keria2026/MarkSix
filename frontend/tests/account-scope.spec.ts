@@ -131,6 +131,9 @@ test("logout destroys account drafts and candidate lists before another login", 
   page,
 }) => {
   const f = await fixture(page);
+  await page.route("**/api/text-entry/preferences", (route) =>
+    route.fulfill({ json: [] }),
+  );
   await expect(page.locator('datalist option[value="bettor-A"]')).toHaveCount(
     1,
   );
@@ -141,6 +144,8 @@ test("logout destroys account drafts and candidate lists before another login", 
   await expect(page.getByLabel("投注人", { exact: true })).toHaveValue(
     "draft-A",
   );
+  await page.getByRole("button", { name: "文本录注", exact: true }).click();
+  await page.getByLabel("投注原文").fill("账号A的私有投注草稿");
   await page.getByRole("button", { name: "退出登录", exact: true }).click();
   await f.login("B");
   await nav(page, "录入投注").click();
@@ -151,6 +156,8 @@ test("logout destroys account drafts and candidate lists before another login", 
   await expect(page.locator('datalist option[value="bettor-A"]')).toHaveCount(
     0,
   );
+  await page.getByRole("button", { name: "文本录注", exact: true }).click();
+  await expect(page.getByLabel("投注原文")).toHaveValue("");
 });
 
 for (const reason of ["session", "license"] as const) {

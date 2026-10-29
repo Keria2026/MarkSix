@@ -16,6 +16,25 @@ use std::{
 use tokio::sync::{Mutex, Semaphore};
 
 pub(crate) type DrawCache = Arc<Mutex<Option<(Instant, Result<Vec<serde_json::Value>, String>)>>>;
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+/// A restricted portal may verify the schema, but must never migrate it itself.
+pub async fn require_current_schema(pool: &MySqlPool) -> anyhow::Result<()> {
+    let applied: Vec<(i64, Vec<u8>, bool)> =
+        sqlx::query_as("SELECT version,checksum,success FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(pool)
+            .await?;
+    anyhow::ensure!(
+        applied.len() == MIGRATOR.iter().count()
+            && applied.iter().zip(MIGRATOR.iter()).all(
+                |((version, checksum, success), expected)| *success
+                    && *version == expected.version
+                    && checksum.as_slice() == expected.checksum.as_ref()
+            ),
+        "Database schema does not match this build; start and migrate the matching auth service first"
+    );
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -86,7 +105,7 @@ pub async fn connect(url: &str) -> anyhow::Result<MySqlPool> {
                 .disable_statement_logging(),
         )
         .await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    MIGRATOR.run(&pool).await?;
     Ok(pool)
 }
 pub async fn initialize(

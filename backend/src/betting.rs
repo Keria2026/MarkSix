@@ -24,6 +24,22 @@ pub(crate) struct SlipLine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drag: Option<DragInput>,
 }
+impl SlipLine {
+    pub(crate) fn as_bet_input(&self, period: &str, bettor: &str, request_id: &str) -> BetInput {
+        BetInput {
+            period: period.to_owned(),
+            bettor: bettor.to_owned(),
+            request_id: request_id.to_owned(),
+            play_id: self.play_id,
+            play_version: self.play_version,
+            selections: self.selections.clone(),
+            compound: self.compound,
+            amount: self.amount.clone(),
+            package_zodiacs: self.package_zodiacs.clone(),
+            drag: self.drag.clone(),
+        }
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SlipInput {
@@ -31,6 +47,8 @@ pub(crate) struct SlipInput {
     pub bettor: String,
     pub request_id: String,
     pub items: Vec<SlipLine>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_preferences: Vec<crate::text_entry::Preference>,
 }
 pub(crate) async fn single(
     State(state): State<AppState>,
@@ -41,6 +59,7 @@ pub(crate) async fn single(
     // Retain the persisted single-bet request hash contract for committed retries.
     let hash = crate::api::digest(&serde_json::to_string(&input).map_err(anyhow::Error::from)?);
     let slip = SlipInput {
+        text_preferences: vec![],
         period: input.period.clone(),
         bettor: input.bettor.clone(),
         request_id: input.request_id.clone(),
@@ -142,18 +161,7 @@ async fn submit(
                 index + 1
             )));
         }
-        let bet = BetInput {
-            period: input.period.clone(),
-            bettor: input.bettor.clone(),
-            request_id: input.request_id.clone(),
-            play_id: line.play_id,
-            play_version: line.play_version,
-            selections: line.selections.clone(),
-            compound: line.compound,
-            amount: line.amount.clone(),
-            package_zodiacs: line.package_zodiacs.clone(),
-            drag: line.drag.clone(),
-        };
+        let bet = line.as_bet_input(&input.period, &input.bettor, &input.request_id);
         let planned = plan(&play.rule, &bet, &period.mapping).map_err(|e| {
             ApiError(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -233,6 +241,7 @@ async fn submit(
         )
         .await?;
     }
+    crate::text_entry::learn(&mut tx, &input.text_preferences, &input.items).await?;
     ledger::invalidate(&mut tx, &period.id).await?;
     crate::worker::settle_recorded(&mut tx, &period).await?;
     tx.commit().await?;

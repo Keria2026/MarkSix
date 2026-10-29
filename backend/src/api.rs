@@ -94,6 +94,15 @@ pub fn router(state: AppState) -> Router {
         .route("/periods/{id}", get(crate::queries::period))
         .route("/bets", post(crate::betting::single))
         .route("/slips", post(crate::betting::slip))
+        .route("/slips/preview", post(crate::text_entry::preview))
+        .route(
+            "/text-entry/preferences",
+            get(crate::text_entry::preferences),
+        )
+        .route(
+            "/text-entry/preferences/{alias}",
+            axum::routing::delete(crate::text_entry::forget),
+        )
         .route("/records/search", post(crate::records::search))
         .route("/slips/{id}", get(crate::records::detail))
         .route("/slips/{id}/cancel", post(crate::records::cancel))

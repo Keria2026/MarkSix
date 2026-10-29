@@ -27,15 +27,7 @@ async fn main() -> anyhow::Result<()> {
                 .max_connections(4)
                 .connect(&url)
                 .await?;
-            let version: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(MAX(version),0) FROM _sqlx_migrations WHERE success=TRUE",
-            )
-            .fetch_one(&pool)
-            .await?;
-            anyhow::ensure!(
-                version >= 7,
-                "Start and migrate the hosted authority before the customer service"
-            );
+            store::require_current_schema(&pool).await?;
             pool
         };
         let address = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());

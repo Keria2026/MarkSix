@@ -1,0 +1,7 @@
+CREATE TABLE text_entry_preferences (
+    alias VARCHAR(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL PRIMARY KEY,
+    play_id BIGINT NOT NULL,
+    play_version BIGINT NOT NULL,
+    amount_mode VARCHAR(16) NOT NULL,
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+);

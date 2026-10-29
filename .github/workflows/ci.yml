@@ -49,6 +49,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Locked Rust dependency security gate
         run: python3 scripts/audit_dependencies.py
       - name: Rust checks and database transactions
@@ -82,7 +85,7 @@ jobs:
           bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/*.ts' '*.ts'
           bun x prettier --check '../README.md' '../docs/**/*.md'
           python3 ../scripts/check_docs.py
-          bun audit
+          python3 ../scripts/audit_dependencies.py --frontend
           bun run check
           bun x playwright test --list
           bun run build
@@ -146,6 +149,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Prepare hosted browser acceptance
         working-directory: frontend
         run: |
@@ -157,7 +163,7 @@ jobs:
         env:
           BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
-        run: sudo python3 scripts/hosted_acceptance.py --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE" --browser --bun "$(command -v bun)" --browser-cache "$HOME/.cache/ms-playwright"
+        run: sudo env "PATH=$PATH" python3 scripts/hosted_acceptance.py --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE" --browser --bun "$(command -v bun)" --browser-cache "$HOME/.cache/ms-playwright"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

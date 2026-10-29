@@ -37,6 +37,7 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
         "mapping_configs",
         "administrators",
         "audit_events",
+        "text_entry_preferences",
         "_sqlx_migrations",
     ] {
         sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
@@ -73,10 +74,27 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
         ..sqlx::migrate::Migrator::DEFAULT
     };
     released.run(&pool).await.unwrap();
+    assert!(store::require_current_schema(&pool).await.is_err());
     sqlx::query("UPDATE periods SET risk_status='complete',risk_result=JSON_OBJECT('legacy',true),risk_version=0,risk_requested_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY),risk_started_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY),risk_finished_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY) WHERE id='2026287'")
         .execute(&pool).await.unwrap();
     pool.close().await;
     let pool = store::connect(&url).await.unwrap(); // Apply real production migrations.
+    store::require_current_schema(&pool).await.unwrap();
+    let latest = all.iter().last().unwrap();
+    sqlx::query("UPDATE _sqlx_migrations SET checksum=? WHERE version=?")
+        .bind(vec![0_u8; latest.checksum.len()])
+        .bind(latest.version)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(store::require_current_schema(&pool).await.is_err());
+    sqlx::query("UPDATE _sqlx_migrations SET checksum=? WHERE version=?")
+        .bind(latest.checksum.as_ref())
+        .bind(latest.version)
+        .execute(&pool)
+        .await
+        .unwrap();
+    store::require_current_schema(&pool).await.unwrap();
     let refreshed = sqlx::query("SELECT risk_status,risk_result,risk_started_at,risk_finished_at,TIMESTAMPDIFF(SECOND,risk_requested_at,UTC_TIMESTAMP(6)) age FROM periods WHERE id='2026287'")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(refreshed.get::<String, _>("risk_status"), "queued");

@@ -27,9 +27,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
-[dev-dependencies]
-http-body-util = "0.1"
-
 [profile.release]
 lto = "thin"
 codegen-units = 1

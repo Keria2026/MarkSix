@@ -318,13 +318,13 @@ def main():
                         )
                         local.append((status, elapsed))
                         period = data.get("today", {}).get("id", "invalid")
-                        for path in [
-                            "/bets",
-                            f"/periods/{period}/statistics",
-                            "/parties",
+                        for path, method, body in [
+                            ("/records/search", "POST", {"period": period}),
+                            (f"/periods/{period}/statistics", "GET", None),
+                            ("/parties", "GET", None),
                         ]:
                             status, _, _, elapsed = call(
-                                app, path, cookie=cookies[index]
+                                app, path, method, body, cookie=cookies[index]
                             )
                             local.append((status, elapsed))
                         time.sleep(6)
@@ -519,7 +519,11 @@ def main():
             if args.browser_cache:
                 env["PLAYWRIGHT_BROWSERS_PATH"] = args.browser_cache
             subprocess.run(
-                [args.bun, "x", "playwright", "test", "hosted.spec.ts"],
+                [
+                    args.bun, "x", "playwright", "test", "hosted.spec.ts",
+                    "--trace", "off", "--reporter", "list",
+                    "--output", "../test-results/hosted-browser",
+                ],
                 cwd=ROOT / "frontend",
                 env=env,
                 check=True,
