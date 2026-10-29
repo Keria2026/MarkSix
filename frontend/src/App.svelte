@@ -201,9 +201,6 @@
             />{:else}进入工作台<ArrowRight size={17} />{/if}</button
         >
       </form>
-      <div class="login-note">
-        <ShieldCheck size={14} /> 仅授权账号可访问，客户账本相互隔离
-      </div>
     </section>
   </main>
 {:else if licenseStatus === null}

@@ -675,5 +675,6 @@ test("settled current period still accepts entry and shows actual settlement pre
   ).toBeEnabled();
   await expect(page.locator(".quote-box")).toContainText("实际含本返还");
   await expect(page.locator(".quote-box")).toContainText("实际净输赢");
-  await expect(page.locator(".quote-box")).toContainText("已确认开奖结果");
+  await expect(page.locator(".quote-box")).toContainText("¥ 430.00");
+  await expect(page.locator(".quote-box")).toContainText("+¥ 421.00");
 });

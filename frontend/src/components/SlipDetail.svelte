@@ -8,6 +8,7 @@
   let {
     record,
     canCancel,
+    layoffsEnabled = false,
     api: accountApi,
     onclose,
     onshow,
@@ -15,6 +16,7 @@
   }: {
     record: RecordGroup;
     canCancel: boolean;
+    layoffsEnabled?: boolean;
     api: typeof Api;
     onclose: () => void;
     onshow: (bet: Bet) => Promise<void>;
@@ -111,7 +113,7 @@
   <p class="field-help">
     有效本金 {money(record.totals.stake)}，和局退本 {money(
       record.totals.refunded,
-    )}。分项详情保留逐基础注判定、金额修改、撤销及飞出；飞出不改变原投注人的输赢。
+    )}
   </p>
   <div class="modal-actions">
     {#if canCancel && record.status !== "cancelled"}<button
@@ -132,7 +134,7 @@
     onclose={() => (confirm = false)}
   >
     <p class="modal-description">
-      整单所有未撤销分项将作废，不计有效投注及反水，保留审计记录。有尚未撤销的飞出时整单不会被撤销。
+      整单所有未撤销分项将作废，不计有效投注及反水，保留审计记录。{#if layoffsEnabled}有尚未撤销的飞出时整单不会被撤销。{/if}
     </p>
     {#if error}<p class="form-error" role="alert">{error}</p>{/if}
     <div class="modal-actions">

@@ -16,7 +16,7 @@ test("recording schedule is fixed to Beijing 06:00 and has no obsolete time edit
   await page.getByRole("button", { name: "配置设置", exact: false }).click();
   const schedule = page.locator(".closing-panel");
   await expect(schedule).toContainText("次日 06:00");
-  await expect(schedule).toContainText("开奖后");
+  await expect(schedule).toContainText("21:34");
   await expect(schedule.locator("input")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "保存时间", exact: false }),

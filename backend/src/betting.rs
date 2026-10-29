@@ -49,6 +49,10 @@ pub(crate) struct SlipInput {
     pub items: Vec<SlipLine>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text_preferences: Vec<crate::text_entry::Preference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bettor_preference: Option<crate::text_entry::BettorPreference>,
+    #[serde(default, skip_serializing_if = "crate::features::EntryMode::is_manual")]
+    pub entry_mode: crate::features::EntryMode,
 }
 pub(crate) async fn single(
     State(state): State<AppState>,
@@ -60,6 +64,8 @@ pub(crate) async fn single(
     let hash = crate::api::digest(&serde_json::to_string(&input).map_err(anyhow::Error::from)?);
     let slip = SlipInput {
         text_preferences: vec![],
+        bettor_preference: None,
+        entry_mode: crate::features::EntryMode::Manual,
         period: input.period.clone(),
         bettor: input.bettor.clone(),
         request_id: input.request_id.clone(),
@@ -144,6 +150,7 @@ async fn submit(
     if !accepts_entries(received, period.business_date) {
         return Err(conflict("本期已于次日 06:00 归档，请刷新后录入当前期"));
     }
+    crate::features::require_entry(&mut tx, input.entry_mode).await?;
     let ids: BTreeSet<i64> = input.items.iter().map(|line| line.play_id).collect();
     let mut plays = HashMap::new();
     for id in ids {
@@ -242,6 +249,12 @@ async fn submit(
         .await?;
     }
     crate::text_entry::learn(&mut tx, &input.text_preferences, &input.items).await?;
+    if let Some(preference) = &input.bettor_preference {
+        if input.entry_mode != crate::features::EntryMode::Text {
+            return Err("投注人费率习惯只用于文本录注".to_owned().into());
+        }
+        crate::text_entry::learn_bettor(&mut tx, &input.bettor, preference, &input.items).await?;
+    }
     ledger::invalidate(&mut tx, &period.id).await?;
     crate::worker::settle_recorded(&mut tx, &period).await?;
     tx.commit().await?;

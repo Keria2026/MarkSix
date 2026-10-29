@@ -7,6 +7,7 @@
     report,
     category = "all",
     compact = false,
+    layoffsEnabled = false,
     onbettor,
     onpage,
     api,
@@ -15,6 +16,7 @@
     api: typeof Api;
     category?: "all" | "bettors" | "receivers";
     compact?: boolean;
+    layoffsEnabled?: boolean;
     onbettor?: (name: string) => void;
     onpage?: (page: number) => void;
   } = $props();
@@ -47,23 +49,14 @@
       <article class="stat glass">
         <div class="stat-label">飞出本金</div>
         <strong class="stat-value">{money(report.outgoing.stake)}</strong>
-        <div class="stat-foot">
-          和局退本 {money(report.outgoing.refunded)} · 不计有效本金
-        </div>
       </article>
       <article class="stat glass">
         <div class="stat-label">飞出受注方</div>
         <strong class="stat-value">{receiverCount} 人</strong>
-        <div class="stat-foot">本期有有效飞出的受注方</div>
       </article>
       <article class="stat glass">
         <div class="stat-label">有效飞出记录</div>
         <strong class="stat-value">{report.outgoing.records} 条</strong>
-        <div class="stat-foot">
-          {report.outgoing.units} 条有效基础注 · 反水 {money(
-            report.outgoing.rebate,
-          )}
-        </div>
       </article>
       <article class="stat glass">
         <div class="stat-label">本方飞出净盈亏</div>
@@ -73,20 +66,15 @@
           class:negative={(report.outgoing.net ?? 0) < 0}
           >{signed(report.outgoing.net)}</strong
         >
-        <div class="stat-foot">飞出返还 ＋ 收到反水 − 飞出本金</div>
       </article>
     {:else if category === "bettors"}
       <article class="stat glass">
         <div class="stat-label">有效投注人数</div>
         <strong class="stat-value">{bettorCount} 人</strong>
-        <div class="stat-foot">本期有有效投注的投注人</div>
       </article>
       <article class="stat glass">
         <div class="stat-label">投注人总本金</div>
         <strong class="stat-value">{money(report.incoming.stake)}</strong>
-        <div class="stat-foot">
-          {report.incoming.records} 个有效分项 · {report.incoming.units} 条基础注
-        </div>
       </article>
       <article class="stat glass">
         <div class="stat-label">人均投注本金</div>
@@ -95,7 +83,6 @@
             bettorCount ? Math.round(report.incoming.stake / bettorCount) : 0,
           )}</strong
         >
-        <div class="stat-foot">有效本金 ÷ 有效投注人数 · 四舍五入到分</div>
       </article>
       <article class="stat glass">
         <div class="stat-label">投注人总净输赢</div>
@@ -109,29 +96,19 @@
             report.incoming.net === null ? null : -report.incoming.net,
           )}</strong
         >
-        <div class="stat-foot">投注人视角 · 含本返还 ＋ 反水 − 本金</div>
       </article>
-    {:else}
+    {:else if layoffsEnabled}
       <article class="stat glass">
         <div class="stat-label">全部受注本金</div>
         <strong class="stat-value">{money(report.incoming.stake)}</strong>
-        <div class="stat-foot">
-          {report.incoming.units} 条有效基础注 · 和局退本 {money(
-            report.incoming.refunded,
-          )}
-        </div>
       </article>
       <article class="stat glass">
         <div class="stat-label">飞出本金</div>
         <strong class="stat-value">{money(report.outgoing.stake)}</strong>
-        <div class="stat-foot">
-          {receiverCount} 位受注方 · {report.outgoing.records} 条有效飞出
-        </div>
       </article>
       <article class="stat glass">
         <div class="stat-label">自留本金</div>
         <strong class="stat-value">{money(report.retained.stake)}</strong>
-        <div class="stat-foot">原受注本金扣除飞出本金</div>
       </article>
       <article class="stat glass">
         <div class="stat-label">自留净盈亏</div>
@@ -141,7 +118,28 @@
           class:negative={(report.retained.net ?? 0) < 0}
           >{signed(report.retained.net)}</strong
         >
-        <div class="stat-foot">原受注净盈亏 ＋ 飞出净盈亏</div>
+      </article>
+    {:else}
+      <article class="stat glass">
+        <div class="stat-label">全部受注本金</div>
+        <strong class="stat-value">{money(report.incoming.stake)}</strong>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">总反水</div>
+        <strong class="stat-value">{money(report.incoming.rebate)}</strong>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">中奖总返还</div>
+        <strong class="stat-value">{money(report.incoming.payout)}</strong>
+      </article>
+      <article class="stat glass">
+        <div class="stat-label">原受注净盈亏</div>
+        <strong
+          class="stat-value"
+          class:positive={(report.incoming.net ?? 0) >= 0}
+          class:negative={(report.incoming.net ?? 0) < 0}
+          >{signed(report.incoming.net)}</strong
+        >
       </article>
     {/if}
   </div>
@@ -224,7 +222,6 @@
   <section class="glass records-panel">
     <div class="section-head">
       <h2>全部账目汇总</h2>
-      <span class="muted">本方视角</span>
     </div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
     <div
@@ -238,7 +235,7 @@
           ><tr><th>账目</th><th>有效本金</th><th>反水</th><th>净盈亏</th></tr
           ></thead
         ><tbody
-          >{#each [{ name: "原受注", value: report.incoming }, { name: "飞出", value: report.outgoing }, { name: "自留", value: report.retained }] as row}<tr
+          >{#each [{ name: "原受注", value: report.incoming }, { name: "飞出", value: report.outgoing }, { name: "自留", value: report.retained }].filter((row) => layoffsEnabled || row.name === "原受注") as row}<tr
               ><td>{row.name}</td><td>{money(row.value.stake)}</td><td
                 >{money(row.value.rebate)}</td
               ><td>{signed(row.value.net)}</td></tr

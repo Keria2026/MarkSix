@@ -74,6 +74,9 @@ async fn main() -> anyhow::Result<()> {
     let pool = store::connect(&url).await?;
     if std::env::var("RUNTIME_RESET").as_deref() == Ok("yes") {
         for table in [
+            "bettor_play_preferences",
+            "text_entry_preferences",
+            "module_features",
             "audit_events",
             "bet_mutations",
             "layoffs",

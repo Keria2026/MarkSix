@@ -101,9 +101,7 @@
       </h2>
       <span class="soft-chip">{bettor.trim() || "请填写投注人"}</span>
     </div>
-    <p class="field-help">
-      分项独立判定后相加，不连乘赔率。所有分项一起提交，有一项不合法则整单不保存。
-    </p>
+
     <ol class="slip-draft-list">
       {#each items as item, index (item.key)}<li>
           <div>

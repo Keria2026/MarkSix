@@ -88,6 +88,12 @@ jobs:
           python3 ../scripts/check_docs.py
           python3 ../scripts/audit_dependencies.py --frontend
           bun run check
+          bun ../scripts/generate_text_entry.ts ../test-results/text-entry-corpus
+          bun ../scripts/train_text_entry.ts ../test-results/text-entry-corpus/train.jsonl
+          git diff --exit-code -- src/lib/generated/text-entry-candidates.json
+          bun ../scripts/evaluate_text_entry.ts ../test-results/text-entry-corpus/train.jsonl ../test-results/text-entry-corpus/train-report.json
+          bun ../scripts/evaluate_text_entry.ts ../test-results/text-entry-corpus/validation.jsonl ../test-results/text-entry-corpus/validation-report.json
+          bun ../scripts/evaluate_text_entry.ts ../test-results/text-entry-corpus/test.jsonl ../test-results/text-entry-corpus/test-report.json
           bun x playwright test --list
           bun run build
           bun x playwright install --with-deps chromium

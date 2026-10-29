@@ -99,6 +99,7 @@ pub(crate) async fn preview(
         return Err("一张投注单须包含 1–100 个分项".to_owned().into());
     }
     let mut tx = state.pool.begin().await?;
+    crate::features::require_entry(&mut tx, crate::features::EntryMode::Text).await?;
     // Bootstrap creates the period. Preview itself never creates or mutates rows.
     let period: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR SHARE")
         .bind(&input.period)
@@ -160,4 +161,67 @@ pub(crate) async fn preview(
     Ok(Json(
         json!({"valid":valid,"items":results,"units":units,"stake":stake,"error":error}),
     ))
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BettorPreference {
+    pub play_id: i64,
+    pub play_version: i64,
+    pub amount_mode: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BettorLookup {
+    bettor: String,
+}
+fn special_rate(rule: &Rule) -> bool {
+    rule.kind == Kind::Number
+        && rule.scope == Scope::Special
+        && rule.condition == Condition::All
+        && rule.quantity == 1
+}
+pub(crate) async fn bettor_preference(
+    State(state): State<AppState>,
+    Json(input): Json<BettorLookup>,
+) -> ApiResult<Json<Value>> {
+    let bettor = ledger::party(&input.bettor)?;
+    let row: Option<(i64,i64,sqlx::types::Json<Rule>,String)>=sqlx::query_as("SELECT p.id,p.version,p.rule,b.amount_mode FROM bettor_play_preferences b JOIN plays p ON p.id=b.play_id WHERE b.bettor=? AND p.enabled=true AND p.deleted_at IS NULL")
+        .bind(bettor).fetch_optional(&state.pool).await?;
+    let preference = row.and_then(|(play_id, play_version, rule, amount_mode)| {
+        special_rate(&rule).then_some(BettorPreference {
+            play_id,
+            play_version,
+            amount_mode,
+        })
+    });
+    Ok(Json(json!({"preference":preference})))
+}
+pub(crate) async fn learn_bettor(
+    tx: &mut Transaction<'_, MySql>,
+    bettor: &str,
+    preference: &BettorPreference,
+    items: &[SlipLine],
+) -> ApiResult<()> {
+    if !["auto", "each", "package", "total"].contains(&preference.amount_mode.as_str())
+        || !items.iter().any(|line| {
+            line.play_id == preference.play_id && line.play_version == preference.play_version
+        })
+    {
+        return Err("投注人费率习惯必须对应本单已确认的特码玩法"
+            .to_owned()
+            .into());
+    }
+    let play: Play = sqlx::query_as(
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR SHARE",
+    )
+    .bind(preference.play_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !play.enabled || play.version != preference.play_version || !special_rate(&play.rule) {
+        return Err("请选择当前可用的单号码特码玩法".to_owned().into());
+    }
+    sqlx::query("INSERT INTO bettor_play_preferences(bettor,play_id,amount_mode) VALUES(?,?,?) ON DUPLICATE KEY UPDATE play_id=VALUES(play_id),amount_mode=VALUES(amount_mode)")
+        .bind(bettor).bind(preference.play_id).bind(&preference.amount_mode).execute(&mut **tx).await?;
+    Ok(())
 }

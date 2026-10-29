@@ -1,5 +1,7 @@
 <script lang="ts">
   import { dragLabel } from "./lib/drag";
+  import { entryModeFor } from "./lib/features";
+  import type { ModuleFeatures, EntryMode } from "./lib/types";
   import { site } from "./lib/site";
   import { onMount, onDestroy, tick } from "svelte";
   import {
@@ -19,7 +21,6 @@
     ChevronRight,
     ChevronDown,
     RefreshCw,
-    ShieldCheck,
     LogOut,
     Wallet,
     Coins,
@@ -100,7 +101,50 @@
   type Tab = "overview" | "bet" | "history" | "settings" | "statistics";
   let tab = $state<Tab>("overview");
   let boot = $state<Bootstrap | null>(null);
-  let entryMode = $state<"manual" | "text">("manual");
+  let entryMode = $state<EntryMode>("manual");
+  let entryModeSaving = $state(false);
+  const features = $derived(boot?.features);
+  const canEnter = $derived(
+    !!features && (features.manual_entry || features.text_entry),
+  );
+  const layoffsEnabled = $derived(features?.layoffs === true);
+  function applyFeatures(value: ModuleFeatures) {
+    if (!boot) return;
+    boot.features = value;
+    const mode = entryModeFor(value);
+    if (mode) entryMode = mode;
+    else if (tab === "bet") tab = "overview";
+    if (!value.layoffs) {
+      if (statisticsCategory === "receivers") statisticsCategory = "all";
+      if (historyCategory === "receivers") historyCategory = "all";
+      if (mutationMode === "layoffs") mutationTarget = null;
+      flyCancel = null;
+    }
+  }
+  async function selectEntryMode(mode: EntryMode) {
+    if (
+      entryModeSaving ||
+      !features ||
+      (mode === "manual" ? !features.manual_entry : !features.text_entry)
+    )
+      return;
+    const previous = entryMode;
+    entryMode = mode;
+    entryModeSaving = true;
+    try {
+      applyFeatures(
+        await api<ModuleFeatures>("/settings/entry-mode", {
+          method: "PUT",
+          body: JSON.stringify({ entry_mode: mode }),
+        }),
+      );
+    } catch (e) {
+      entryMode = previous;
+      notify(fail(e));
+    } finally {
+      entryModeSaving = false;
+    }
+  }
   let textDraft = $state(newTextDraft());
   let betDraft = $state<BetDraft>({
     drag: null,
@@ -381,6 +425,7 @@
         records.page = 1;
       }
       boot = data;
+      if (!entryModeSaving) applyFeatures(data.features);
       serverOffset = new Date(data.today.server_time).getTime() - Date.now();
       if (selectedPeriod) {
         const id = selectedPeriod.id;
@@ -578,7 +623,7 @@
       });
       cancelTarget = null;
       detail = null;
-      notify("整条投注已撤销，审计记录已保留");
+      notify("整条投注已撤销");
       await refresh();
     } catch (e) {
       notify(fail(e));
@@ -645,7 +690,7 @@
       flyCancel = null;
       detail = null;
       await refresh();
-      notify("飞出记录已作废，审计记录已保留");
+      notify("飞出记录已作废");
     } catch (e) {
       notify(fail(e));
     } finally {
@@ -691,7 +736,7 @@
     >
     <nav aria-label="主要导航" use:glassNavigation={tab}>
       <div class="nav-indicator" aria-hidden="true"></div>
-      {#each nav as item}<div
+      {#each nav.filter((item) => item.id !== "bet" || canEnter) as item (item.id)}<div
           class="nav-item"
           class:nav-group-start={item.id === "statistics" ||
             item.id === "settings"}
@@ -743,7 +788,7 @@
               id="submenu-statistics"
               aria-label="本期统计分类"
             >
-              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }] as sub}<button
+              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }].filter((item) => item.id !== "receivers" || layoffsEnabled) as sub (sub.id)}<button
                   class:active={tab === "statistics" &&
                     statisticsCategory === sub.id}
                   aria-current={tab === "statistics" &&
@@ -858,9 +903,10 @@
             >
           </p>
         </div>
-        <button class="button primary" onclick={() => navigate("bet")}
-          ><Plus size={17} /> 录入投注</button
-        >
+        {#if canEnter}
+          <button class="button primary" onclick={() => navigate("bet")}
+            ><Plus size={17} /> 录入投注</button
+          >{/if}
       </section>
       <div class="stats-grid">
         <article class="stat glass">
@@ -870,11 +916,6 @@
             >
           </div>
           <strong class="stat-value">{money(active.totals.stake)}</strong>
-          <div class="stat-foot">
-            <span>{active.totals.records} 个有效分项</span><i></i><span
-              >{active.totals.units} 条基础注</span
-            >
-          </div>
         </article>
         <article class="stat glass">
           <div class="stat-label">
@@ -883,7 +924,6 @@
             >
           </div>
           <strong class="stat-value">{money(active.totals.rebate)}</strong>
-          <div class="stat-foot">逐注计算 <i></i> 精确到分</div>
         </article>
         <article class="stat glass">
           <div class="stat-label">
@@ -896,46 +936,42 @@
               ? money(active.totals.payout)
               : money(profitMax)}</strong
           >
-          <div class="stat-foot">
-            {active.state === "settled"
-              ? "已包含中奖本金"
-              : riskFresh
-                ? "最佳合法开奖情形"
-                : "等待精确计算"}
-          </div>
         </article>
         <article class="stat glass">
           <div class="stat-label">
-            {active.state === "settled" ? "自留净盈亏" : "最大可能净亏损"}<span
-              class="stat-icon coral-tone"><ArrowDownLeft size={17} /></span
+            {active.state === "settled"
+              ? layoffsEnabled
+                ? "自留净盈亏"
+                : "原受注净盈亏"
+              : "最大可能净亏损"}<span class="stat-icon coral-tone"
+              ><ArrowDownLeft size={17} /></span
             >
           </div>
           <strong
             class="stat-value"
             class:negative={active.state !== "settled" ||
-              (active.totals.retained_net ?? 0) < 0}
+              ((layoffsEnabled
+                ? active.totals.retained_net
+                : active.totals.net) ?? 0) < 0}
             class:positive={active.state === "settled" &&
-              (active.totals.retained_net ?? 0) >= 0}
+              ((layoffsEnabled
+                ? active.totals.retained_net
+                : active.totals.net) ?? 0) >= 0}
             >{active.state === "settled"
-              ? signed(active.totals.retained_net)
+              ? signed(
+                  layoffsEnabled
+                    ? active.totals.retained_net
+                    : active.totals.net,
+                )
               : money(lossMax)}</strong
           >
-          <div class="stat-foot">
-            {active.state === "settled"
-              ? "原受注净盈亏加飞出净盈亏"
-              : riskFresh
-                ? "最坏合法开奖情形"
-                : "单一期次 · 统一结果"}
-          </div>
         </article>
       </div>
       <div class="insights-grid">
         <section class="draw-panel glass">
           <div class="section-head">
             <div>
-              <h2>
-                {active.draw ? "当期开奖结果" : "静候开奖，数据就绪。"}
-              </h2>
+              <h2>当期开奖</h2>
             </div>
             <span class="soft-chip"
               ><Clock3 size={13} />{active.draw
@@ -949,20 +985,7 @@
             zodiac={active.draw?.zodiac}
             waves={active.draw?.waves}
           />
-          <div class="draw-footer">
-            <span
-              ><span class="tiny-dot" class:green={active.state === "settled"}
-              ></span>{active.state === "settled"
-                ? "本期结算已完成"
-                : active.state === "missing"
-                  ? "开奖缺失，投注保留待结算"
-                  : "结果经校验后自动结算"}</span
-            ><small
-              >{active.last_fetch_at
-                ? `最近同步 ${time(active.last_fetch_at)}`
-                : "按北京时间同步"}</small
-            >
-          </div>
+
           {#if active.error}<div class="inline-error subtle">
               <AlertCircle size={15} />{active.error}
             </div>{/if}{#if active.mapping_warning}<div
@@ -992,9 +1015,7 @@
                 )}</strong
               >
             </div>
-            <div class="risk-caption">
-              <CheckCircle2 size={15} /> 所有有效基础注已完成结算
-            </div>{:else if riskFresh && risk}<div class="risk-state">
+          {:else if riskFresh && risk}<div class="risk-state">
               <span class="status-badge"><Check size={13} /> 精确计算完成</span
               ><small>{(risk.elapsed_ms / 1000).toFixed(2)} 秒</small>
             </div>
@@ -1025,14 +1046,11 @@
                 compact
               />
             </details>
-            <div class="risk-caption">
-              <ShieldCheck size={14} /> 基于本期映射及同一个合法开奖结果
-            </div>{:else}<div class="risk-pending">
+          {:else}<div class="risk-pending">
               {#if ["queued", "computing"].includes(active.risk_status)}<span
                   class="loading-orbit"><Activity size={27} /></span
                 ><strong>正在精确计算</strong>
-                <p>录入可继续，旧结果不会被当作当前风险。</p>{:else}<span
-                  class="loading-orbit"><AlertCircle size={27} /></span
+              {:else}<span class="loading-orbit"><AlertCircle size={27} /></span
                 ><strong
                   >{active.risk_status === "timeout"
                     ? "计算超时"
@@ -1040,10 +1058,7 @@
                       ? "计算未完成"
                       : "尚无当前风险结果"}</strong
                 >
-                <p>
-                  {active.risk_error ??
-                    "投注变化后会重新计算，未使用估算结果。"}
-                </p>
+                {#if active.risk_error}<p>{active.risk_error}</p>{/if}
                 {#if active.state === "pending"}<button
                     class="button secondary"
                     disabled={busy}
@@ -1064,12 +1079,15 @@
             class:active={historyCategory === "bettors"}
             onclick={() => (historyCategory = "bettors")}>投注人分类统计</button
           >
-          <button
-            class:active={historyCategory === "receivers"}
-            onclick={() => (historyCategory = "receivers")}>飞出受注统计</button
-          >
+          {#if layoffsEnabled}
+            <button
+              class:active={historyCategory === "receivers"}
+              onclick={() => (historyCategory = "receivers")}
+              >飞出受注统计</button
+            >{/if}
         </div>{/if}
       {#if report && report.period === active.id}<StatisticsPanel
+          {layoffsEnabled}
           {report}
           {api}
           compact={!selectedPeriod}
@@ -1094,16 +1112,15 @@
           }
         }}
         showDetail={showRecord}
+        {canEnter}
         onbet={() => navigate("bet")}
       />
-    {:else if tab === "bet"}
+    {:else if tab === "bet" && canEnter}
       <section class="page-heading">
         <div>
           <h1>录入投注</h1>
           <p>
             第 <strong>{today.id}</strong> 期
-            <span class="separator">·</span>
-            每日 06:00 切期，开奖后可补录
             <span class="status-badge" data-phase={today.phase}
               ><i></i>{phases[today.phase]}</span
             >
@@ -1114,16 +1131,18 @@
         >
       </section>
       <div class="segmented entry-mode" aria-label="录注方式">
-        <button
-          class:active={entryMode === "manual"}
-          aria-pressed={entryMode === "manual"}
-          onclick={() => (entryMode = "manual")}>手工录注</button
-        >
-        <button
-          class:active={entryMode === "text"}
-          aria-pressed={entryMode === "text"}
-          onclick={() => (entryMode = "text")}>文本录注</button
-        >
+        {#if features?.manual_entry}<button
+            class:active={entryMode === "manual"}
+            aria-pressed={entryMode === "manual"}
+            disabled={entryModeSaving}
+            onclick={() => selectEntryMode("manual")}>手工录注</button
+          >{/if}
+        {#if features?.text_entry}<button
+            class:active={entryMode === "text"}
+            aria-pressed={entryMode === "text"}
+            disabled={entryModeSaving}
+            onclick={() => selectEntryMode("text")}>文本录注</button
+          >{/if}
       </div>
       {#if entryMode === "text"}
         <TextEntry
@@ -1163,7 +1182,6 @@
       <section class="page-heading">
         <div>
           <h1>历史统计</h1>
-          <p>回看开奖记录与收支，只将已结算期次计入实际盈亏。</p>
         </div>
         <span class="heading-icon glass"><History size={24} /></span>
       </section>
@@ -1229,7 +1247,7 @@
             </div>{/if}
         </div>
         <div class="table-footer">
-          <span>共 {history.total} 期 · 已实现盈亏不含待结算期次</span>
+          <span>共 {history.total} 期</span>
           <div class="pagination">
             <button
               class="icon-button"
@@ -1283,9 +1301,11 @@
             }
           }}
           showDetail={showRecord}
+          {canEnter}
           onbet={() => navigate("bet")}
         />
       {:else if report && report.period === today.id}<StatisticsPanel
+          {layoffsEnabled}
           {report}
           {api}
           category={statisticsCategory}
@@ -1436,6 +1456,8 @@
       {:else}
         <PasswordChange {api} onchanged={onlogout} />
         <SystemSettings
+          features={boot!.features}
+          onfeatures={applyFeatures}
           {today}
           {licenseStatus}
           {api}
@@ -1456,6 +1478,7 @@
 
 {#if licenseStatus.active}
   {#if slipDetail}<SlipDetail
+      {layoffsEnabled}
       record={slipDetail}
       canCancel={!!today?.accepting_entries &&
         today?.id === slipDetail.period_id}
@@ -1582,7 +1605,9 @@
           >
         </div>
       </div>
-      {#if detail.layoffs.length}<section class="detail-ledger">
+      {#if layoffsEnabled && detail.layoffs.length}<section
+          class="detail-ledger"
+        >
           <h3>关联飞出</h3>
           <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
           <div
@@ -1626,7 +1651,8 @@
         </section>{/if}
       {#if detail.events.length}<details class="audit-details">
           <summary>操作记录（最近 100 条）</summary
-          >{#each detail.events as event}<p>
+          >{#each detail.events.filter((event) => layoffsEnabled || !["bet_flown", "layoff_cancelled"].includes(event.event)) as event}<p
+            >
               <time>{time(event.created_at)}</time> · {{
                 bet_created: "录入投注",
                 bet_cancelled: "作废投注",
@@ -1651,10 +1677,12 @@
             onclick={() => openMutation(detail!.record, "amount")}
             >修改金额</button
           >
-          <button
-            class="button primary"
-            onclick={() => openMutation(detail!.record, "layoffs")}>飞出</button
-          >
+          {#if layoffsEnabled}
+            <button
+              class="button primary"
+              onclick={() => openMutation(detail!.record, "layoffs")}
+              >飞出</button
+            >{/if}
           <button
             class="button danger"
             onclick={() => {
@@ -1689,11 +1717,11 @@
             type="button"
             class:active={mutationMode === "amount"}
             onclick={() => (mutationMode = "amount")}>纠正原金额</button
-          ><button
-            type="button"
-            class:active={mutationMode === "layoffs"}
-            onclick={() => (mutationMode = "layoffs")}>飞出</button
-          >
+          >{#if layoffsEnabled}<button
+              type="button"
+              class:active={mutationMode === "layoffs"}
+              onclick={() => (mutationMode = "layoffs")}>飞出</button
+            >{/if}
         </div>
         <p class="modal-description">
           {mutationTarget.bettor || "未登记"} · {mutationTarget.rule.name} · {mutationTarget.unit_count}
@@ -1724,13 +1752,7 @@
             required
           /></label
         >
-        <p class="field-help">
-          {mutationTarget.package_zodiacs?.length
-            ? "按每肖金额重新均分到原包号，余分按号码升序分配；逐号核验不得超过原注或低于已飞出金额。"
-            : mutationMode === "amount"
-              ? "保留原规则和赔率，记录修改前后金额；不能低于已飞出金额。"
-              : "原投注保留，所有基础注按相同每注金额飞出。沿用原注赔率、反水，逐注四舍五入；累计不得超过原注。"}
-        </p>
+
         {#if mutationError}<div class="inline-error" role="alert">
             {mutationError}
           </div>{/if}
@@ -1774,7 +1796,7 @@
       {api}
       onclose={() => (editor = false)}
       onsaved={async () => {
-        notify("玩法已保存，仅影响后续新投注");
+        notify("玩法已保存");
         await refresh();
       }}
       ondelete={(play) => {
@@ -1847,6 +1869,6 @@
       batchOpen = null;
       selectedPlayIds = [];
       await refresh();
-      notify("所选玩法已更新，历史投注快照保留");
+      notify("所选玩法已更新");
     }}
   />{/if}

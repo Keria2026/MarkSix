@@ -195,7 +195,7 @@ class Acceptance:
     def start(self, reset):
         self.env["RUNTIME_RESET"] = "yes" if reset else "no"
         self.proc = subprocess.Popen(
-            [str(ROOT / "backend/target/debug/examples/runtime_server")],
+            [str(Path(self.env.get("CARGO_TARGET_DIR", ROOT / "backend/target")) / "debug/examples/runtime_server")],
             cwd=ROOT,
             env=self.env,
             stdout=self.log,
@@ -435,6 +435,12 @@ class Acceptance:
                 dict(username="test-admin", password=self.password),
             )
             boot = self.request("GET", "/api/bootstrap")
+            self.equal(
+                boot["features"],
+                dict(layoffs=False, manual_entry=True, text_entry=True, entry_mode="manual"),
+                "fresh customer module defaults",
+            )
+            self.request("PUT", "/api/settings/features", dict(layoffs=True, manual_entry=True, text_entry=True))
             for p in boot["plays"]:
                 self.request(
                     "DELETE", "/api/plays/" + str(p["id"]), dict(version=p["version"])

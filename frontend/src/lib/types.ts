@@ -101,7 +101,15 @@ export interface Period {
   totals: Totals;
   server_time: string;
 }
+export type EntryMode = "manual" | "text";
+export interface ModuleFeatures {
+  layoffs: boolean;
+  manual_entry: boolean;
+  text_entry: boolean;
+  entry_mode: EntryMode;
+}
 export interface Bootstrap {
+  features: ModuleFeatures;
   today: Period;
   plays: Play[];
   zodiacs: string[];
@@ -183,6 +191,7 @@ export interface Quote {
   settled?: boolean;
 }
 export interface Settings {
+  features: ModuleFeatures;
   cutover_time: string;
   mappings: { effective_date: string; mapping: Mapping }[];
   tomorrow: string;

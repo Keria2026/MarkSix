@@ -306,7 +306,8 @@ test("statistics summaries show category-specific amounts, profit direction, pen
   await nav.getByRole("button", { name: "飞出受注统计", exact: true }).click();
   await expect(cards).toContainText("0 人");
   await expect(cards).toContainText("0 条");
-  await expect(cards).toContainText("和局退本 ¥ 10.00");
+  await expect(cards.locator(".positive, .negative")).toHaveCount(0);
+  await expect(cards.locator(".stat-value").first()).toHaveText("¥ 0.00");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 

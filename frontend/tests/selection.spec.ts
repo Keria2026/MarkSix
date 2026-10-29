@@ -172,7 +172,7 @@ test("typed selections share grid limits, keep partial input, and preserve hard-
     );
     await input.fill("45，06");
     await expect(
-      page.getByText("当前：特码 45 → 平码 06", { exact: false }),
+      page.getByText("特码 → 平码：45 → 06", { exact: false }),
     ).toBeVisible();
     await input.fill("45,06,07");
     await expect(input).toHaveAttribute("aria-invalid", "true");
@@ -180,7 +180,7 @@ test("typed selections share grid limits, keep partial input, and preserve hard-
     await input.fill("06/45");
     await expect(input).toHaveAttribute("aria-invalid", "false");
     await expect(
-      page.getByText("当前：特码 06 → 平码 45", { exact: false }),
+      page.getByText("特码 → 平码：06 → 45", { exact: false }),
     ).toBeVisible();
     await input.fill("06,未知");
     await expect(page.getByRole("alert")).toContainText("无法识别");

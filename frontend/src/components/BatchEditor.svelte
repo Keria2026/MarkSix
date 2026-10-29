@@ -140,7 +140,7 @@
 >
   <form class="rule-form" onsubmit={save}>
     <p class="modal-description">
-      已选择 {targets.length} 条玩法。整批校验后保存；已有投注使用原快照。
+      已选择 {targets.length} 条玩法
     </p>
     {#if action === "delete"}<p class="inline-error">
         这些玩法将停止录入，历史投注及统计保留。
@@ -202,9 +202,6 @@
               </div>{/each}
           </div>
         </details>{/each}
-      <p class="field-help">
-        留空或“保持原状”不修改，勾选“清除”可移除可选限制或特殊费率。规则必须适用于每条所选玩法；任一玩法校验失败，整批不保存。
-      </p>
     {/if}
     {#if error}<p class="inline-error" role="alert">{error}</p>{/if}
     <div class="modal-actions">

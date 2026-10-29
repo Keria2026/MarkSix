@@ -443,42 +443,20 @@
             onclick={() => setPackageMode(true)}>包肖投注</button
           >
         </div>{/if}
-      {#if draft.packageMode}<p class="field-help">
-          金额按每肖填写，按当期生肖表平均分配到各号码；余下的分按号码升序分配。各号码分别结算。
-        </p>{/if}
-      {#if currentPlay.rule.kind === "zodiac_count"}<p class="field-help">
-          全部 7 个开奖号码恰好出现 {currentPlay.rule.zodiac_count} 种不同生肖时中奖；同一生肖出现多次只计一种。
-        </p>{/if}
-      {#if currentPlay.rule.special_hit_odds}<p class="field-help">
-          两平码按 {currentPlay.rule.odds} 倍；一特一平按 {currentPlay.rule
-            .special_hit_odds} 倍返还。
-        </p>{/if}
+
       {#if currentPlay.rule.condition === "hard_pair"}<p class="field-help">
-          按顺序选择：第一个号码必须开在特码，第二个必须开在平码。当前：{draft.selections
-            .map((n, i) => `${i === 0 ? "特码" : "平码"} ${label("number", n)}`)
-            .join(" → ") || "尚未选择"}
+          特码 → 平码：{draft.selections
+            .map((n) => label("number", n))
+            .join(" → ") || "未选择"}
         </p>{/if}
-      {#if currentPlay.rule.condition === "at_least"}<p class="field-help">
-          每注至少命中 {currentPlay.rule.minimum_hits} 个选项即中奖。
-        </p>{/if}
-      {#if currentPlay.rule.kind === "size" || currentPlay.rule.kind === "parity"}<p
-          class="field-help"
-        >
-          所选开奖范围出现 49 时，本基础注和局退本，不计有效投注、无反水。
-        </p>{/if}
+
       {#if draft.drag}<DragPicker
           rule={currentPlay.rule}
           mapping={today.mapping}
           bind:draft={draft.drag}
         />{:else}
         <div class="selection-description">
-          <span
-            >{draft.packageMode
-              ? "选择生肖，每肖金额独立包号"
-              : draft.compound
-                ? `从候选项中每 ${currentPlay.rule.combination_size} 个拆成一注`
-                : `选择数量${relations[currentPlay.rule.relation]} ${currentPlay.rule.quantity} 个${currentPlay.rule.quantity === 1 ? "；多选逐项拆注" : "；允许的超额选择按阈值拆注"}`}</span
-          ><button
+          <button
             class="text-button"
             onclick={() => {
               draft.selections = [];
@@ -495,9 +473,7 @@
             maxlength="2048"
             value={selectionText}
             aria-invalid={textInvalid}
-            aria-describedby={selectionError
-              ? "selection-error"
-              : "selection-input-help"}
+            aria-describedby={selectionError ? "selection-error" : undefined}
             oninput={(event) => enterSelections(event.currentTarget.value)}
             onkeydown={(event) => {
               if (event.key === "Enter") {
@@ -512,9 +488,7 @@
                 : "输入选项，以空格或标点分隔"}
           /></label
         >
-        <p id="selection-input-help" class="field-help">
-          支持空格、中英文标点分隔，重复项只计一次；输入与下方选择同步，超过规则边界时不应用、不提交。
-        </p>
+
         <div
           class="option-grid"
           class:number-grid={selectionKind === "number"}
@@ -620,7 +594,7 @@
             >{label(selectionKind, value)}</span
           >{/each}{#if draft.selections.length > 20}<span
             >+{draft.selections.length - 20}</span
-          >{/if}{:else}<p>选择投注项后，在这里查看汇总。</p>{/if}
+          >{/if}{:else}<p>尚未选择投注项</p>{/if}
     </div>
     {#if draft.packageMode}<p class="field-help">
         包号：{packageNumbers.map((n) => label("number", n)).join(" · ")}
@@ -668,10 +642,6 @@
       </div>
       {#if quoteError}<p class:negative={quoteState === "error"}>
           {quoteError}
-        </p>{:else}<p>
-          {quote?.settled
-            ? "按本期已确认开奖结果计算。"
-            : "基于同一个合法开奖结果精确计算。"}
         </p>{/if}
     </div>
     {#if selectedCount > 1000}<div class="inline-error">

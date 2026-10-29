@@ -2,6 +2,7 @@ pub mod domain;
 
 pub mod api;
 mod betting;
+mod features;
 mod queries;
 mod records;
 pub mod risk;

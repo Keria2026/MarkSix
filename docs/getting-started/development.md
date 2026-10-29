@@ -20,7 +20,7 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 
 ### WSL Ubuntu 本地环境
 
-当前工作站使用 Ubuntu-24.04，复用 Windows checkout `/mnt/c/Users/zhang/projects/MarkSix`。Rust、Bun、Node.js 24 LTS、Docker Engine / Compose、MySQL 客户端及 Playwright Chromium 安装在 WSL 内。Node.js 只供开发工具运行，依赖仍统一由 Bun 管理。Rust 构建缓存位于 `~/.cache/marksix/target`，本地 `backend/target` 链接到该目录。
+当前工作站使用 WSL2 Ubuntu-24.04，唯一开发目录为 Linux 原生文件系统中的 `/home/ubuntu/Project/MarkSix`（`~/Project/MarkSix`）。禁止在 Windows checkout、PowerShell／CMD 或 `/mnt/c` 等挂载盘直接开发。Rust、Bun、Node.js 24 LTS、Git、Docker Engine / Compose、MySQL 客户端及 Playwright Chromium 均运行在 WSL 内；Windows 编辑器须连接 Remote WSL。Node.js 只供开发工具运行，依赖仍统一由 Bun 管理。Rust 构建缓存位于 `~/.cache/marksix/target`，本地 `backend/target` 链接到该目录。前端依赖由 WSL 中的 Bun 在新目录安装，不搬用 Windows 的依赖目录。
 
 本地配置集中在 `~/.config/marksix/`，不属于 Git 仓库；目录权限为 700，密码配置权限为 600。不要将这些文件或其内容复制到仓库、终端日志或提交中。
 
@@ -35,11 +35,21 @@ API_TARGET=http://127.0.0.1:8080 bun run dev
 
 开发管理员用户名为 `dev-admin`，密码见本地 `auth.env`；已激活的开发客户为 `dev-user`，密码见本地 `customer.env`。测试账号密码仅见 `test.env`。
 
-在 PowerShell 中启动（或运行本地 VS Code 任务 `MarkSix: start WSL development`）：
+在 WSL 终端中启动（或运行 Remote WSL 工作区任务 `MarkSix: start development`）：
+
+```bash
+cd ~/Project/MarkSix
+bash ~/.config/marksix/start.sh --keep-alive
+```
+
+从 Windows 启动 WSL 或编辑器只作为入口，不在 Windows 运行开发命令：
 
 ```powershell
-wsl -d Ubuntu-24.04 -- bash /home/ubuntu/.config/marksix/start.sh --keep-alive
+wsl -d Ubuntu-24.04 --cd /home/ubuntu/Project/MarkSix
+code --remote wsl+Ubuntu-24.04 /home/ubuntu/Project/MarkSix
 ```
+
+Vite 配置会拒绝 Windows 进程及 Windows 挂载盘中的开发／构建。Remote WSL 终端默认使用 Bash，Git 使用 `/usr/bin/git`；不得从资源管理器以普通 Windows 工作区打开 UNC 路径后运行开发工具。
 
 启动脚本先等待数据库健康、构建后端，再启动 `marksix-local.target` 下的四个用户服务。`--keep-alive` 保持一个 WSL 客户端运行，防止 WSL 因空闲回收实例；同一用户的重复启动不会创建多个保活进程。首次配置已启用用户 linger。重启 Windows 或显式关闭 WSL 后，重新执行启动命令。
 
@@ -131,13 +141,16 @@ python3 scripts/hosted_acceptance.py --backend marksix-backend:v1-test --fronten
 
 ## 文本录注开发
 
-文本录注的使用、语法边界及确认式学习见[功能指南](../guides/text-entry-proposal.md)。合成语料保留在私有路径；在仓库根目录执行以下命令，候选产物仅包含词汇频次，不包含原文或账号数据：
+文本录注的领域语义解析、语法边界及确认式学习见[功能指南](../guides/text-entry-proposal.md)。语料生成器以独立语义标签生成 5,000 条样本，训练／验证／测试为 3,500／750／750；原文保留在用户私有路径。在仓库根目录执行以下命令，候选产物仅包含词汇频次，不包含原文或账号数据：
 
 ```bash
-bun scripts/train_text_entry.ts /私有路径/liuhe_synthetic_betting_records.jsonl
-bun scripts/evaluate_text_entry.ts /私有路径/liuhe_synthetic_betting_records.jsonl
+bun scripts/generate_text_entry.ts test-results/text-entry-corpus
+bun scripts/train_text_entry.ts test-results/text-entry-corpus/train.jsonl
+bun scripts/evaluate_text_entry.ts test-results/text-entry-corpus/train.jsonl
+bun scripts/evaluate_text_entry.ts test-results/text-entry-corpus/validation.jsonl
+bun scripts/evaluate_text_entry.ts test-results/text-entry-corpus/test.jsonl
 # frontend；浏览器测试须先启动上述独立测试夹具
-bun run test:e2e tests/text-entry-parser.spec.ts tests/text-entry.spec.ts tests/account-scope.spec.ts --trace off
+bun run test:e2e tests/text-entry-parser.spec.ts tests/text-entry-corpus.spec.ts tests/text-entry.spec.ts tests/account-scope.spec.ts --trace off
 ```
 
 生成文件 `frontend/src/lib/generated/text-entry-candidates.json` 不得手工修改。修改解析器后应重跑语料评估及以上测试；涉及学习持久化时另外执行 receipts、upgrade 和 hosted 数据库测试。录制 trace 可能保留输入及认证信息，本地真实文本验收应禁用 trace。

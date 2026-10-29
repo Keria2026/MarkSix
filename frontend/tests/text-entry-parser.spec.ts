@@ -7,6 +7,7 @@ import {
   playCandidates,
 } from "../src/lib/text-entry";
 import type { TextPreference } from "../src/lib/text-entry";
+import { basicCount } from "../src/lib/types";
 import type { Play } from "../src/lib/types";
 const plays: Play[] = JSON.parse(
   readFileSync(
@@ -19,9 +20,9 @@ const mapping = {
   zodiac: Array.from({ length: 49 }, (_, i) => (18 - (i % 12)) % 12),
 };
 
-test("trained vocabulary suggestions never auto-bind an unconfirmed alias", () => {
+test("preferred candidates select an enabled play without changing exact names", () => {
   const row = parseText("一宵虎各20", plays)[0];
-  expect(row.playId).toBe(0);
+  expect(row.playId).toBe(plays.find((p) => p.rule.name === "一肖中")!.id);
   expect(playCandidates("一宵", plays)[0].play.rule.name).toBe("一肖中");
   expect(playCandidates("一宵", plays)[0].suggested).toBe(true);
   expect(playCandidates("constructor", plays).every((c) => !c.suggested)).toBe(
@@ -58,9 +59,9 @@ test("one paste preserves multiple groups and multiline number continuations", (
   ]);
   expect(rows[2].items[0].amount).toBe("300");
 });
-test("aliases require confirmation and expire with their bound rule version", () => {
+test("domain aliases resolve automatically and learned aliases expire with their rule version", () => {
   const raw = "二中特：牛拖龙各15元，三友牛龙羊260";
-  expect(parseText(raw, plays).every((r) => r.playId === 0)).toBe(true);
+  expect(parseText(raw, plays).every((r) => r.playId > 0)).toBe(true);
   const rows = compile(raw);
   expect(rows.every((r) => !r.error)).toBe(true);
   expect(rows[0].items[0].drag).toEqual({
@@ -69,13 +70,19 @@ test("aliases require confirmation and expire with their bound rule version", ()
     zodiac: true,
   });
   expect(rows[1].items[0].selections).toEqual([1, 4, 7]);
+  const custom = {
+    alias: "私家玩法",
+    play_id: id("三有"),
+    play_version: 1,
+    amount_mode: "auto" as const,
+  };
+  expect(parseText("私家玩法牛龙羊260", plays, [custom])[0].playId).toBe(
+    id("三有"),
+  );
   expect(
-    parseText(
-      raw,
-      plays,
-      habits.map((p) => ({ ...p, play_version: 0 })),
-    ).every((r) => r.playId === 0),
-  ).toBe(true);
+    parseText("私家玩法牛龙羊260", plays, [{ ...custom, play_version: 0 }])[0]
+      .playId,
+  ).toBe(0);
 });
 test("money markers, fullwidth inputs and exact original source spans", () => {
   const raw = "特：１４/１００\n特07下250米\n27.39.09.各200米\n03下100米";
@@ -120,9 +127,7 @@ test("unknown text, missing amount, duplicates and concatenated numbers cannot d
     "特码01 01各40",
     "特码50各40",
     "特码07",
-    "牛中5000",
     "特码07各10照旧",
-    "特码07各10*",
     "特码01-03各10",
     "特码-1各10",
     "特码\n三有牛羊蛇300",
@@ -154,4 +159,222 @@ test("overlapping drag, invalid cents and limits reject before server validation
   expect(compile("特码07各1.25")[0].error).toContain("一位小数");
   expect(() => parseText("特码".repeat(6001), plays)).toThrow("12,000");
   expect(() => parseText("特码07各10;".repeat(101), plays)).toThrow("100");
+});
+
+for (const prefix of ["复", "复式", "另复", "另复式", "另 复：", "另 复式\n"]) {
+  test(`compound header ${prefix.trim()} belongs to its following play`, () => {
+    const raw = `三有牛狗马500.${prefix}三有牛狗马猪各注600`;
+    const rows = parseText(raw, plays, habits);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.source).join("")).toBe(raw);
+    for (const row of rows)
+      expect(row.source).toBe(raw.slice(row.start, row.end));
+    const results = rows.map((row) => compileRow(row, plays, mapping));
+    expect(results.map((row) => row.error)).toEqual(["", ""]);
+    expect(results[0].items[0]).toMatchObject({
+      compound: false,
+      amount: "500",
+    });
+    const item = results[1].items[0];
+    expect(item).toMatchObject({
+      play_id: id("三有"),
+      selections: [1, 10, 6, 11],
+      compound: true,
+      amount: "600",
+    });
+    expect(
+      basicCount(
+        plays.find((p) => p.id === item.play_id)!.rule,
+        item.selections,
+        item.compound,
+      ),
+    ).toBe(4);
+  });
+}
+
+test("compound headers preserve alias resolution and do not affect later bets", () => {
+  const raw = "三有牛狗马500.另复三友牛狗马猪各600";
+  const unknown = parseText(raw, plays);
+  expect(unknown).toHaveLength(2);
+  expect(unknown[1].playId).toBe(id("三有"));
+  expect(compileRow(unknown[1], plays, mapping).error).toBe("");
+  const rows = parseText(
+    `${raw}，牛狗马各100，三有牛狗马猪各100`,
+    plays,
+    habits,
+  );
+  expect(rows).toHaveLength(4);
+  const results = rows.map((row) => compileRow(row, plays, mapping));
+  expect(results[1].error).toBe("");
+  expect(results[1].items[0].compound).toBe(true);
+  expect(results[2].items[0].compound).toBe(false);
+  expect(results[3].error).toContain("复式");
+  expect(
+    compile("三有牛狗马500 未知另复三有牛狗马猪各600").some(
+      (row) => !!row.error,
+    ),
+  ).toBe(true);
+});
+
+test("object-before-play and shorthand assemble one complete semantic record", () => {
+  for (const raw of ["牛特500", "牛特码500", "牛 特码 500"]) {
+    const rows = parseText(raw, plays, habits);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe(raw);
+    expect(compileRow(rows[0], plays, mapping)).toMatchObject({
+      error: "",
+      items: [{ package_zodiacs: [1], amount: "500" }],
+    });
+  }
+  const each = compile("牛特码各100")[0];
+  expect(each.error).toBe("");
+  expect(each.items[0].package_zodiacs).toBeUndefined();
+  expect(each.items[0].selections.length).toBe(4);
+  expect(compile("牛狗马三有500")[0].items[0]).toMatchObject({
+    selections: [1, 10, 6],
+    compound: false,
+    amount: "500",
+  });
+  expect(compile("牛中5000")[0]).toMatchObject({
+    error: "",
+    items: [{ play_id: id("一肖中"), selections: [1], amount: "5000" }],
+  });
+  expect(compile("特码12.5包牛狗")[0]).toMatchObject({
+    error: "",
+    items: [{ package_zodiacs: [1, 10], amount: "12.5" }],
+  });
+});
+
+test("partial tokens never become boundaries or silently disappear", () => {
+  expect(compile("三有 牛、狗；马 各 500")[0].error).toBe("");
+  expect(compile("特码07 18 25")[0].error).toContain("金额");
+  expect(compile("特码07各100 另").some((row) => !!row.error)).toBe(true);
+  expect(compile("特码07各100 中").some((row) => !!row.error)).toBe(true);
+  expect(
+    compile("特码07各100 未知复式三有牛狗马猪各600").some((row) => !!row.error),
+  ).toBe(true);
+});
+
+test("confirmed domain shorthands use configured plays and current period mapping", () => {
+  const rows = parseText("新澳门四肖\n兔龙虎蛇100米", plays);
+  expect(rows).toHaveLength(1);
+  expect(compileRow(rows[0], plays, mapping)).toMatchObject({
+    error: "",
+    items: [
+      { play_id: id("四肖中特"), selections: [3, 4, 2, 5], amount: "100" },
+    ],
+  });
+  expect(compile("新澳门四肖兔龙虎100米")[0].error).toContain("4");
+  for (const raw of ["牛500特码", "500元牛特码", "500包牛特码"]) {
+    const parsed = parseText(raw, plays);
+    expect(parsed).toHaveLength(1);
+    expect(compileRow(parsed[0], plays, mapping)).toMatchObject({
+      error: "",
+      items: [{ package_zodiacs: [1], amount: "500" }],
+    });
+  }
+});
+
+test("confirmed domain aliases, market prefixes, currency and amount markers resolve as one bet", () => {
+  const cases: [string, string, number[], string][] = [
+    ["平特一肖牛30000*", "一肖中", [1], "30000"],
+    ["平特一肖牛下500斤", "一肖中", [1], "500"],
+    ["平特肖牛/100米", "一肖中", [1], "100"],
+    ["一肖牛100元", "一肖中", [1], "100"],
+    ["肖中：牛100斤", "一肖中", [1], "100"],
+    ["新澳：澳特07下100斤", "特码", [7], "100"],
+    ["澳门特码07/100", "特码", [7], "100"],
+    ["新澳门特：07各100", "特码", [7], "100"],
+    ["澳 特07各100", "特码", [7], "100"],
+    ["二中特：06.18下100", "二中二含特", [6, 18], "100"],
+    ["新澳门四肖兔龙虎蛇100米", "四肖中特", [3, 4, 2, 5], "100"],
+  ];
+  for (const [raw, name, selections, amount] of cases) {
+    const rows = parseText(raw, plays);
+    expect(rows, raw).toHaveLength(1);
+    expect(rows[0].source).toBe(raw);
+    expect(compileRow(rows[0], plays, mapping), raw).toMatchObject({
+      error: "",
+      items: [{ play_id: id(name), selections, amount }],
+    });
+  }
+  expect(compile("复三有牛狗马猪各600")[0].items[0].compound).toBe(true);
+  expect(compile("特码07*100")[0].items[0].amount).toBe("100");
+});
+
+test("bracket groups keep their own quantity boundaries", () => {
+  for (const [left, right] of [
+    ["【", "】"],
+    ["[", "]"],
+    ["{", "}"],
+  ]) {
+    const raw = `八不中：${left}01 02 03 04 05 06 07 08${right}${left}09 10 11 12 13 14 15 16${right}/200`;
+    const rows = parseText(raw, plays);
+    expect(rows).toHaveLength(1);
+    const result = compileRow(rows[0], plays, mapping);
+    expect(result.error).toBe("");
+    expect(result.items.map((i) => i.selections)).toEqual([
+      [1, 2, 3, 4, 5, 6, 7, 8],
+      [9, 10, 11, 12, 13, 14, 15, 16],
+    ]);
+    expect(result.items.every((i) => i.amount === "200")).toBe(true);
+  }
+  for (const raw of [
+    "八不中【01 02 03 04 05 06 07】【08 09 10 11 12 13 14 15 16】各100",
+    "八不中{01 02 03 04 05 06 07 08]各100",
+    "八不中【01 02 03 04 05 06 07 08各100",
+  ]) {
+    expect(
+      compile(raw).some((r) => !!r.error),
+      raw,
+    ).toBe(true);
+  }
+});
+
+test("noise is not a new bet, while partial financial fields remain visible for correction", () => {
+  for (const tail of ["*", "***", "。*；", " / ", "×"]) {
+    const raw = `一肖中牛500${tail}`;
+    const rows = parseText(raw, plays);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe(raw);
+    expect(compileRow(rows[0], plays, mapping).error).toBe("");
+  }
+  expect(parseText("***", plays)).toHaveLength(0);
+  const partial = parseText("一肖中牛500，三有牛狗马", plays);
+  expect(partial).toHaveLength(2);
+  expect(compileRow(partial[1], plays, mapping).error).toContain("金额");
+  const named = parseText("私家玩法：牛狗马各100", plays);
+  expect(named[0]).toMatchObject({
+    playLabel: "私家玩法",
+    body: "牛狗马",
+    playId: 0,
+    amount: "100",
+  });
+});
+
+test("exact names outrank aliases and disabled or ambiguous targets are not selected", () => {
+  const custom = {
+    ...plays.find((p) => p.rule.name === "特码")!,
+    id: 999,
+    rule: { ...plays.find((p) => p.rule.name === "特码")!.rule, name: "特" },
+  };
+  expect(parseText("特07各100", [...plays, custom])[0].playId).toBe(999);
+  expect(
+    parseText(
+      "澳特07各100",
+      plays.map((p) => (p.rule.name === "特码" ? { ...p, enabled: false } : p)),
+    )[0].playId,
+  ).toBe(0);
+  const duplicate = { ...plays.find((p) => p.rule.name === "特码")!, id: 998 };
+  expect(parseText("特码07各100", [...plays, duplicate])[0].playId).toBe(0);
+  expect(
+    parseText("特07各100", plays, [
+      {
+        alias: "特",
+        play_id: id("平码"),
+        play_version: 1,
+        amount_mode: "auto",
+      },
+    ])[0].playId,
+  ).toBe(id("特码"));
 });

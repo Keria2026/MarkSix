@@ -62,6 +62,9 @@ async fn transactional_workflow_and_recovery() {
     );
     let pool = connect(&url).await.unwrap();
     for table in [
+        "bettor_play_preferences",
+        "module_features",
+        "text_entry_preferences",
         "audit_events",
         "bet_mutations",
         "layoffs",
@@ -106,6 +109,10 @@ async fn transactional_workflow_and_recovery() {
         .unwrap();
     let date = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
     let clock = Arc::new(RwLock::new(date.and_hms_opt(12, 0, 0).unwrap()));
+    sqlx::query("UPDATE module_features SET layoffs=true")
+        .execute(&pool)
+        .await
+        .unwrap();
     let mut state = AppState::new(pool.clone()).unwrap();
     let test_clock = clock.clone();
     state.clock = Arc::new(move || *test_clock.read().unwrap());
