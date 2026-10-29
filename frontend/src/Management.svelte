@@ -340,7 +340,7 @@
       <div class="brand-mark">M</div>
       <p class="eyebrow">AUTH · {site.version}</p>
       <h1>auth 管理端</h1>
-      <p class="owner-muted">管理客户、授权与激活码</p>
+
       <form onsubmit={login}>
         <label
           >管理员账号<input
@@ -421,9 +421,7 @@
               ><Plus size={17} />新增客户</button
             >
           </div>
-          <p class="owner-muted">
-            客户账本相互隔离。截止日当期可用，过期后继续结算已有投注。
-          </p>
+
           <div class="owner-grid">
             {#each filtered as c}<article class="owner-card">
                 <div class="owner-card-head">
@@ -486,9 +484,6 @@
           </div>
         </section>
       {:else if tab === "codes"}<section class="glass owner-panel">
-          <p class="owner-muted">
-            激活码绑定账号和凭据版本，仅在签发时显示完整内容。作废已用码不会撤销已取得的授权。
-          </p>
           <div class="owner-table">
             <table>
               <caption class="sr-only">激活码记录</caption><thead
@@ -528,9 +523,6 @@
         </section>
       {:else if tab === "administrators"}<section class="glass owner-panel">
           <div class="owner-toolbar">
-            <p class="owner-muted">
-              后台管理员可管理所有客户与授权，请只为可信任的人员创建。
-            </p>
             <button class="button primary" onclick={() => open("administrator")}
               ><Plus size={17} />新增管理员</button
             >
@@ -544,9 +536,6 @@
           </div>
         </section>
       {:else}<section class="glass owner-panel">
-          <p class="owner-muted">
-            显示最近 500 条记录。日志不保存密码、激活码原文或投注内容。
-          </p>
           <div class="owner-table">
             <table>
               <caption class="sr-only">后台操作日志</caption><thead
@@ -639,14 +628,9 @@
               required
             /></label
           >
-          <p class="owner-muted">
-            至少 12 个字符。请通过安全渠道交付密码。
-          </p>{/if}
+        {/if}
         {#if dialog === "create"}<label class="owner-checkbox"
-            ><input
-              type="checkbox"
-              bind:checked={permanent}
-            />永久授权，仍遵守业务规则</label
+            ><input type="checkbox" bind:checked={permanent} />永久授权</label
           >{/if}
         {#if dialog === "code"}<label
             >授权天数<input
@@ -664,9 +648,7 @@
               required
             /></label
           >
-          <p class="owner-muted">
-            提前续期接在原截止日之后；未激活或已到期，从激活当天开始计算，包含当天当期。
-          </p>{/if}
+        {/if}
         {#if dialog === "password" || dialog === "rename"}<p
             class="owner-muted"
           >

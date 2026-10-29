@@ -19,6 +19,18 @@ test("administrator records compound bets, cancels atomically, configures rules,
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
+  expect(
+    (
+      await page.request.put("/api/settings/features", {
+        headers: { "X-MarkSix": "1" },
+        data: { layoffs: true, manual_entry: true, text_entry: true },
+      })
+    ).ok(),
+  ).toBe(true);
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "本期概览", exact: true }),
+  ).toBeVisible();
   const nav = page.getByRole("navigation", { name: "主要导航" });
   await nav.getByRole("button", { name: "录入投注" }).click();
   await page.getByRole("button", { name: "五有" }).click();
@@ -203,9 +215,15 @@ test("administrator records compound bets, cancels atomically, configures rules,
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await nav.getByRole("button", { name: "录入投注" }).click();
   await page.getByLabel("搜索玩法名称").fill("二中二含特验收");
-  await expect(
-    page.getByText("两平码按 55 倍；一特一平按 25 倍返还。"),
-  ).toBeVisible();
+  await expect(page.locator(".play-picker button.selected")).toContainText(
+    "二中二含特验收",
+  );
+  const configured = await (await page.request.get("/api/bootstrap")).json();
+  expect(
+    configured.plays.find(
+      (p: { rule: { name: string } }) => p.rule.name === "二中二含特验收",
+    ).rule,
+  ).toMatchObject({ odds: "55", special_hit_odds: "25" });
   await nav.getByRole("button", { name: "历史统计" }).click();
   await expect(page.locator("tbody")).toContainText("2026287");
   await page

@@ -6,6 +6,7 @@
     ChevronDown,
     Clock3,
     ShieldCheck,
+    Settings2,
   } from "lucide-svelte";
   import Modal from "./Modal.svelte";
   import LicenseCountdown from "./LicenseCountdown.svelte";
@@ -13,13 +14,18 @@
   import { annualMapping, wave, zodiacs } from "../lib/types";
   import type { Settings, Mapping, Period, api as Api } from "../lib/types";
   import { createRequestScope } from "../lib/requests";
+  import type { ModuleFeatures } from "../lib/types";
   let {
+    features,
+    onfeatures,
     today,
     licenseStatus,
     api: accountApi,
     notify,
     oncleared,
   }: {
+    features: ModuleFeatures;
+    onfeatures: (value: ModuleFeatures) => void;
     today: Period;
     licenseStatus: LicenseStatus;
     api: typeof Api;
@@ -110,6 +116,35 @@
       busy = false;
     }
   }
+  let featureBusy = $state(false);
+  let featureError = $state("");
+  async function changeFeature(
+    key: "layoffs" | "manual_entry" | "text_entry",
+    value: boolean,
+    control: HTMLInputElement,
+  ) {
+    if (featureBusy) return;
+    featureBusy = true;
+    featureError = "";
+    try {
+      const next = await api<ModuleFeatures>("/settings/features", {
+        method: "PUT",
+        body: JSON.stringify({
+          layoffs: features.layoffs,
+          manual_entry: features.manual_entry,
+          text_entry: features.text_entry,
+          [key]: value,
+        }),
+      });
+      onfeatures(next);
+      notify("功能设置已保存");
+    } catch (e) {
+      control.checked = features[key];
+      featureError = fail(e);
+    } finally {
+      featureBusy = false;
+    }
+  }
   onMount(() => {
     void loadSettings().catch((e) => (loadError = fail(e)));
   });
@@ -143,13 +178,30 @@
           : "—"}（北京时间）
     </p>
     <p>
-      {#if licenseStatus.permanent}永久授权，业务规则照常生效{:else}授权剩余
+      {#if licenseStatus.permanent}永久授权{:else}授权剩余
         <LicenseCountdown seconds={licenseStatus.remaining_seconds} />{/if}
     </p>
-    <p class="field-help">
-      授权截止日当期可用，到期后使用新激活码续期；已有投注继续结算。
-    </p>
   </section>{/if}
+<section class="glass feature-settings" aria-label="功能模块">
+  <div class="section-head"><h2><Settings2 size={19} />功能模块</h2></div>
+  {#each [{ key: "layoffs" as const, label: "飞出投注" }, { key: "manual_entry" as const, label: "手工录注" }, { key: "text_entry" as const, label: "文本录注" }] as feature}
+    <label class="feature-switch"
+      ><span>{feature.label}</span><input
+        type="checkbox"
+        role="switch"
+        checked={features[feature.key]}
+        disabled={featureBusy}
+        onchange={(event) =>
+          changeFeature(
+            feature.key,
+            event.currentTarget.checked,
+            event.currentTarget,
+          )}
+      /></label
+    >
+  {/each}
+  {#if featureError}<p class="inline-error" role="alert">{featureError}</p>{/if}
+</section>
 <div class="settings-grid">
   <section class="glass closing-panel">
     <div class="section-head">
@@ -162,21 +214,13 @@
       <div></div>
       <span>次日 06:00<small>归档并切换下一期</small></span>
     </div>
-    <p class="field-help">
-      北京时间每日 06:00
-      切期，全天可录入。开奖后使用该期已确认结果立即结算；至次日 06:00
-      前仍可改额、飞出和撤销。没有有效开奖结果时保留待结算，不猜测结果。
-    </p>
   </section>
   <section class="glass mapping-panel">
     <div class="section-head">
       <h2><CalendarDays size={19} /> 生肖映射</h2>
       <span class="soft-chip">本期本命 · {zodiacs[today.mapping.natal]}</span>
     </div>
-    <p class="field-help">
-      每年 1 月 1 日 06:00 自动换肖，01、13、25、37、49
-      对应当年本命肖；每期映射固定，实际结算以接口为准。
-    </p>
+
     <form onsubmit={saveMapping}>
       <div class="form-two">
         <label
@@ -216,9 +260,7 @@
             >{/each}
         </div>
       </details>
-      <p class="field-help">
-        指定业务日期 06:00 生效，整期固定；实际结算以接口为准。
-      </p>
+
       <button class="button secondary" disabled={busy}
         >安排生效 <ArrowRight size={15} /></button
       >

@@ -113,6 +113,9 @@ pub async fn initialize(
     username: &str,
     password: Option<&str>,
 ) -> anyhow::Result<()> {
+    sqlx::query("INSERT IGNORE INTO module_features(id) VALUES(1)")
+        .execute(pool)
+        .await?;
     let exists: Option<i8> = sqlx::query_scalar("SELECT id FROM administrators WHERE id=1")
         .fetch_optional(pool)
         .await?;

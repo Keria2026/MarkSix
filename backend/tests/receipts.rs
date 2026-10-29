@@ -60,6 +60,8 @@ async fn atomic_slips_order_statements_and_capacity() {
     assert!(url.ends_with("/marksix_test"));
     let pool = connect(&url).await.unwrap();
     for table in [
+        "bettor_play_preferences",
+        "module_features",
         "text_entry_preferences",
         "audit_events",
         "bet_mutations",
@@ -99,6 +101,18 @@ async fn atomic_slips_order_statements_and_capacity() {
     .await;
     assert!(!cookie.is_empty());
     let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    assert_eq!(
+        boot["features"],
+        json!({"layoffs":false,"manual_entry":true,"text_entry":true,"entry_mode":"manual"})
+    );
+    ok(
+        &app,
+        "PUT",
+        "/api/settings/features",
+        json!({"layoffs":true,"manual_entry":true,"text_entry":true}),
+        &cookie,
+    )
+    .await;
     let period = boot["today"]["id"].as_str().unwrap().to_owned();
     let mut rule = boot["plays"]
         .as_array()

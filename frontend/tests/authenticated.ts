@@ -23,8 +23,35 @@ export const test = base.extend<{}, { sessionCookies: Cookie[] }>({
     },
     { scope: "worker" },
   ],
-  storageState: async ({ sessionCookies }, use) => {
-    await use({ cookies: sessionCookies, origins: [] });
+  storageState: async ({ sessionCookies, playwright }, use, info) => {
+    const storageState = { cookies: sessionCookies, origins: [] };
+    const request = await playwright.request.newContext({
+      baseURL: info.project.use.baseURL,
+      storageState,
+    });
+    try {
+      // Existing business suites explicitly exercise all modules. Product defaults
+      // are tested separately; fixture setup must not change the app's defaults.
+      expect(
+        (
+          await request.put("/api/settings/features", {
+            headers: { "X-MarkSix": "1" },
+            data: { layoffs: true, manual_entry: true, text_entry: true },
+          })
+        ).ok(),
+      ).toBe(true);
+      expect(
+        (
+          await request.put("/api/settings/entry-mode", {
+            headers: { "X-MarkSix": "1" },
+            data: { entry_mode: "manual" },
+          })
+        ).ok(),
+      ).toBe(true);
+    } finally {
+      await request.dispose();
+    }
+    await use(storageState);
   },
 });
 export { expect };

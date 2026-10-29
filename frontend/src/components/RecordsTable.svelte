@@ -5,7 +5,6 @@
     ArrowUpRight,
     ChevronLeft,
     ChevronRight,
-    ReceiptText,
   } from "lucide-svelte";
   import { money, signed, label } from "../lib/types";
   import type { Page, RecordGroup } from "../lib/types";
@@ -13,6 +12,7 @@
     records,
     recordChoices,
     historical,
+    canEnter = true,
     selectedBettors = $bindable(),
     selectedPlays = $bindable(),
     minAmount = $bindable(),
@@ -25,6 +25,7 @@
     records: Page<RecordGroup>;
     recordChoices: { bettors: string[]; plays: { id: number; name: string }[] };
     historical: boolean;
+    canEnter?: boolean;
     selectedBettors: string[];
     selectedPlays: number[];
     minAmount: string;
@@ -45,7 +46,6 @@
       <h2>投注记录</h2>
       <span class="count-badge">{records.total}</span>
     </div>
-    <span class="muted small">自动刷新 · 组合单合并展示，撤销分项不计金额</span>
   </div>
   <form
     class="record-filters"
@@ -199,23 +199,21 @@
       >
     </table>
     {#if !records.items.length}<div class="empty-state record-empty">
-        <span class="empty-icon"><ReceiptText size={28} /></span>
-        <h3>清晰的记录，从第一笔开始</h3>
         <p>
           {selectedBettors.length ||
           selectedPlays.length ||
           minAmount ||
           maxAmount
             ? "暂无符合筛选条件的记录，可调整条件或重置筛选。"
-            : "本期还没有投注记录，录入后会自动汇总到这里。"}
+            : "本期暂无投注记录"}
         </p>
-        {#if !historical}<button class="text-button" onclick={onbet}
+        {#if !historical && canEnter}<button class="text-button" onclick={onbet}
             >录入第一笔投注 <ArrowRight size={15} /></button
           >{/if}
       </div>{/if}
   </div>
   <div class="table-footer">
-    <span>共 {records.total} 条记录 <i>·</i> 盘口方盈亏口径</span>
+    <span>共 {records.total} 条记录</span>
     <div class="pagination">
       <button
         class="icon-button"

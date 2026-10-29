@@ -170,9 +170,7 @@
           required
         /></label
       >
-      <p class="field-help">
-        判断全部 7 球恰好开出几种不同生肖，投注时无需逐个选择生肖。
-      </p>{/if}
+    {/if}
     {#if rule.condition === "at_least"}<label
         >最少命中数量<input
           type="number"
@@ -232,11 +230,7 @@
         /></label
       >
     </div>
-    <p class="field-help">
-      普通投注须满足数量关系；单选玩法可多选逐项拆注。“不少于 5”选 7 个拆成 21
-      注。“等于 5”未开复式时只能选 5
-      个。最多可选数量对普通和复式均生效；复式拆分后的每注也须满足规则。
-    </p>
+
     <div class="form-two">
       <label
         >含本赔率<input
@@ -269,9 +263,7 @@
             required
           /></label
         >
-        <p class="field-help">
-          两平码中奖沿用上方普通含本赔率；一号为特码、另一号为平码时使用此赔率，逐条基础注分别结算。
-        </p>{/if}{/if}
+      {/if}{/if}
     {#if rule.kind === "tail"}
       <label class="checkbox-label"
         ><input
@@ -289,11 +281,7 @@
             placeholder="最多四位小数"
           /></label
         >
-        <p class="field-help">
-          0 尾只有 10、20、30、40 四个号码。拆分后含 0
-          尾的基础注使用此赔率；与本命肖特殊赔率重叠时优先使用 0
-          尾赔率，反水仍按原规则。
-        </p>{/if}
+      {/if}
     {/if}
     {#if rule.kind !== "wave" && rule.kind !== "zodiac_count"}<label
         class="checkbox-label"
@@ -310,9 +298,7 @@
             required
           /></label
         >
-        <p class="field-help">
-          按每条基础注是否包含本命生肖分别应用，全部不命中玩法同样适用。
-        </p>{/if}
+      {/if}
       <label class="checkbox-label"
         ><input
           type="checkbox"
@@ -330,9 +316,6 @@
             required
           /></label
         >{/if}
-      <p class="field-help">
-        号码、生肖、尾数、大小、单双均按当期映射逐条判断；含本命肖对应选项的基础注采用特殊值。
-      </p>
     {/if}{#if editId}<label class="checkbox-label"
         ><input type="checkbox" bind:checked={enabled} /> 允许录入新投注</label
       >{/if}{#if editError}<div class="inline-error" role="alert">

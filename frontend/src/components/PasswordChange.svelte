@@ -63,9 +63,7 @@
 
 <section class="glass account-security">
   <div class="section-head"><h2><KeyRound size={19} />账号安全</h2></div>
-  <p class="field-help">
-    使用原密码验证身份。修改后重新登录，已激活期限保持不变；尚未使用的旧激活码失效。
-  </p>
+
   <button class="button secondary" onclick={() => (open = true)}
     >修改登录密码</button
   >
@@ -104,10 +102,7 @@
           disabled={busy}
         /></label
       >
-      <p class="field-help">
-        至少 12 个字符，最多 256
-        字节。修改成功后所有登录会话失效，请使用新密码重新登录。
-      </p>
+      <p class="field-help">修改后需重新登录，未使用的旧激活码失效。</p>
       {#if error}<p class="form-error" role="alert">{error}</p>{/if}
       <div class="modal-actions">
         <button

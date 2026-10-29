@@ -1,82 +1,67 @@
-// Supervised vocabulary suggestions only. Never install account preferences or amounts.
+// Compile labelled training vocabulary. No parser outputs or held-out data are labels.
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { parseText } from "../frontend/src/lib/text-entry";
+import type { CorpusRecord } from "./generate_text_entry";
 import type { Play } from "../frontend/src/lib/types";
 const source = process.argv[2];
 if (!source)
-  throw Error(
-    "Usage: bun scripts/train_text_entry.ts /path/to/synthetic.jsonl",
-  );
+  throw Error("Usage: bun scripts/train_text_entry.ts /path/to/train.jsonl");
 const bytes = await Bun.file(source).text();
-const records = bytes
+const records: CorpusRecord[] = bytes
   .split(/\r?\n/u)
   .filter(Boolean)
   .map((line) => JSON.parse(line));
 const defaults = await Bun.file(
   new URL("../backend/src/default-plays.json", import.meta.url),
 ).json();
-const plays: Play[] = defaults.plays.map((p: Play, i: number) => ({
-  ...p,
-  id: i + 1,
-  version: 1,
-}));
-const names: Record<string, string> = {
-  特码: "特码",
-  正码: "平码",
-  平码: "平码",
-  一肖: "一肖中",
-  三全中: "三中三",
-  三中二: "三中二",
-  二中二: "二中二",
-  尾数: "尾中",
-  波色: "波色",
-};
-const counts: Record<string, Record<string, number>> = {};
-let aligned = 0,
-  examples = 0;
+const names = new Set(defaults.plays.map((p: Play) => p.rule.name));
+const counts = new Map<string, Map<string, number>>();
+let examples = 0;
 for (const record of records) {
   if (
+    record.schema !== 2 ||
     record.is_synthetic !== true ||
-    typeof record.raw_text !== "string" ||
-    !Array.isArray(record.items)
+    record.split !== "train" ||
+    !Array.isArray(record.aliases) ||
+    !record.expected
   )
     throw Error(
-      "Only explicitly marked, labelled synthetic records are accepted",
+      "Only schema 2 labelled synthetic TRAIN records are accepted; validation/test cannot train vocabulary",
     );
-  const rows = parseText(record.raw_text, plays);
-  if (rows.length !== record.items.length || rows.some((row) => !row.playLabel))
-    continue;
-  aligned++;
-  rows.forEach((row, index) => {
-    const item = record.items[index];
-    const count = item.zodiacs?.length;
-    const name =
-      item.play === "连肖" && count >= 2 && count <= 5
-        ? ["", "", "二有", "三有", "四有", "五有"][count]
-        : names[item.play];
-    if (!name || !plays.some((p) => p.rule.name === name)) return;
-    counts[row.playLabel] ??= {};
-    counts[row.playLabel][name] = (counts[row.playLabel][name] ?? 0) + 1;
+  if (record.expected.status !== "accept") continue;
+  for (const { alias, play } of record.aliases) {
+    if (
+      !/^[\p{L}\p{N}]{1,40}$/u.test(alias) ||
+      !names.has(play) ||
+      !record.expected.items.some((item) => item.play === play)
+    )
+      throw Error("Invalid supervised alias");
+    const targets = counts.get(alias) ?? new Map<string, number>();
+    targets.set(play, (targets.get(play) ?? 0) + 1);
+    counts.set(alias, targets);
     examples++;
-  });
+  }
 }
+if (!records.length || !examples)
+  throw Error("Training corpus must contain supervised aliases");
 const candidates = Object.fromEntries(
-  Object.entries(counts)
+  [...counts]
     .sort(([a], [b]) => a.localeCompare(b, "zh-CN"))
     .map(([alias, targets]) => [
       alias,
-      Object.entries(targets)
+      [...targets]
         .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count),
+        .sort(
+          (a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"),
+        ),
     ]),
 );
 const output = {
   generated_by: "scripts/train_text_entry.ts",
-  schema: 1,
+  schema: 2,
   source_sha256: createHash("sha256").update(bytes).digest("hex"),
   records: records.length,
-  aligned_records: aligned,
+  training_split: "train",
   labelled_examples: examples,
   candidates,
 };
@@ -89,9 +74,8 @@ await Bun.write(
 console.log(
   JSON.stringify({
     records: records.length,
-    aligned_records: aligned,
     labelled_examples: examples,
-    aliases: Object.keys(candidates).length,
+    aliases: counts.size,
     automatic_binding: false,
   }),
 );

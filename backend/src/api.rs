@@ -103,6 +103,10 @@ pub fn router(state: AppState) -> Router {
             "/text-entry/preferences/{alias}",
             axum::routing::delete(crate::text_entry::forget),
         )
+        .route(
+            "/text-entry/bettor-preference",
+            post(crate::text_entry::bettor_preference),
+        )
         .route("/records/search", post(crate::records::search))
         .route("/slips/{id}", get(crate::records::detail))
         .route("/slips/{id}/cancel", post(crate::records::cancel))
@@ -131,6 +135,8 @@ pub fn router(state: AppState) -> Router {
         .route("/plays/batch", post(crate::configuration::batch))
         .route("/plays/order", put(crate::configuration::reorder))
         .route("/settings", get(settings))
+        .route("/settings/features", put(crate::features::update))
+        .route("/settings/entry-mode", put(crate::features::select_mode))
         .route("/settings/mapping", put(update_mapping))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
@@ -319,7 +325,7 @@ async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(
-        json!({"today":view(&state,today).await?,"plays":plays,"zodiacs":ZODIACS}),
+        json!({"today":view(&state,today).await?,"plays":plays,"zodiacs":ZODIACS,"features":crate::features::read(&state.pool).await?}),
     ))
 }
 async fn retry_risk(
@@ -591,7 +597,7 @@ async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     .await?;
     let mappings:Vec<Value>=rows.into_iter().map(|r|Ok(json!({"effective_date":r.try_get::<NaiveDate,_>("effective_date")?,"mapping":r.try_get::<DbJson<Mapping>,_>("mapping")?}))).collect::<Result<_,sqlx::Error>>()?;
     Ok(Json(
-        json!({"cutover_time":"06:00","mappings":mappings,"tomorrow":business_date(state.now()).succ_opt()}),
+        json!({"features":crate::features::read(&state.pool).await?,"cutover_time":"06:00","mappings":mappings,"tomorrow":business_date(state.now()).succ_opt()}),
     ))
 }
 async fn update_mapping(

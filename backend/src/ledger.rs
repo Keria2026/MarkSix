@@ -143,6 +143,9 @@ async fn mutate(
         }
         return Ok(Json(row.try_get::<DbJson<Value>, _>("response")?.0));
     }
+    if fly {
+        crate::features::require_layoffs(&mut tx).await?;
+    }
     if !accepts_entries(received, p.business_date) {
         return Err(conflict("本期已归档，不能修改金额或飞出"));
     }
@@ -275,6 +278,7 @@ pub(crate) async fn cancel_layoff(
     if row.try_get::<String, _>("status")? == "cancelled" {
         return Ok(Json(json!({"ok":true})));
     }
+    crate::features::require_layoffs(&mut tx).await?;
     if !accepts_entries(received, p.business_date) {
         return Err(conflict("本期已归档，不能撤销飞出"));
     }

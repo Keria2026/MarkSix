@@ -49,9 +49,6 @@
 </script>
 
 <Modal title="排序玩法" dismissible={!busy} {onclose}>
-  <p class="modal-description">
-    顺序同步用于录入投注及玩法导出，包含已停用玩法；不改变规则版本或已有投注。
-  </p>
   <ol class="play-order-list">
     {#each ordered as play, index (play.id)}<li>
         <span class="order-number">{index + 1}</span>

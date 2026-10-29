@@ -6,22 +6,29 @@
     title,
     onclose,
     children,
+    footer,
     wide = false,
     dismissible = true,
   }: {
     title: string;
     onclose: () => void;
     children: Snippet;
+    footer?: Snippet;
     wide?: boolean;
     dismissible?: boolean;
   } = $props();
   let dialog: HTMLDialogElement;
   $effect(() => {
+    const trigger =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     dialog.showModal();
     const unlock = lockPage(dialog);
     return () => {
       dialog.close();
       unlock();
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
     };
   });
 </script>
@@ -48,4 +55,5 @@
     >
   </div>
   <div class="modal-body">{@render children()}</div>
+  {#if footer}<div class="modal-footer">{@render footer()}</div>{/if}
 </dialog>

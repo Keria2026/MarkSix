@@ -78,9 +78,7 @@
           rows="5"
         ></textarea></label
       >
-      <p class="field-help">
-        授权绑定当前客户账号，可更换设备。新登录会使旧会话退出。截止日当期可用，过期后已有投注继续结算。
-      </p>
+
       {#if error}<div class="inline-error" role="alert">{error}</div>{/if}
       <button class="button primary" disabled={busy}
         >{#if busy}<LoaderCircle class="spin" size={18} />{:else}<ShieldCheck

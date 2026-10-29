@@ -675,6 +675,16 @@ Documentation：
 
 ## 13. AI 编码代理执行规则
 
+### 本地开发环境约束
+
+- 本项目本地开发只允许在 WSL2 Ubuntu 的 Linux 原生文件系统进行，当前目录为 `/home/ubuntu/Project/MarkSix`。
+- 禁止在 Windows checkout、PowerShell、CMD 或 `/mnt/c` 等 Windows 挂载盘直接编辑、安装依赖、构建、测试或运行项目。
+- Windows 只可用作 WSL 的启动入口或 VS Code Remote WSL／Codex 的界面；代码和工具进程必须在 WSL 内运行。若代理宿主在 Windows，必须通过 `wsl -d Ubuntu-24.04 -- bash -lc ...` 操作上述 Linux 目录。
+- Cargo、Bun、Node、Git、Docker 和 Python 均使用 WSL 内的 Linux 可执行文件。不得复用 Windows 的 node_modules、可执行文件或构建缓存。
+- Linux CI 和 Linux 容器沿用现有测试、构建与部署流程。不得因迁移开发目录更换技术栈。
+- 密码继续保存在 `~/.config/marksix/` 的未跟踪私有配置中；保留独立开发／测试数据库及现有数据卷。
+
+
 所有 AI 编码代理在执行任务前必须：
 
 1. 阅读根目录 `AGENTS.md`。

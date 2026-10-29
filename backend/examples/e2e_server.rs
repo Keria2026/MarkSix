@@ -12,6 +12,8 @@ async fn main() -> anyhow::Result<()> {
     );
     let pool = store::connect(&url).await?;
     for table in [
+        "bettor_play_preferences",
+        "module_features",
         "text_entry_preferences",
         "audit_events",
         "bet_mutations",

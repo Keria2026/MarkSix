@@ -43,7 +43,7 @@
     const requestedFormat = format;
     busy = true;
     error = "";
-    status = "正在读取账本快照…";
+    status = "正在读取账单…";
     try {
       const data = await requests.api<BettorStatement>(
         `/periods/${requestedPeriod}/bettor-export`,

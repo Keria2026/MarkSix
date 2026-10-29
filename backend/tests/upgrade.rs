@@ -37,6 +37,8 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
         "mapping_configs",
         "administrators",
         "audit_events",
+        "bettor_play_preferences",
+        "module_features",
         "text_entry_preferences",
         "_sqlx_migrations",
     ] {
@@ -80,6 +82,13 @@ async fn v1_upgrade_preserves_snapshots_and_settlement() {
     pool.close().await;
     let pool = store::connect(&url).await.unwrap(); // Apply real production migrations.
     store::require_current_schema(&pool).await.unwrap();
+    let features: (bool, bool, bool, String) = sqlx::query_as(
+        "SELECT layoffs,manual_entry,text_entry,entry_mode FROM module_features WHERE id=1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(features, (false, true, true, "manual".to_owned()));
     let latest = all.iter().last().unwrap();
     sqlx::query("UPDATE _sqlx_migrations SET checksum=? WHERE version=?")
         .bind(vec![0_u8; latest.checksum.len()])
