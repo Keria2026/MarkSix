@@ -54,6 +54,12 @@ impl Control {
         if password.len() > 256 || identity.chars().count() > 80 {
             return Err(unauthorized());
         }
+        let permit = self.gate.clone().try_acquire_owned().map_err(|_| {
+            ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "正在验证登录，请稍后重试".into(),
+            )
+        })?;
         {
             let mut attempts = self.attempts.lock().await;
             attempts.retain(|_, (t, _)| t.elapsed() < Duration::from_secs(60));
@@ -74,12 +80,6 @@ impl Control {
             }
             entry.1 += 1;
         }
-        let permit = self.gate.clone().try_acquire_owned().map_err(|_| {
-            ApiError(
-                StatusCode::TOO_MANY_REQUESTS,
-                "正在验证登录，请稍后重试".into(),
-            )
-        })?;
         let known = hash.is_some();
         let hash = hash.unwrap_or_else(|| self.dummy_hash.as_ref().clone());
         let valid = tokio::task::spawn_blocking(move || {
@@ -415,6 +415,30 @@ mod tests {
         let hash = hash_password(password.clone()).await.unwrap();
         control.verify(&name, password, Some(hash)).await.unwrap();
         assert!(username(&"😀".repeat(81)).is_err());
+    }
+    #[tokio::test]
+    async fn busy_verification_does_not_consume_login_attempts() {
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_lazy("mysql://unused:unused@127.0.0.1/unused")
+            .unwrap();
+        let control = Control::new(pool, None, false, PathBuf::new())
+            .await
+            .unwrap();
+        let permit = control.gate.acquire().await.unwrap();
+        for _ in 0..12 {
+            let result = control
+                .verify("customer", "valid-password".into(), None)
+                .await;
+            assert_eq!(result.unwrap_err().0, StatusCode::TOO_MANY_REQUESTS);
+        }
+        assert!(control.attempts.lock().await.is_empty());
+        drop(permit);
+        let password = "disposable-customer-password".to_string();
+        let hash = hash_password(password.clone()).await.unwrap();
+        control
+            .verify("customer", password, Some(hash))
+            .await
+            .unwrap();
     }
     #[test]
     fn grants_count_periods_inclusively_and_preserve_prepaid_time() {

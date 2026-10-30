@@ -465,3 +465,52 @@ test("a homophone of an unconfigured shorthand cannot split ordinary trailing wo
   expect(rows[0].source).toContain("未知要求");
   expect(compileRow(rows[0], plays, mapping).error).not.toBe("");
 });
+
+test("tail suffixes and unambiguous object categories imply the configured play", () => {
+  for (const [raw, name, selections, amount] of [
+    ["尾中0尾各100", "尾中", [0], "100"],
+    ["3尾5000", "尾中", [3], "5000"],
+    ["4尾500", "尾中", [4], "500"],
+    ["红波100", "波色", [0], "100"],
+    ["藍波各500", "波色", [1], "500"],
+    ["绿100", "波色", [2], "100"],
+    ["二尾连3尾4尾各100", "二尾连", [3, 4], "100"],
+  ] as const) {
+    const rows = parseText(raw, plays);
+    expect(rows, raw).toHaveLength(1);
+    expect(rows[0].playId, raw).toBe(id(name));
+    expect(compileRow(rows[0], plays, mapping), raw).toMatchObject({
+      error: "",
+      items: [{ selections: [...selections], amount }],
+    });
+  }
+  const rows = parseText("3尾5000、4尾500；红波100 蓝波200", plays);
+  expect(rows).toHaveLength(4);
+  expect(rows.map((r) => compileRow(r, plays, mapping).error)).toEqual([
+    "",
+    "",
+    "",
+    "",
+  ]);
+  const wave = plays.find((p) => p.rule.kind === "wave")!;
+  const ambiguous = [
+    ...plays,
+    { ...wave, id: 999, rule: { ...wave.rule, name: "另一波色" } },
+  ];
+  expect(parseText("红波100", ambiguous)[0].playId).toBe(0);
+  expect(compile("10尾各100")[0].error).toContain("范围");
+  expect(parseText("牛100", plays)[0].playId).toBe(0);
+  expect(parseText("07各100", plays)[0].playId).toBe(0);
+  for (const [kind, raw] of [
+    ["size", "大100"],
+    ["parity", "单100"],
+  ] as const) {
+    const custom = {
+      ...wave,
+      id: 998,
+      rule: { ...wave.rule, kind, name: kind },
+    };
+    const result = compileRow(parseText(raw, [custom])[0], [custom], mapping);
+    expect(result.error).toBe("");
+  }
+});

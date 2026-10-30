@@ -95,8 +95,7 @@ test("paste and validate opens one review dialog, auto-quotes edits and saves on
   await submit.click();
   await expect(dialog).toHaveCount(0);
   await expect(panel.getByLabel("投注原文")).toHaveValue("");
-  expect(requests).toHaveLength(2);
-  expect(requests[0].request_id).toBe(requests[1].request_id);
+  expect(requests).toHaveLength(1);
   expect(requests[0]).not.toHaveProperty("raw");
   expect(requests[0].text_preferences ?? []).toEqual([]);
   expect(requests[0]).toMatchObject({

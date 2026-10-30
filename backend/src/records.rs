@@ -157,6 +157,18 @@ pub(crate) async fn detail(
     .await?;
     Ok(Json(group(items)?))
 }
+pub(crate) async fn submission(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    uuid::Uuid::parse_str(&request_id).map_err(|_| conflict("提交标识不合法"))?;
+    let id: Option<String> = sqlx::query_scalar("SELECT id FROM bet_slips WHERE request_id=?")
+        .bind(request_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    Ok(Json(json!({"id":id})))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CancelInput {

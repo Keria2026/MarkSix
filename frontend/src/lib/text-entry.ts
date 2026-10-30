@@ -30,7 +30,6 @@ export interface TextDraft {
   recognized: string;
   bettor: string;
   rows: TextRow[];
-  pending: { key: string; id: string } | null;
 }
 export function newTextDraft(): TextDraft {
   return {
@@ -38,7 +37,6 @@ export function newTextDraft(): TextDraft {
     recognized: "",
     bettor: "",
     rows: [],
-    pending: null,
   };
 }
 

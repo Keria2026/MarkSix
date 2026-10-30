@@ -27,6 +27,14 @@ test("administrator records compound bets, cancels atomically, configures rules,
       })
     ).ok(),
   ).toBe(true);
+  expect(
+    (
+      await page.request.put("/api/settings/entry-mode", {
+        headers: { "X-MarkSix": "1" },
+        data: { entry_mode: "manual" },
+      })
+    ).ok(),
+  ).toBe(true);
   await page.reload();
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),

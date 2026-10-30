@@ -29,6 +29,15 @@ export function clipboardRows(
     : null;
 }
 
+export const textFingerprint = async (text: string) =>
+  [
+    ...new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
+    ),
+  ]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+
 export function watchClipboard(
   account: string,
   available: () => boolean,
@@ -41,14 +50,6 @@ export function watchClipboard(
     blocked = false;
   let recorded = "",
     timer: ReturnType<typeof setTimeout>;
-  const fingerprint = async (text: string) =>
-    [
-      ...new Uint8Array(
-        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
-      ),
-    ]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
   try {
     recorded = localStorage.getItem(storageKey) ?? "";
   } catch {
@@ -69,7 +70,7 @@ export function watchClipboard(
       const text = await navigator.clipboard.readText();
       if (disposed || document.hidden || !document.hasFocus() || !available())
         return;
-      const hash = await fingerprint(text);
+      const hash = await textFingerprint(text);
       if (disposed || document.hidden || !document.hasFocus() || !available())
         return;
       // Only the latest successfully recorded text survives a refresh.
@@ -95,15 +96,15 @@ export function watchClipboard(
   }
   window.addEventListener("focus", foreground);
   document.addEventListener("visibilitychange", foreground);
+  function rememberFingerprint(hash: string) {
+    recorded = hash;
+    localStorage.setItem(storageKey, recorded);
+  }
   return {
     check,
+    rememberFingerprint,
     async remember(text: string) {
-      recorded = await fingerprint(text);
-      try {
-        localStorage.setItem(storageKey, recorded);
-      } catch {
-        /* Keep the session fingerprint. */
-      }
+      rememberFingerprint(await textFingerprint(text));
     },
     dispose() {
       disposed = true;

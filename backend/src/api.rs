@@ -109,6 +109,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/records/search", post(crate::records::search))
         .route("/slips/{id}", get(crate::records::detail))
+        .route(
+            "/slips/submission/{request_id}",
+            get(crate::records::submission),
+        )
         .route("/slips/{id}/cancel", post(crate::records::cancel))
         .route("/periods/{id}/bettor-export", get(crate::records::export))
         .route("/bets/search", post(crate::queries::search_bets))
