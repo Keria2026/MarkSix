@@ -1,10 +1,13 @@
-import { lexicalAliases } from "./vocabulary";
+import { lexicalAliases, numericPlayName } from "./vocabulary";
 import { phoneticKey } from "./phonetics";
 
 export type TokenKind =
   | "play"
+  | "plays"
   | "object"
   | "number"
+  | "money"
+  | "summary"
   | "amount"
   | "currency"
   | "compound"
@@ -22,6 +25,7 @@ export interface Token {
   text: string;
   start: number;
   end: number;
+  labels?: string[];
 }
 
 const operators: [string, TokenKind][] = [
@@ -31,9 +35,14 @@ const operators: [string, TokenKind][] = [
   ]),
   ...[
     "各号",
+    "各个数",
+    "个数",
+    "各组",
+    "每组",
+    "各肖",
+    "各/",
     "各数",
     "各注",
-    "各组",
     "个组",
     "每个",
     "每注",
@@ -50,6 +59,8 @@ const operators: [string, TokenKind][] = [
     "/",
   ].map((s): [string, TokenKind] => [s, "amount"]),
   ["复式", "compound"],
+  ["复试", "compound"],
+  ["付", "compound"],
   ["复", "compound"],
   ["包肖", "package"],
   ["包", "package"],
@@ -58,6 +69,7 @@ const operators: [string, TokenKind][] = [
   ["中", "single"],
   ...["元", "米", "斤", "块"].map((s): [string, TokenKind] => [s, "currency"]),
   ...[
+    "一组",
     "六合彩",
     "6合采",
     "六合菜",
@@ -87,7 +99,12 @@ export function tokenize(
   }
   offsets.push(raw.length);
   const dictionary: [string, TokenKind][] = [
-    ...new Set([...playNames, ...lexicalAliases]),
+    ...new Set(
+      [...playNames, ...lexicalAliases].flatMap((name) => [
+        name,
+        numericPlayName(name),
+      ]),
+    ),
   ]
     .filter(Boolean)
     .map((name) => [name.normalize("NFKC"), "play"]);
@@ -139,12 +156,55 @@ export function tokenize(
   let cursor = 0;
   while (cursor < normalized.length) {
     const rest = normalized.slice(cursor);
+    const summary =
+      /^\d+组\s*(?:共|合计)\s*\d+(?:\.\d+)?(?:元|米|块)?(?=\s*(?:$|\r?\n))/u.exec(
+        rest,
+      )?.[0];
+    if (summary && (cursor === 0 || /[\r\n]/u.test(normalized[cursor - 1]))) {
+      tokens.push({
+        kind: "summary",
+        text: summary,
+        start: offsets[cursor],
+        end: offsets[cursor + summary.length],
+      });
+      cursor += summary.length;
+      continue;
+    }
+    const combined =
+      /^(?:[二三四五2345][有友]){2,}|^[二三四五2345]{2,}[有友]|^特平/u.exec(
+        rest,
+      )?.[0];
+    if (combined && !playNames.includes(combined)) {
+      const labels =
+        combined === "特平"
+          ? ["特码", "平码"]
+          : [...combined].flatMap((c) => {
+              const n = "二三四五".includes(c)
+                ? "二三四五".indexOf(c) + 2
+                : Number(c);
+              return n >= 2 && n <= 5 ? ["一二三四五"[n - 1] + "有"] : [];
+            });
+      const end = cursor + combined.length;
+      tokens.push({
+        kind: "plays",
+        text: combined,
+        labels: [...new Set(labels)],
+        start: offsets[cursor],
+        end: offsets[end],
+      });
+      cursor = end;
+      continue;
+    }
     const word = match(rest);
     let text: string, kind: TokenKind;
     if (word) [text, kind] = word;
     else if (/^\d/u.test(rest)) {
-      text = /^\d+/u.exec(rest)![0];
-      kind = "number";
+      const money = /^\d+(?:\.\d+)?[十百千万]/u.exec(rest);
+      text = money?.[0] ?? /^\d+/u.exec(rest)![0];
+      kind = money ? "money" : "number";
+    } else if (/^[零〇一二两三四五六七八九十百千万]/u.test(rest)) {
+      text = /^[零〇一二两三四五六七八九十百千万]+/u.exec(rest)![0];
+      kind = "money";
     } else {
       text = String.fromCodePoint(rest.codePointAt(0)!);
       kind = /[鼠牛虎兔龙蛇马羊猴鸡狗猪红蓝绿大小单双]/u.test(text)

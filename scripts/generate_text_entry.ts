@@ -486,7 +486,7 @@ export async function generateCorpus(
             String(ns[1]).padStart(2, "0") +
             "各" +
             money;
-          accept = false;
+          items = [line("特码", ns.slice(0, 2))];
           break;
         case "overlap":
           raw = "二中二" + ns[0] + "拖" + ns[0] + " " + ns[1] + "各" + money;

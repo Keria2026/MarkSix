@@ -3,12 +3,41 @@ import type { Play } from "../types";
 import type { TextPreference } from "../text-entry";
 import trained from "../generated/text-entry-candidates.json" with { type: "json" };
 
+// Numeric spelling is an orthographic variant of a configured play name.
+export function numericPlayName(name: string) {
+  return name.replace(/[一二三四五六七八九]/gu, (char) =>
+    String("一二三四五六七八九".indexOf(char) + 1),
+  );
+}
+
 // Domain meanings confirmed by the user. Exact configured names take precedence.
 const meanings: Record<string, string> = Object.fromEntries(
   Object.entries({
-    特码: ["特码", "特", "澳特"],
+    特码: ["特码", "特", "澳特", "T", "t"],
+    平码: ["平码", "平"],
+    ...Object.fromEntries(
+      [2, 3, 4, 5].map((n) => {
+        const cn = "一二三四五"[n - 1];
+        return [
+          cn + "有",
+          [
+            cn + "有",
+            cn + "友",
+            cn + "连",
+            cn + "连肖",
+            n + "有",
+            n + "友",
+            n + "连",
+            n + "连肖",
+          ],
+        ];
+      }),
+    ),
     一肖中: [
       "一肖中",
+      "一有",
+      "1有",
+      "平特",
       "平特一肖",
       "平特一肖",
       "平特肖",
@@ -16,7 +45,7 @@ const meanings: Record<string, string> = Object.fromEntries(
       "一肖",
       "肖中",
     ],
-    二中二含特: ["二中特"],
+    二中二含特: ["二中特", "二中二带特", "二中二帶特"],
     四肖中特: ["新澳门四肖", "四肖"],
   }).flatMap(([name, aliases]) => aliases.map((alias) => [alias, name])),
 );
@@ -48,6 +77,9 @@ export const lexicalAliases = [
     "尾数",
     "尾數",
     "尾",
+    "单平",
+    "4头不中",
+    "四头不中",
     "色波",
     "大小",
     "单双",
@@ -72,6 +104,7 @@ export function playCandidates(alias: string, plays: Play[]) {
         play.rule.name === meaning ||
         counts.has(play.rule.name) ||
         phoneticKey(play.rule.name) === phoneticKey(alias) ||
+        phoneticKey(numericPlayName(play.rule.name)) === phoneticKey(alias) ||
         Object.entries(meanings).some(
           ([label, name]) =>
             name === play.rule.name &&
@@ -100,7 +133,12 @@ export function resolvePlay(
   active: Play[],
   habits: TextPreference[],
 ) {
-  const exact = active.filter((p) => p.rule.name.normalize("NFKC") === label);
+  const named = active.filter((p) => p.rule.name.normalize("NFKC") === label);
+  const exact = named.length
+    ? named
+    : active.filter(
+        (p) => numericPlayName(p.rule.name) === numericPlayName(label),
+      );
   const habit = habits.find((h) => h.alias.normalize("NFKC") === label);
   let id = 0;
   if (exact.length) id = exact.length === 1 ? exact[0].id : 0;

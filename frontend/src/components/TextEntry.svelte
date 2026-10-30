@@ -18,7 +18,7 @@
   import { createRequestScope } from "../lib/requests";
   import {
     parseText,
-    compileRow,
+    compileText,
     confirmedPreferences,
     playCandidates,
   } from "../lib/text-entry";
@@ -80,7 +80,7 @@
   let rateLoadedKey = "";
   let parseRevision = $state(0);
   const genericSpecial = (label: string) =>
-    ["特码", "特", "澳特", "特码直选"].some(
+    ["特码", "特", "澳特", "特码直选", "T", "t"].some(
       (name) => phoneticKey(name) === phoneticKey(label),
     );
   const rates = $derived(boot.plays.filter(specialRatePlay));
@@ -169,14 +169,10 @@
     };
   });
 
-  const compiled = $derived(
-    draft.rows.map((row) =>
-      row.excluded
-        ? { items: [], error: "" }
-        : compileRow(row, boot.plays, today.mapping),
-    ),
+  const compiled = $derived(compileText(draft.rows, boot.plays, today.mapping));
+  const activeRows = $derived(
+    draft.rows.filter((row) => !row.excluded && !row.summary),
   );
-  const activeRows = $derived(draft.rows.filter((row) => !row.excluded));
   const items = $derived(compiled.flatMap((row) => row.items));
   let reviewContent = $state<HTMLDivElement>();
   const issues = $derived(
@@ -632,8 +628,10 @@
             <div class="text-correction">
               <div class="text-row-heading">
                 <strong
-                  >{boot.plays.find((p) => p.id === row.playId)?.rule.name ??
-                    "待确认玩法"}</strong
+                  >{row.summary
+                    ? "原文合计"
+                    : (boot.plays.find((p) => p.id === row.playId)?.rule.name ??
+                      "待确认玩法")}</strong
                 >
                 {#if row.excluded}<span class="text-row-state">不录入</span>
                 {:else if compiled[index].error || quote.error}<span
@@ -659,6 +657,7 @@
                     /></label
                   ><label
                     >对应玩法<select
+                      aria-label={`第${index + 1}项对应玩法`}
                       bind:value={row.playId}
                       onchange={(event) => {
                         row.playId = Number(event.currentTarget.value);
@@ -678,7 +677,7 @@
                   >
                 </div>{/if}
               <label
-                >投注项<textarea
+                >{row.summary ? "原文合计" : "投注项"}<textarea
                   aria-label={`第${index + 1}项投注项`}
                   bind:value={row.body}
                   oninput={(event) =>
@@ -688,53 +687,53 @@
                   aria-invalid={!!quote.error ||
                     (!!compiled[index].error &&
                       !compiled[index].error.startsWith("请确认") &&
-                      entryCents(row.amount) !== null &&
+                      (row.summary || entryCents(row.amount) !== null) &&
                       !compiled[index].error.includes("歧义"))}
                   aria-describedby={compiled[index].error || quote.error
                     ? `text-row-error-${index}`
                     : undefined}
                 ></textarea></label
               >
-              <div class="form-two">
-                <label
-                  >金额（元）<input
-                    aria-label={`第${index + 1}项金额`}
-                    bind:value={row.amount}
-                    inputmode="decimal"
-                    aria-invalid={!row.excluded &&
-                      entryCents(row.amount) === null}
-                    maxlength="15"
-                    disabled={busy}
-                  /></label
-                >
-                <label
-                  >金额含义<select
-                    aria-label={`第${index + 1}项金额含义`}
-                    bind:value={row.mode}
-                    aria-invalid={compiled[index].error.includes("歧义")}
-                    disabled={busy || !!row.marker}
+              {#if !row.summary}<div class="form-two">
+                  <label
+                    >金额（元）<input
+                      aria-label={`第${index + 1}项金额`}
+                      bind:value={row.amount}
+                      inputmode="decimal"
+                      aria-invalid={!row.excluded &&
+                        entryCents(row.amount) === null}
+                      maxlength="15"
+                      disabled={busy}
+                    /></label
                   >
-                    <option value="auto">按原文确认</option><option value="each"
-                      >每注／每号金额</option
-                    ><option value="package">每肖包号金额</option><option
-                      value="total">本片段总金额</option
+                  <label
+                    >金额含义<select
+                      aria-label={`第${index + 1}项金额含义`}
+                      bind:value={row.mode}
+                      aria-invalid={compiled[index].error.includes("歧义")}
+                      disabled={busy || !!row.marker}
                     >
-                  </select></label
-                >
-              </div>
-
+                      <option value="auto">按原文确认</option><option
+                        value="each">每注／每号金额</option
+                      ><option value="package">每肖包号金额</option><option
+                        value="total">本片段总金额</option
+                      >
+                    </select></label
+                  >
+                </div>
+              {/if}
               {#if compiled[index].error || quote.error}<p
                   id={`text-row-error-${index}`}
                   class="form-error"
                   role="alert"
                 >
                   {compiled[index].error || quote.error}
-                </p>{:else if compiled[index].items.some((item) => item.compound || item.drag || item.package_zodiacs?.length)}<p
+                </p>{:else if compiled[index].items.length}<p
                   class="text-interpretation"
                 >
                   {description(index)}
                 </p>{/if}
-              {#if !row.excluded && previewKey === key && !quote.error && !compiled[index].error}<strong
+              {#if !row.summary && !row.excluded && previewKey === key && !quote.error && !compiled[index].error}<strong
                   >{quote.units} 注 · 本金 {money(quote.stake)}</strong
                 >{/if}
             </div>

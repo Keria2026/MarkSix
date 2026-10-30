@@ -1,10 +1,10 @@
 {
   "generated_by": "scripts/train_text_entry.ts",
   "schema": 2,
-  "source_sha256": "3939df8f5baa100ac98f5cccb242a2636c32bfcaa3e65e649978bdc310d8a9b1",
+  "source_sha256": "c5282b47a794b6572ff6ca7be2ea8b7ced3a357b47ec185472040b877f0a204b",
   "records": 3500,
   "training_split": "train",
-  "labelled_examples": 870,
+  "labelled_examples": 905,
   "candidates": {
     "澳特": [
       {
@@ -33,7 +33,7 @@
     "特": [
       {
         "name": "特码",
-        "count": 332
+        "count": 367
       }
     ],
     "一宵": [
