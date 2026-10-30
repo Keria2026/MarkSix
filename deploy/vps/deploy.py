@@ -153,15 +153,7 @@ def main():
         parser.error("A complete Git commit SHA is required")
     shared = args.shared.resolve()
     if not (shared / ".env").is_file():
-        subprocess.run(
-            [
-                sys.executable,
-                str(ops.RELEASE / "configure.py"),
-                "--shared",
-                str(shared),
-            ],
-            check=True,
-        )
+        raise RuntimeError("Run configure.py with your customer and management domains first")
     ops.configuration(shared)
     package = ops.RELEASE.parent
     manifest = json.loads((package / "manifest.json").read_text())

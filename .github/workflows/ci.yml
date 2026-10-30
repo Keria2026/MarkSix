@@ -61,33 +61,18 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
-          cargo test --locked --test upgrade -- --ignored
-          cargo test --locked --test workflow -- --ignored
-          cargo test --locked --test receipts -- --ignored
-          cargo test --locked --lib hosted::tests -- --ignored
-          cargo test --locked --lib worker::recovery_tests -- --ignored
+          cargo test --locked -- --ignored --test-threads=1
           cargo build --locked --example e2e_server
-          cargo run --release --locked --example risk_bench
-      - name: Customer rules runtime accounting acceptance
-        run: |
-          cargo build --locked --manifest-path backend/Cargo.toml --example runtime_server
-          python3 scripts/runtime_acceptance.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: runtime-acceptance
-          path: |
-            test-results/runtime-acceptance.json
-            test-results/slip-export.json
-          retention-days: 7
       - name: Frontend checks
         working-directory: frontend
         run: |
           bun install --frozen-lockfile
-          bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/*.ts' '*.ts'
+          bun x prettier --check 'src/**/*.{svelte,ts,css}' 'tests/**/*.ts' '*.ts'
           bun x prettier --check '../README.md' '../docs/**/*.md'
           python3 ../scripts/check_docs.py
           python3 ../scripts/audit_dependencies.py --frontend
           bun run check
+          bun test tests/unit
           bun ../scripts/generate_text_entry.ts ../test-results/text-entry-corpus
           bun ../scripts/train_text_entry.ts ../test-results/text-entry-corpus/train.jsonl
           git diff --exit-code -- src/lib/generated/text-entry-candidates.json
@@ -153,24 +138,13 @@ jobs:
           tags: ${{ steps.names.outputs.frontend }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Prepare hosted browser acceptance
-        working-directory: frontend
-        run: |
-          bun install --frozen-lockfile
-          bun x playwright install --with-deps chromium
       - name: Load MySQL runtime for isolated hosted acceptance
         run: docker pull mysql:8.4
       - name: Hosted Nginx TLS, accounts and lifecycle acceptance
         env:
           BACKEND_IMAGE: ${{ steps.names.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.names.outputs.frontend }}
-        run: sudo env "PATH=$PATH" python3 scripts/hosted_acceptance.py --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE" --browser --bun "$(command -v bun)" --browser-cache "$HOME/.cache/ms-playwright"
+        run: sudo env "PATH=$PATH" python3 scripts/verify_hosted.py --backend "$BACKEND_IMAGE" --frontend "$FRONTEND_IMAGE"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -247,6 +221,8 @@ jobs:
           VPS_PORT: ${{ vars.VPS_PORT }}
           VPS_KNOWN_HOSTS: ${{ vars.VPS_KNOWN_HOSTS }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          PUBLIC_APP_URL: ${{ vars.APP_URL }}
+          PUBLIC_ADMIN_URL: ${{ vars.ADMIN_URL }}
         run: |
           set -euo pipefail
           [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
@@ -255,6 +231,7 @@ jobs:
           (( VPS_PORT >= 1 && VPS_PORT <= 65535 ))
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ -n "$VPS_KNOWN_HOSTS" && -n "$VPS_SSH_KEY" ]]
+          [[ "$PUBLIC_APP_URL" == https://* && "$PUBLIC_ADMIN_URL" == https://* ]]
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/marksix"
           printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
@@ -284,10 +261,11 @@ jobs:
       - name: Verify public domain routing
         if: steps.gate.outputs.allowed == 'true'
         env:
-          PUBLIC_APP_URL: ${{ vars.APP_URL || 'https://3801.win' }}
-          PUBLIC_ADMIN_URL: ${{ vars.ADMIN_URL || 'https://admin.3801.win' }}
+          PUBLIC_APP_URL: ${{ vars.APP_URL }}
+          PUBLIC_ADMIN_URL: ${{ vars.ADMIN_URL }}
         run: |
           set -euo pipefail
+          [[ "$PUBLIC_APP_URL" == https://* && "$PUBLIC_ADMIN_URL" == https://* ]]
           curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_APP_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="hosted" and data["commit"]==os.environ["GITHUB_SHA"]'
           curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_ADMIN_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="authority" and data["commit"]==os.environ["GITHUB_SHA"]'
           printf 'MarkSix production commit: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

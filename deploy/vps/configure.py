@@ -11,8 +11,8 @@ import secrets
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shared", type=Path, default=Path("/opt/marksix/shared"))
-    parser.add_argument("--domain", default="3801.win")
-    parser.add_argument("--admin-domain", default="admin.3801.win")
+    parser.add_argument("--domain", required=True)
+    parser.add_argument("--admin-domain", required=True)
     parser.add_argument("--email", default="")
     parser.add_argument("--owner", default="owner")
     args = parser.parse_args()

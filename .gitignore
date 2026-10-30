@@ -15,8 +15,6 @@ backups/
 
 __pycache__/
 
-# Local Impeccable runtime; durable workflow settings remain tracked.
-/.impeccable/live/
-/.impeccable/config.local.json
-/.impeccable/hook.cache.json
-/.impeccable/hook.pending.json
+# Local editor and design tool state
+.vscode/
+.impeccable/

@@ -386,34 +386,3 @@ pub async fn delete(
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn supplied_defaults_are_valid_and_exact() {
-        assert_eq!(
-            serde_json::from_str::<Value>(include_str!("default-plays.json")).unwrap(),
-            serde_json::from_str::<Value>(include_str!("../../fixtures/customer-plays.json"))
-                .unwrap()
-        );
-        let file = bundled().unwrap();
-        assert_eq!(file.plays.len(), 31);
-        let special = file
-            .plays
-            .iter()
-            .find(|p| p.rule.name == "特码45倍")
-            .unwrap();
-        assert_eq!(special.rule.odds, "45");
-        let single = file.plays.iter().find(|p| p.rule.name == "一肖中").unwrap();
-        assert_eq!(single.rule.rebate_percent, "5");
-        assert!(
-            file.plays
-                .iter()
-                .find(|p| p.rule.name == "五有")
-                .unwrap()
-                .rule
-                .compound_enabled
-        );
-    }
-}

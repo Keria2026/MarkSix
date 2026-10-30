@@ -81,11 +81,7 @@ def main():
         "nginx-main.conf",
     ]:
         shutil.copyfile(ROOT / "deploy/vps" / name, output / "hosted" / name)
-    shutil.copyfile(ROOT / "docs/deployment/vps.md", output / "hosted/README.md")
-    (output / "fixtures").mkdir()
-    shutil.copyfile(
-        ROOT / "fixtures/customer-plays.json", output / "fixtures/customer-plays.json"
-    )
+    shutil.copyfile(ROOT / "docs/human/deployment.md", output / "hosted/README.md")
     archive = output / "images.tar.gz"
     image_bytes = 0
     with subprocess.Popen(["docker", "save", *tags], stdout=subprocess.PIPE) as process:

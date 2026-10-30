@@ -1,19 +1,14 @@
-# 文档索引
+# 项目文档
 
-| 文档                                       | 负责内容                               |
-| ------------------------------------------ | -------------------------------------- |
-| [产品记录](../PRODUCT.md)                  | 用户、核心任务、操作流程及产品约束     |
-| [设计规范](../DESIGN.md)                   | 用户提供的视觉规范与 live 迭代依据     |
-| [业务规则](guides/betting.md)              | 归期、拆注、金额、结算、账目与页面行为 |
-| [领域术语](architecture/domain.md)         | 账目和投注模型的统一含义               |
-| [系统架构](architecture/system.md)         | 服务边界、隔离、并发、事务与数据升级   |
-| [账号授权](guides/accounts.md)             | 激活、续期、会话、改密与删除账号       |
-| [开发指南](getting-started/development.md) | 环境、代码职责和执行命令               |
-| [测试门槛](guides/testing.md)              | 必须覆盖的验证与发布条件               |
-| [本次验证](guides/verification.md)         | 本轮实际执行结果及未验收范围           |
-| [部署运维](deployment/vps.md)              | VPS、CI/CD、备份、恢复、回退与日志     |
-| [文本录注](guides/text-entry-proposal.md)  | 第一版语法、整单确认、习惯学习与接口   |
+## 阅读与使用
 
-当前代码与部署契约以各文档描述的现状为准。[AGENTS.md](../AGENTS.md) 的 PostgreSQL、SvelteKit、apps 目录及自动契约生成属于目标规范；本次功能迭代保留现有 MySQL、Svelte / Vite、backend / frontend 和 API 契约。数据库或框架迁移须单独评估。
+| 文档                              | 内容                           |
+| --------------------------------- | ------------------------------ |
+| [系统架构](human/architecture.md) | 运行拓扑、职责、数据与信任边界 |
+| [领域模型](human/domain.md)       | 核心概念及其关系               |
+| [本地开发](human/development.md)  | 工具、配置、运行和测试         |
+| [VPS 部署](human/deployment.md)   | 自有服务器、域名、发布与恢复   |
 
-历史版本和旧验证记录由 Git 历史保存。工件中的部署指南由 `docs/deployment/vps.md` 复制生成，不另维护副本。
+## AI 项目上下文
+
+[阅读入口](ai/README.md) · [源码地图](ai/codebase.md) · [数据与一致性](ai/data.md) · [文本录注](ai/text-entry.md) · [测试边界](ai/testing.md) · [维护约束](ai/maintenance.md) · [界面体系](ai/interface.md)
