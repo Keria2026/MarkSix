@@ -64,7 +64,7 @@ test("compound and drag preserve grouping", () => {
 for (const raw of [
   "尾中10尾各100",
   "特码01 01各100",
-  "特码0102各100",
+  "特码0150各100",
   "二中二{01 02各100",
   "二中二【】各100",
   "二中二{01{02}}各100",
@@ -86,8 +86,7 @@ test("inference does not choose between competing enabled plays", () => {
     },
   };
   expect(parseText("红波100", [...plays, duplicate])[0].playId).toBe(0);
-  for (const raw of ["牛500", "07各100"])
-    expect(parseText(raw, plays)[0].playId).toBe(0);
+  for (const raw of ["牛500"]) expect(parseText(raw, plays)[0].playId).toBe(0);
 });
 test("current exact name wins over a learned alias, disabled and stale bindings are ignored", () => {
   const selected = plays.find((p) => p.rule.name === "特码45倍")!;

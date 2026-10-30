@@ -9,6 +9,7 @@ export interface TextPreference {
   amount_mode: AmountMode;
 }
 export interface TextRow {
+  summary?: boolean;
   key: string;
   source: string;
   start: number;
@@ -41,7 +42,7 @@ export function newTextDraft(): TextDraft {
 }
 
 export { parseText } from "./text-entry/parser";
-export { compileRow } from "./text-entry/compiler";
+export { compileRow, compileText } from "./text-entry/compiler";
 export type { CompiledRow } from "./text-entry/compiler";
 
 export function confirmedPreferences(
