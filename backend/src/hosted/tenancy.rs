@@ -181,14 +181,6 @@ impl Registry {
         self.states.lock().await.insert(a.id.clone(), entry);
         Ok(lease)
     }
-    #[cfg(test)]
-    pub async fn state(&self, a: &Account) -> ApiResult<AppState> {
-        Ok(self.lease(a).await?.state.clone())
-    }
-    #[cfg(test)]
-    pub async fn cached(&self) -> usize {
-        self.states.lock().await.len()
-    }
     pub async fn synchronize_admin(&self, a: &Account, state: &AppState) -> ApiResult<()> {
         sqlx::query("UPDATE administrators SET username=?,password_hash=? WHERE id=1")
             .bind(&a.username)

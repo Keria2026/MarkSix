@@ -1,6 +1,0 @@
-{
-  "terminal.integrated.defaultProfile.linux": "bash",
-  "terminal.integrated.cwd": "${workspaceFolder}",
-  "files.eol": "\n",
-  "git.path": "/usr/bin/git"
-}
