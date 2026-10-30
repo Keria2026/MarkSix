@@ -61,6 +61,20 @@ export function parseText(
   function context(label: string): Context {
     return resolvePlay(label, active, habits);
   }
+  function infer(kind: "tail" | "wave" | "size" | "parity") {
+    const current = active.find((p) => p.id === segment.context.id);
+    if (current?.rule.kind === kind) return;
+    const candidates = active.filter(
+      (p) => p.rule.kind === kind && p.rule.quantity === 1,
+    );
+    segment.context = {
+      label: { tail: "尾数", wave: "波色", size: "大小", parity: "单双" }[
+        kind as "tail" | "wave" | "size" | "parity"
+      ],
+      id: candidates.length === 1 ? candidates[0].id : 0,
+      mode: "auto",
+    };
+  }
   function emit(end: number) {
     const hasSelections = segment.content.some(
       (t) => t.kind === "object" || t.kind === "number",
@@ -171,6 +185,24 @@ export function parseText(
         continue;
       }
     }
+    // A tail suffix belongs to the preceding selection, including linked tails.
+    if (
+      token.kind === "play" &&
+      ["尾", "尾数", "尾數"].includes(token.text) &&
+      substantive().at(-1)?.kind === "number"
+    ) {
+      const selected = active.find((p) => p.id === segment.context.id);
+      if (!segment.explicitPlay || selected?.rule.kind === "tail") {
+        if (!segment.explicitPlay) infer("tail");
+        segment.content.push({ ...token, kind: "object", text: "尾" });
+        continue;
+      }
+    }
+    if (!segment.explicitPlay && token.kind === "object") {
+      if (/[红蓝绿]/u.test(token.text)) infer("wave");
+      else if (/[大小]/u.test(token.text)) infer("size");
+      else if (/[单双]/u.test(token.text)) infer("parity");
+    }
     if (token.kind === "play") {
       // A new explicit play interrupts an incomplete record. An object before its
       // first play is retained, so 牛特500 is assembled as one semantic record.
@@ -259,12 +291,14 @@ export function parseText(
       const afterGroup =
         meaningful.at(-1)?.kind === "group-close" && Number(token.text) > 49;
       const bareAfterZodiac =
-        previous?.kind === "object" && zodiac.test(previous.text);
+        previous?.kind === "object" &&
+        /[鼠牛虎兔龙蛇马羊猴鸡狗猪红蓝绿大小单双尾波]/u.test(previous.text);
       const money = readAmount(i);
       const currency = money && tokens[money.last].kind === "currency";
       if (
         money &&
         !segment.amount &&
+        !["尾", "尾数", "尾數"].includes(tokens[next]?.text) &&
         (bareAfterZodiac || afterGroup || currency)
       ) {
         segment.amount = money.amount;

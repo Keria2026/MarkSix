@@ -54,6 +54,7 @@ const operators: [string, TokenKind][] = [
   ["包肖", "package"],
   ["包", "package"],
   ["拖", "drag"],
+  ["波", "object"],
   ["中", "single"],
   ...["元", "米", "斤", "块"].map((s): [string, TokenKind] => [s, "currency"]),
   ...[

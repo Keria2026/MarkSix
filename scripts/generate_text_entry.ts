@@ -150,6 +150,8 @@ export async function generateCorpus(
     "phonetic-drag",
     "mixed-brackets",
     "fee-name",
+    "tail-short",
+    "wave-short",
   ];
   for (const [split, target, baseStyle] of splits) {
     let attempts = 0;
@@ -397,6 +399,14 @@ export async function generateCorpus(
             "各" +
             money;
           items = [line("特码45倍", [ns[0]])];
+          break;
+        case "tail-short":
+          raw = (ns[0] % 10) + "尾" + headerGap + money;
+          items = [line("尾中", [ns[0] % 10])];
+          break;
+        case "wave-short":
+          raw = ["紅波", "藍波", "綠波"][z[0] % 3] + headerGap + money;
+          items = [line("波色", [z[0] % 3])];
           break;
         case "four-special":
           raw = "新澳门四肖" + headerGap + ztext(z.slice(0, 4)) + money + "米";

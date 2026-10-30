@@ -11,6 +11,7 @@
   import Modal from "./Modal.svelte";
   import { clipboardRows, watchClipboard } from "../lib/text-entry/clipboard";
   import { phoneticKey } from "../lib/text-entry/phonetics";
+  import { textSubmission } from "../lib/text-entry/submission";
   import { specialRatePlay } from "../lib/features";
   import { money, label, entryCents } from "../lib/types";
   import type { Bootstrap, Period, api as Api } from "../lib/types";
@@ -268,11 +269,20 @@
   }
   let clipboard: ReturnType<typeof watchClipboard> | undefined;
   let destroyed = false;
+  let recoveringSubmission = $state(true);
+  const submissions = untrack(() =>
+    textSubmission(
+      account,
+      (path, options) => requests.api(path, options),
+      (hash) => clipboard?.rememberFingerprint(hash),
+    ),
+  );
   onMount(() => {
     clipboard = watchClipboard(
       account,
       () =>
         preferencesReady &&
+        !recoveringSubmission &&
         !busy &&
         !reviewOpen &&
         !draft.raw.trim() &&
@@ -291,9 +301,17 @@
       },
       notify,
     );
-    void loadPreferences().then(() => {
+    void (async () => {
+      await loadPreferences();
+      try {
+        await submissions.recover();
+      } catch (e) {
+        error = fail(e);
+      } finally {
+        recoveringSubmission = false;
+      }
       if (!destroyed) void clipboard?.check();
-    });
+    })();
     return () => {
       destroyed = true;
       clipboard?.dispose();
@@ -431,25 +449,21 @@
       ...(bettor_preference ? { bettor_preference } : {}),
       ...(text_preferences.length ? { text_preferences } : {}),
     };
-    const bodyKey = JSON.stringify(body);
-    if (!draft.pending || draft.pending.key !== bodyKey)
-      draft.pending = { key: bodyKey, id: crypto.randomUUID() };
     busy = true;
     reviewError = "";
     try {
-      await requests.api("/slips", {
-        method: "POST",
-        body: JSON.stringify({ ...body, request_id: draft.pending.id }),
-      });
-      await clipboard?.remember(draft.raw).catch(() => {});
+      const result = await submissions.submit(body, draft.raw);
       draft.raw = "";
       draft.recognized = "";
       draft.rows = [];
-      draft.pending = null;
       preview = null;
       previewKey = "";
       reviewOpen = false;
-      notify("整份文本已作为一张投注单入账");
+      notify(
+        result.replayed
+          ? "已找到上一笔投注，本次未新增，请在投注记录中核对"
+          : "整份文本已作为一张投注单入账",
+      );
       await loadPreferences();
       await onrecorded();
     } catch (e) {
