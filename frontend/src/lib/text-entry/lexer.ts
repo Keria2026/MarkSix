@@ -1,3 +1,5 @@
+import { monetaryLiteral } from "./amount";
+import { summaryPattern } from "./summary";
 import { lexicalAliases, numericPlayName } from "./vocabulary";
 import { phoneticKey } from "./phonetics";
 
@@ -39,6 +41,8 @@ const operators: [string, TokenKind][] = [
     "个数",
     "各组",
     "每组",
+    "一组",
+    "1组",
     "各肖",
     "各/",
     "各数",
@@ -69,7 +73,6 @@ const operators: [string, TokenKind][] = [
   ["中", "single"],
   ...["元", "米", "斤", "块"].map((s): [string, TokenKind] => [s, "currency"]),
   ...[
-    "一组",
     "六合彩",
     "6合采",
     "六合菜",
@@ -136,6 +139,10 @@ export function tokenize(
     for (const length of lengths) {
       if (length > rest.length) continue;
       const input = rest.slice(0, length);
+      // A short exact play followed by a zodiac takes priority over a longer
+      // alias/homophone that would consume the zodiac (特马 / 平马).
+      if (/^[特平]马/u.test(input) && length > 1 && !playNames.includes(input))
+        continue;
       const exact = dictionary.find(([name]) => name === input);
       if (exact) return [...exact, length];
       const matches = phonetic.get(sound(input));
@@ -152,15 +159,26 @@ export function tokenize(
       if (names.size === 1) return [matches[0][0], kind, length];
     }
   }
+  const spaced = dictionary
+    .filter(([name]) => name.length > 1 && !/\d{2}/u.test(name))
+    .sort((a, b) => b[0].length - a[0].length)
+    .map(([name, kind]) => ({
+      name,
+      kind,
+      pattern: new RegExp(
+        "^" +
+          [...name]
+            .map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+            .join("\\s*"),
+        "u",
+      ),
+    }));
   const tokens: Token[] = [];
   let cursor = 0;
   while (cursor < normalized.length) {
     const rest = normalized.slice(cursor);
-    const summary =
-      /^\d+组\s*(?:共|合计)\s*\d+(?:\.\d+)?(?:元|米|块)?(?=\s*(?:$|\r?\n))/u.exec(
-        rest,
-      )?.[0];
-    if (summary && (cursor === 0 || /[\r\n]/u.test(normalized[cursor - 1]))) {
+    const summary = summaryPattern.exec(rest)?.[0];
+    if (summary) {
       tokens.push({
         kind: "summary",
         text: summary,
@@ -171,12 +189,12 @@ export function tokenize(
       continue;
     }
     const combined =
-      /^(?:[二三四五2345][有友]){2,}|^[二三四五2345]{2,}[有友]|^特平/u.exec(
+      /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[./、,]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
         rest,
       )?.[0];
     if (combined && !playNames.includes(combined)) {
       const labels =
-        combined === "特平"
+        combined.replace(/\s/gu, "") === "特平"
           ? ["特码", "平码"]
           : [...combined].flatMap((c) => {
               const n = "二三四五".includes(c)
@@ -195,16 +213,51 @@ export function tokenize(
       cursor = end;
       continue;
     }
-    const word = match(rest);
+    const exactSpaced = spaced.find((entry) => {
+      const m = entry.pattern.exec(rest)?.[0];
+      return (
+        m &&
+        /\s/u.test(m) &&
+        !(
+          /^[特平]马/u.test(m.replace(/\s/gu, "")) &&
+          !playNames.includes(entry.name)
+        )
+      );
+    });
+    const consumed = exactSpaced?.pattern.exec(rest)?.[0];
+    const word =
+      consumed && exactSpaced
+        ? ([exactSpaced.name, exactSpaced.kind, consumed.length] as [
+            string,
+            TokenKind,
+            number,
+          ])
+        : match(rest);
     let text: string, kind: TokenKind;
     if (word) [text, kind] = word;
     else if (/^\d/u.test(rest)) {
-      const money = /^\d+(?:\.\d+)?[十百千万]/u.exec(rest);
+      const candidate = /^\d+(?:\.\d+)?[十百千万]/u.exec(rest);
+      // A number immediately before 十不中 is a selection, not a multiple of ten.
+      const money =
+        candidate && match(rest.slice(candidate[0].length - 1))?.[1] !== "play"
+          ? candidate
+          : null;
       text = money?.[0] ?? /^\d+/u.exec(rest)![0];
       kind = money ? "money" : "number";
     } else if (/^[零〇一二两三四五六七八九十百千万]/u.test(rest)) {
       text = /^[零〇一二两三四五六七八九十百千万]+/u.exec(rest)![0];
-      kind = "money";
+      for (let j = 1; j < text.length; j++) {
+        if (
+          match(rest.slice(j))?.[1] === "play" &&
+          monetaryLiteral(text.slice(0, j)) !== null
+        ) {
+          text = text.slice(0, j);
+          break;
+        }
+      }
+      const value = monetaryLiteral(text);
+      kind = value === null ? "money" : "number";
+      // Consumed length remains based on the original Chinese text.
     } else {
       text = String.fromCodePoint(rest.codePointAt(0)!);
       kind = /[鼠牛虎兔龙蛇马羊猴鸡狗猪红蓝绿大小单双]/u.test(text)
@@ -220,7 +273,14 @@ export function tokenize(
     const end = cursor + (word?.[2] ?? text.length);
     tokens.push({
       kind,
-      text: kind === "currency" ? "元" : text,
+      text:
+        kind === "currency"
+          ? "元"
+          : text === "1组"
+            ? "一组"
+            : kind === "number"
+              ? (monetaryLiteral(text) ?? text)
+              : text,
       start: offsets[cursor],
       end: offsets[end],
     });

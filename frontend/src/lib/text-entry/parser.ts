@@ -45,52 +45,39 @@ export function parseText(
   );
   // A standalone non-business heading stays in the source span, but does not
   // become a selection. Unknown text inside a bet remains an error.
-  const firstBusiness =
-    tokens.find((t) =>
-      [
-        "play",
-        "plays",
-        "number",
-        "money",
-        "amount",
-        "drag",
-        "compound",
-      ].includes(t.kind),
-    )?.start ?? raw.length;
-  const headings = [...raw.matchAll(/^[^\r\n]+/gmu)].filter((line) => {
-    if (line.index! >= firstBusiness) return false;
+  // Only leading standalone headings are remarks. Unknown text after a bet
+  // remains financial input that must be corrected.
+  const headings: { start: number; end: number }[] = [];
+  for (const line of raw.matchAll(/^[^\r\n]+/gmu)) {
     const parts = tokens.filter(
       (t) => t.start >= line.index! && t.end <= line.index! + line[0].length,
     );
-    return (
-      parts.some((t) => t.kind === "unknown") &&
-      !parts.some((t) =>
-        [
-          "play",
-          "plays",
-          "number",
-          "money",
-          "amount",
-          "drag",
-          "compound",
-        ].includes(t.kind),
+    if (!parts.some((t) => t.kind === "unknown")) break;
+    if (
+      parts.some((t) =>
+        ["amount", "currency", "drag", "compound", "summary"].includes(t.kind),
       )
-    );
-  });
+    )
+      break;
+    if (
+      /[鼠牛虎兔龙蛇马羊猴鸡狗猪]/u.test(line[0]) &&
+      parts.some((t) => ["play", "plays", "number", "money"].includes(t.kind))
+    )
+      break;
+    headings.push({ start: line.index!, end: line.index! + line[0].length });
+  }
   tokens = tokens.filter(
-    (t) =>
-      !headings.some(
-        (line) =>
-          t.start >= line.index! && t.end <= line.index! + line[0].length,
-      ),
+    (t) => !headings.some((h) => t.start >= h.start && t.end <= h.end),
   );
-  // A name followed by sentence punctuation before the first business field.
   const nameEnd = tokens.findIndex(
-    (t) => t.kind === "separator" && /[。.,，]/u.test(t.text),
+    (t) => t.kind === "separator" && /[。.,，:：]/u.test(t.text),
   );
   if (
     nameEnd > 0 &&
-    tokens.slice(0, nameEnd).every((t) => t.kind === "unknown")
+    tokens.slice(0, nameEnd).some((t) => t.kind === "unknown") &&
+    !tokens
+      .slice(0, nameEnd)
+      .some((t) => ["amount", "currency", "drag", "compound"].includes(t.kind))
   )
     tokens.splice(0, nameEnd + 1);
   const rows: TextRow[] = [];
@@ -146,7 +133,14 @@ export function parseText(
       .join("")
       .replace(/(?:复式[\s,，]*){2,}/gu, "复式 ")
       .replace(/^[\s:：,，;；.。]+|[\s,，;；.。]+$/gu, "");
+    const implicitSpecial =
+      ["各肖", "各数"].includes(segment.marker) && !segment.explicitPlay;
     if (segment.explicitPlay || hasSelections || segment.amount) {
+      if (implicitSpecial) {
+        segment.context = context("特码");
+        segment.contexts = [];
+        segment.compound = false;
+      }
       if (
         (segment.compound ||
           segment.contexts.some((c) => c.label.endsWith("有"))) &&
@@ -167,14 +161,12 @@ export function parseText(
         )
       )
         segment.context = context("特码");
-      if (segment.marker === "各肖" && !segment.explicitPlay) {
-        segment.context = empty();
-        segment.contexts = [];
-      }
       // An immediately repeated compound selection block can specify a second
       // linked play and amount without restating its candidates.
       if (
         !hasSelections &&
+        segment.explicitPlay &&
+        substantive().every((t) => t.kind === "compound") &&
         segment.amount &&
         previousBody.includes("复式") &&
         active.find((p) => p.id === segment.context.id)?.rule.kind === "zodiac"
@@ -183,6 +175,7 @@ export function parseText(
       const currentRule = active.find((p) => p.id === segment.context.id)?.rule;
       if (
         !hasSelections &&
+        substantive().length === 0 &&
         currentRule?.kind === "zodiac_count" &&
         currentRule.zodiac_count
       )
@@ -196,13 +189,13 @@ export function parseText(
           source: raw.slice(start, end),
           start,
           end,
-          playLabel: selected.label,
+          playLabel: implicitSpecial ? "" : selected.label,
           playId: selected.id,
           body,
           amount: segment.amount,
           marker: segment.marker,
           mode: selected.mode,
-          customAlias: !selected.label,
+          customAlias: implicitSpecial || !selected.label,
           objectBeforePlay: segment.objectBeforePlay,
         });
       previousBody = body;
@@ -241,9 +234,23 @@ export function parseText(
     while (tokens[index]?.kind === "separator") index++;
     return index;
   }
+  function followedByListAmount(index: number) {
+    // An explicit trailing amount takes precedence over dot-amount shorthand.
+    // Keep newlines as record boundaries when looking beyond another number.
+    let i = nextSignificant(index + 1);
+    while (tokens[i]?.kind === "number") {
+      i++;
+      while (tokens[i]?.kind === "separator" && !/[\r\n]/u.test(tokens[i].text))
+        i++;
+    }
+    return tokens[i]?.kind === "amount" && readAmount(i + 1) !== null;
+  }
   function readAmount(index: number): { amount: string; last: number } | null {
     let i = index;
-    while (tokens[i]?.kind === "separator" && /^\s+$/u.test(tokens[i].text))
+    while (
+      tokens[i]?.kind === "separator" &&
+      /^[\s:：]+$/u.test(tokens[i].text)
+    )
       i++;
     while (tokens[i]?.kind === "amount") {
       i = nextSignificant(i + 1);
@@ -263,7 +270,13 @@ export function parseText(
     if (tokens[currency]?.kind === "currency") i = currency;
     const suffix = nextSignificant(i + 1);
     if (tokens[suffix]?.text === "一组") i = suffix;
-    return { amount: monetaryLiteral(amount) ?? amount, last: i };
+    return {
+      amount: (monetaryLiteral(amount) ?? amount).replace(
+        /(\.\d*?[1-9])0+$|\.0+$/u,
+        "$1",
+      ),
+      last: i,
+    };
   }
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -370,7 +383,12 @@ export function parseText(
         continue;
       // A new explicit play interrupts an incomplete record. An object before its
       // first play is retained, so 牛特500 is assembled as one semantic record.
-      if (segment.explicitPlay) emit(token.start);
+      const flatLinkedQualifier =
+        segment.context.label === "平特" &&
+        !hasObjects() &&
+        !segment.amount &&
+        token.labels?.every((label) => label.endsWith("有"));
+      if (segment.explicitPlay && !flatLinkedQualifier) emit(token.start);
       segment.compound = segment.content.some((t) => t.kind === "compound");
       segment.objectBeforePlay = hasObjects();
       segment.contexts = token.labels?.map(context) ?? [];
@@ -498,7 +516,8 @@ export function parseText(
           (Number(token.text) > 49 &&
             hasObjects() &&
             tokens[i - 1]?.kind === "separator" &&
-            tokens[i - 1]?.text === ".") ||
+            tokens[i - 1]?.text === "." &&
+            !followedByListAmount(i)) ||
           (hasObjects() && tokens[i - 1]?.kind === "play"))
       ) {
         segment.amount = money.amount;

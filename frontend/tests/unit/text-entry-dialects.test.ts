@@ -121,9 +121,9 @@ test("bare numbers, leading zeros and fixed two-digit chunks use confirmed conve
       compileText(parseText(raw, plays), plays, mapping).some((r) => r.error),
     ).toBe(true);
 });
-test("each-zodiac retains a choice between single-zodiac and packaged numbers", () => {
+test("each-zodiac defaults to special packages and remains editable", () => {
   const rows = parseText("牛龙各肖80", plays);
-  expect(rows[0].playId).toBe(0);
+  expect(rows[0].playId).toBe(plays.find((p) => p.rule.name === "特码")!.id);
   expect(rows[0].customAlias).toBe(true);
   rows[0].playId = plays.find((p) => p.rule.name === "一肖中")!.id;
   const single = compileRow(rows[0], plays, mapping);

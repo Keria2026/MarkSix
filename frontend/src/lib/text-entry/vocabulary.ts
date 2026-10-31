@@ -1,3 +1,4 @@
+import { monetaryLiteral } from "./amount";
 import { phoneticKey } from "./phonetics";
 import type { Play } from "../types";
 import type { TextPreference } from "../text-entry";
@@ -5,8 +6,9 @@ import trained from "../generated/text-entry-candidates.json" with { type: "json
 
 // Numeric spelling is an orthographic variant of a configured play name.
 export function numericPlayName(name: string) {
-  return name.replace(/[一二三四五六七八九]/gu, (char) =>
-    String("一二三四五六七八九".indexOf(char) + 1),
+  return name.replace(
+    /[零〇一二两三四五六七八九十百千万]+/gu,
+    (text) => monetaryLiteral(text) ?? text,
   );
 }
 
