@@ -41,6 +41,8 @@ const operators: [string, TokenKind][] = [
     "个数",
     "各组",
     "每组",
+    "一组",
+    "1组",
     "各肖",
     "各/",
     "各数",
@@ -71,7 +73,6 @@ const operators: [string, TokenKind][] = [
   ["中", "single"],
   ...["元", "米", "斤", "块"].map((s): [string, TokenKind] => [s, "currency"]),
   ...[
-    "一组",
     "六合彩",
     "6合采",
     "六合菜",
@@ -188,7 +189,7 @@ export function tokenize(
       continue;
     }
     const combined =
-      /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[/、]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
+      /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[./、,]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
         rest,
       )?.[0];
     if (combined && !playNames.includes(combined)) {
@@ -275,9 +276,11 @@ export function tokenize(
       text:
         kind === "currency"
           ? "元"
-          : kind === "number"
-            ? (monetaryLiteral(text) ?? text)
-            : text,
+          : text === "1组"
+            ? "一组"
+            : kind === "number"
+              ? (monetaryLiteral(text) ?? text)
+              : text,
       start: offsets[cursor],
       end: offsets[end],
     });

@@ -76,3 +76,43 @@ test("number play quantities include twelve in either representation", () => {
     compile(`十二不中${numbers}各七十`),
   );
 });
+
+for (const marker of ["一组", "一 组", "1组"]) {
+  test(`group amount prefix: ${marker}`, () => {
+    const items = compile(`新澳三中三\n08、19、36 ${marker}七十米`);
+    expect(items).toHaveLength(1);
+    expect(items[0].selections).toEqual([8, 19, 36]);
+    expect(items[0].amount).toBe("70");
+  });
+}
+for (const label of [
+  "3.4.5连肖",
+  "三.四.五连肖",
+  "3．4．5连肖",
+  "3 . 4 . 5连肖",
+]) {
+  test(`flat linked combinations share trailing candidates and amount: ${label}`, () => {
+    const items = compile(`新澳平特${label}复式：鼠牛兔蛇羊，各组70米`);
+    expect(items).toHaveLength(3);
+    expect(
+      items.map((i) => plays.find((p) => p.id === i.play_id)!.rule.name),
+    ).toEqual(["三有", "四有", "五有"]);
+    expect(items.every((i) => i.compound && i.amount === "70")).toBe(true);
+    expect(items.map((i) => i.selections)).toEqual([
+      [0, 1, 3, 5, 7],
+      [0, 1, 3, 5, 7],
+      [0, 1, 3, 5, 7],
+    ]);
+  });
+}
+test("unspecified each-zodiac and each-number use special even after another play", () => {
+  const items = compile("一肖中牛70元；鼠羊各肖90元；兔蛇各数40元");
+  expect(
+    items.map((i) => plays.find((p) => p.id === i.play_id)!.rule.name),
+  ).toEqual(["一肖中", "特码", "特码"]);
+  expect(items[1].package_zodiacs).toEqual([0, 7]);
+  expect(items[2].selections).toEqual(
+    mapping.zodiac.flatMap((z, i) => ([3, 5].includes(z) ? [i + 1] : [])),
+  );
+  expect(compile("一肖中鼠羊各肖70")[0].selections).toEqual([0, 7]);
+});

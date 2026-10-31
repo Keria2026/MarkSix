@@ -171,14 +171,17 @@ test("multiple plays and summary can be edited before a single financial request
   expect(errors).toEqual([]);
 });
 
-test("each-zodiac waits for a user-selected play", async ({ page }) => {
+test("each-zodiac defaults to special packages and allows a different play", async ({
+  page,
+}) => {
   await openText(page);
   await page.getByLabel("投注原文").fill("牛龙各肖80");
   await page.getByRole("button", { name: "校验", exact: true }).click();
   const modal = page.getByRole("dialog", { name: "确认投注单" });
   await modal.getByPlaceholder("填写投注人").fill("合成投注人");
   const submit = modal.getByRole("button", { name: "确认录入", exact: true });
-  await expect(submit).toBeDisabled();
+  await expect(submit).toBeEnabled();
+  await expect(modal.getByText(/包肖 牛、龙/)).toBeVisible();
   await modal
     .getByLabel("第1项对应玩法", { exact: true })
     .selectOption(String(plays.find((p) => p.rule.name === "一肖中")!.id));

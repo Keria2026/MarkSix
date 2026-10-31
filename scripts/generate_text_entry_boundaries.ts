@@ -560,12 +560,12 @@ export async function generateBoundaries(output: string) {
     );
     add(
       "package",
-      "each-zodiac-unresolved",
+      "each-zodiac-default",
       [25, 26],
       `${zt(z.slice(0, 2))}各肖${money}`,
-      [],
-      "clarification",
-      "用户确认含义取决于所选玩法：一肖中或包肖",
+      [{ ...item("特码", []), package_zodiacs: z.slice(0, 2) }],
+      "confirmed",
+      "未指定玩法的各肖默认特码包肖",
     );
     add(
       "package",
@@ -742,6 +742,34 @@ export async function generateBoundaries(output: string) {
       [12],
       `12不中${nt(ns.slice(0, 12))}各${chineseMoney}`,
       [item("十二不中", ns.slice(0, 12), 12)],
+    );
+    add(
+      "group-amount",
+      "prefix-one-group",
+      [18],
+      `新澳三中三\n${nt(ns.slice(0, 3), "、")} 一组${money}米`,
+      [item("三中三", ns.slice(0, 3), 3)],
+    );
+    add(
+      "multiple-plays",
+      "flat-dotted-linked",
+      [23, 24],
+      `新澳平特3.4.5连肖复式：${zt(five)}，各组${money}米`,
+      multi,
+    );
+    add(
+      "package",
+      "each-number-default",
+      [30, 33],
+      `${zt(z.slice(0, 2))}各数${money}`,
+      [
+        item(
+          "特码",
+          mapping.zodiac.flatMap((v, i) =>
+            z.slice(0, 2).includes(v) ? [i + 1] : [],
+          ),
+        ),
+      ],
     );
     const fullwidth = (s: string) =>
       s.replace(/[0-9]/gu, (c) =>

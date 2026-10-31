@@ -133,7 +133,14 @@ export function parseText(
       .join("")
       .replace(/(?:复式[\s,，]*){2,}/gu, "复式 ")
       .replace(/^[\s:：,，;；.。]+|[\s,，;；.。]+$/gu, "");
+    const implicitSpecial =
+      ["各肖", "各数"].includes(segment.marker) && !segment.explicitPlay;
     if (segment.explicitPlay || hasSelections || segment.amount) {
+      if (implicitSpecial) {
+        segment.context = context("特码");
+        segment.contexts = [];
+        segment.compound = false;
+      }
       if (
         (segment.compound ||
           segment.contexts.some((c) => c.label.endsWith("有"))) &&
@@ -154,10 +161,6 @@ export function parseText(
         )
       )
         segment.context = context("特码");
-      if (segment.marker === "各肖" && !segment.explicitPlay) {
-        segment.context = empty();
-        segment.contexts = [];
-      }
       // An immediately repeated compound selection block can specify a second
       // linked play and amount without restating its candidates.
       if (
@@ -186,13 +189,13 @@ export function parseText(
           source: raw.slice(start, end),
           start,
           end,
-          playLabel: selected.label,
+          playLabel: implicitSpecial ? "" : selected.label,
           playId: selected.id,
           body,
           amount: segment.amount,
           marker: segment.marker,
           mode: selected.mode,
-          customAlias: !selected.label,
+          customAlias: implicitSpecial || !selected.label,
           objectBeforePlay: segment.objectBeforePlay,
         });
       previousBody = body;
@@ -380,7 +383,12 @@ export function parseText(
         continue;
       // A new explicit play interrupts an incomplete record. An object before its
       // first play is retained, so 牛特500 is assembled as one semantic record.
-      if (segment.explicitPlay) emit(token.start);
+      const flatLinkedQualifier =
+        segment.context.label === "平特" &&
+        !hasObjects() &&
+        !segment.amount &&
+        token.labels?.every((label) => label.endsWith("有"));
+      if (segment.explicitPlay && !flatLinkedQualifier) emit(token.start);
       segment.compound = segment.content.some((t) => t.kind === "compound");
       segment.objectBeforePlay = hasObjects();
       segment.contexts = token.labels?.map(context) ?? [];
