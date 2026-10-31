@@ -1,6 +1,7 @@
 import { PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { zipSync } from "fflate";
+import { pngEncoder } from "./png";
 import { money, marketName } from "./types";
 import { statementFilename, statementRows, statementTotals } from "./statement";
 import type {
@@ -49,6 +50,7 @@ function layout(
   bettor: Bettor,
   rows: StatementRow[],
   font: PDFFont,
+  paginate = true,
 ) {
   const pages: Operation[][] = [];
   let ops: Operation[] = [];
@@ -159,18 +161,19 @@ function layout(
       : ["0.00（无水钱）"];
     let line = 0;
     if (
+      paginate &&
       i === rows.length - 1 &&
       lines.length <= 15 &&
       y < Math.max(45, lines.length * 13 + 14) + 120
     )
       y = header(continuation());
     while (line < lines.length) {
-      if (y < 100) y = header(continuation());
+      if (paginate && y < 100) y = header(continuation());
       // A receipt may contain hundreds of rates. Continue the same numbered row
       // across pages, without duplicating principal or winnings in the totals.
       const count = Math.min(
         lines.length - line,
-        Math.max(1, Math.floor((y - 85) / 13)),
+        paginate ? Math.max(1, Math.floor((y - 85) / 13)) : lines.length,
       );
       const center = y - (count - 1) * 6.5;
       text(
@@ -215,7 +218,7 @@ function layout(
       line += count;
     }
   });
-  if (y < 120) y = header(continuation());
+  if (paginate && y < 120) y = header(continuation());
   const footerHeight = 48;
   rect(LEFT, y - footerHeight + 14, RIGHT - LEFT, footerHeight, pale);
   text("合计", 55, y - 10, 10);
@@ -234,6 +237,8 @@ function layout(
   );
   end(money(total.rebate, false), 425, y - 18, 10, ink, 115);
   end(netText(total.net), 538, y - 18, 10, netColor(total.net), 100);
+  const height = paginate ? HEIGHT : Math.max(HEIGHT, HEIGHT - y + 120);
+  if (!paginate) for (const op of ops) op.y += height - HEIGHT;
   pages.forEach((page, i) => {
     ops = page;
     rule(57);
@@ -244,9 +249,9 @@ function layout(
       8,
       muted,
     );
-    end(`${i + 1} / ${pages.length}`, RIGHT, 37, 8, muted);
+    if (paginate) end(`${i + 1} / ${pages.length}`, RIGHT, 37, 8, muted);
   });
-  return pages;
+  return { pages, height };
 }
 
 async function paintPdf(
@@ -291,47 +296,62 @@ async function paintPdf(
 }
 async function paintPng(
   ops: Operation[],
+  height: number,
   family: string,
   signal: AbortSignal,
 ): Promise<Uint8Array> {
   signal.throwIfAborted();
+  const width = Math.ceil(WIDTH * 2),
+    pixels = Math.ceil(height * 2);
+  const encoder = pngEncoder(width, pixels);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(WIDTH * 2);
-  canvas.height = Math.ceil(HEIGHT * 2);
+  canvas.width = width;
+  const css = (c: Color) =>
+    `rgb(${c.map((n) => Math.round(n * 255)).join(",")})`;
   try {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("浏览器无法生成 PNG，请选择 PDF");
-    ctx.scale(2, 2);
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, WIDTH, HEIGHT);
-    const css = (c: Color) =>
-      `rgb(${c.map((n) => Math.round(n * 255)).join(",")})`;
-    for (const op of ops) {
-      if (op.kind === "text") {
-        ctx.fillStyle = css(op.color);
-        ctx.font = `${op.size}px "${family}"`;
-        ctx.fillText(op.value, op.x, HEIGHT - op.y);
-      } else if (op.kind === "rect") {
-        ctx.fillStyle = css(op.color);
-        ctx.fillRect(op.x, HEIGHT - op.y - op.h, op.w, op.h);
-      } else {
-        ctx.strokeStyle = css(border);
-        ctx.lineWidth = 0.6;
-        ctx.beginPath();
-        ctx.moveTo(LEFT, HEIGHT - op.y);
-        ctx.lineTo(RIGHT, HEIGHT - op.y);
-        ctx.stroke();
+    for (let top = 0; top < pixels; top += 1024) {
+      signal.throwIfAborted();
+      canvas.height = Math.min(1024, pixels - top);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("浏览器无法生成 PNG，请选择 PDF");
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, width, canvas.height);
+      ctx.scale(2, 2);
+      ctx.translate(0, -top / 2);
+      for (const op of ops) {
+        const y = height - op.y;
+        const start =
+          op.kind === "rect"
+            ? y - op.h
+            : op.kind === "text"
+              ? y - op.size * 1.5
+              : y - 1;
+        if (
+          (y + (op.kind === "text" ? op.size : 1)) * 2 < top ||
+          start * 2 > top + canvas.height
+        )
+          continue;
+        if (op.kind === "text") {
+          ctx.fillStyle = css(op.color);
+          ctx.font = `${op.size}px "${family}"`;
+          ctx.fillText(op.value, op.x, y);
+        } else if (op.kind === "rect") {
+          ctx.fillStyle = css(op.color);
+          ctx.fillRect(op.x, y - op.h, op.w, op.h);
+        } else {
+          ctx.strokeStyle = css(border);
+          ctx.lineWidth = 0.6;
+          ctx.beginPath();
+          ctx.moveTo(LEFT, y);
+          ctx.lineTo(RIGHT, y);
+          ctx.stroke();
+        }
       }
+      encoder.push(ctx.getImageData(0, 0, width, canvas.height).data);
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    const blob = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (value) =>
-          value ? resolve(value) : reject(new Error("PNG 生成失败，请重试")),
-        "image/png",
-      ),
-    );
     signal.throwIfAborted();
-    return new Uint8Array(await blob.arrayBuffer());
+    return encoder.finish();
   } finally {
     canvas.width = 0;
     canvas.height = 0;
@@ -371,7 +391,13 @@ export async function createBettorArchive(
       const doc = await PDFDocument.create();
       doc.registerFontkit(fontkit);
       const font = await doc.embedFont(fontBytes, { subset: true });
-      const pages = layout(data, bettor, rows, font);
+      const { pages, height } = layout(
+        data,
+        bettor,
+        rows,
+        font,
+        format === "pdf",
+      );
       const name = statementFilename(bettor.name, used, format);
       if (format === "pdf") {
         doc.setTitle(
@@ -381,15 +407,7 @@ export async function createBettorArchive(
         await paintPdf(doc, font, pages, signal);
         add(name, await doc.save());
       } else {
-        const folder = name.slice(0, -4);
-        for (let p = 0; p < pages.length; p++) {
-          signal.throwIfAborted();
-          add(
-            `${folder}/${String(p + 1).padStart(3, "0")}.png`,
-            await paintPng(pages[p], family, signal),
-          );
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
+        add(name, await paintPng(pages[0], height, family, signal));
       }
       signal.throwIfAborted();
       progress(index + 1, data.bettors.length);
