@@ -158,21 +158,31 @@ async fn submit(
     let mut tx = state.pool.begin().await?;
     // Every writer takes period locks in the same id order before locking bets.
     let mut ids: Vec<_> = targets.values().map(|p| p.id.clone()).collect();
+    ids.push(current.id.clone());
     ids.sort();
+    ids.dedup();
     for id in ids {
+        let is_target = targets.values().any(|p| p.id == id);
         let mut p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
+        if !is_target {
+            continue;
+        }
         if p.market == "hk" && p.draw.is_none() {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bets WHERE period_id=?")
-                .bind(&p.id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM bets WHERE period_id=? AND status<>'cancelled'",
+            )
+            .bind(&p.id)
+            .fetch_one(&mut *tx)
+            .await?;
             if count == 0 && p.business_date != business_date(received) {
                 p.business_date = business_date(received);
                 p.mapping = current.mapping.clone();
-                sqlx::query("UPDATE periods SET business_date=?,mapping=? WHERE id=?")
+                p.last_fetch_at = None;
+                p.error = None;
+                sqlx::query("UPDATE periods SET business_date=?,mapping=?,last_fetch_at=NULL,error=NULL WHERE id=?")
                     .bind(p.business_date)
                     .bind(&p.mapping)
                     .bind(&p.id)
@@ -282,11 +292,11 @@ async fn submit(
         } else {
             input.request_id.clone()
         };
-        sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor,slip_id,slip_position,package_zodiacs,drag,market) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor,slip_id,slip_position,package_zodiacs,drag,market,entry_date) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&id).bind(request).bind(&hash).bind(&period.id).bind(play.id).bind(play.version).bind(&play.rule)
             .bind(DbJson(&line.selections)).bind(line.compound).bind(entry_amount(&line.amount)?).bind(planned.atoms.len() as i32)
             .bind(planned.stake).bind(planned.rebate).bind(planned.exposure).bind(period.mapping.natal as i8)
-            .bind(DbJson(&planned.atoms)).bind(&input.bettor).bind(&slip_id).bind(grouped.then_some(position as i32)).bind(DbJson(&line.package_zodiacs)).bind(line.drag.as_ref().map(DbJson)).bind(line.market.as_str()).execute(&mut *tx).await?;
+            .bind(DbJson(&planned.atoms)).bind(&input.bettor).bind(&slip_id).bind(grouped.then_some(position as i32)).bind(DbJson(&line.package_zodiacs)).bind(line.drag.as_ref().map(DbJson)).bind(line.market.as_str()).bind(business_date(received)).execute(&mut *tx).await?;
         audit(
             &mut tx,
             Some(&period.id),
@@ -317,8 +327,5 @@ async fn submit(
         crate::worker::settle_recorded(&mut tx, period).await?;
     }
     tx.commit().await?;
-    for period in targets.values() {
-        ledger::cancel_calculation(state, &period.id).await;
-    }
     Ok(json!({"id":slip_id.unwrap_or_else(||created[0].clone()),"replayed":false}))
 }

@@ -51,17 +51,6 @@ export interface Draw {
   zodiac: number[];
   waves: number[];
 }
-export interface Risk {
-  min_payout: number;
-  min_net: number;
-  max_net: number;
-  max_payout: number;
-  best_draw: number[];
-  worst_draw: number[];
-  elapsed_ms: number;
-  nodes: number;
-  strategy: string;
-}
 export interface Totals {
   records: number;
   units: number;
@@ -98,11 +87,6 @@ export interface Period {
   mapping_warning: boolean;
   last_fetch_at: string | null;
   settled_at: string | null;
-  risk_status: string;
-  risk_version: number | null;
-  risk_result: Risk | null;
-  risk_error: string | null;
-  risk_started_at: string | null;
   totals: Totals;
   server_time: string;
 }
@@ -113,7 +97,20 @@ export interface ModuleFeatures {
   text_entry: boolean;
   entry_mode: EntryMode;
 }
+export type DrawPeriod = Pick<
+  Period,
+  "id" | "market" | "mapping" | "draw" | "error" | "mapping_warning"
+>;
+export interface BusinessDay {
+  id: string;
+  business_date: string;
+  state: string;
+  phase: string;
+  totals: Totals;
+  periods: DrawPeriod[];
+}
 export interface Bootstrap {
+  day: BusinessDay;
   hk?: Period | null;
   features: ModuleFeatures;
   today: Period;
@@ -126,6 +123,8 @@ export interface DragInput {
   zodiac: boolean;
 }
 export interface Bet {
+  entry_date?: string;
+  expect?: string | null;
   market?: Market;
   slip_id: string | null;
   slip_position: number | null;
@@ -187,15 +186,6 @@ export interface Page<T> {
   total: number;
   page: number;
   page_size: number;
-}
-export interface Quote {
-  units: number;
-  stake: number;
-  rebate: number;
-  max_return: number;
-  max_profit: number;
-  result: Risk | null;
-  settled?: boolean;
 }
 export interface Settings {
   features: ModuleFeatures;
@@ -368,6 +358,7 @@ export interface LedgerTotals {
   net: number | null;
 }
 export interface Layoff {
+  market?: Market;
   id: string;
   bet_id: string;
   period_id: string;

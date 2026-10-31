@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -86,22 +86,20 @@ pub(crate) async fn search(
     let page = q.page.unwrap_or(1).clamp(1, 100000);
     let bettors = serde_json::to_string(&q.bettors).map_err(anyhow::Error::from)?;
     let plays = serde_json::to_string(&q.play_ids).map_err(anyhow::Error::from)?;
+    let mut tx = state.pool.begin().await?;
+    let scope = crate::reporting::scope(&mut tx, &period, q.combined).await?;
+    let predicate = scope.bets();
     let amount = "SUM(CASE WHEN status<>'cancelled' THEN stake ELSE 0 END)";
     let grouped = format!(
-        "SELECT COALESCE(slip_id,id) record_id FROM bets WHERE period_id=? AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,JSON_QUOTE(bettor))) GROUP BY COALESCE(slip_id,id) HAVING (? IS NULL OR {amount}>=?) AND (? IS NULL OR {amount}<=?) AND (JSON_LENGTH(?)=0 OR SUM(JSON_CONTAINS(?,CAST(play_id AS JSON)))>0)"
+        "SELECT COALESCE(slip_id,id) record_id FROM bets WHERE {predicate} AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,JSON_QUOTE(bettor))) GROUP BY COALESCE(slip_id,id) HAVING (? IS NULL OR {amount}>=?) AND (? IS NULL OR {amount}<=?) AND (JSON_LENGTH(?)=0 OR SUM(JSON_CONTAINS(?,CAST(play_id AS JSON)))>0)"
     );
     let order = match q.order.as_deref().unwrap_or("newest") {
         "amount_asc" => format!("{amount} ASC,MIN(created_at) DESC,record_id DESC"),
         "amount_desc" => format!("{amount} DESC,MIN(created_at) DESC,record_id DESC"),
         _ => "MIN(created_at) DESC,record_id DESC".into(),
     };
-    let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT id FROM periods WHERE id=? FOR SHARE")
-        .bind(&period)
-        .fetch_optional(&mut *tx)
-        .await?;
     let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM ({grouped}) groups_count"))
-        .bind(&period)
+        .bind(&scope.key)
         .bind(&bettors)
         .bind(&bettors)
         .bind(min)
@@ -114,7 +112,7 @@ pub(crate) async fn search(
         .await?;
     let ids: Vec<String> =
         sqlx::query_scalar(&format!("{grouped} ORDER BY {order} LIMIT 25 OFFSET ?"))
-            .bind(&period)
+            .bind(&scope.key)
             .bind(&bettors)
             .bind(&bettors)
             .bind(min)
@@ -259,25 +257,19 @@ pub(crate) async fn cancel(
         crate::worker::settle_recorded(&mut tx, p).await?;
     }
     tx.commit().await?;
-    for p in &periods {
-        ledger::cancel_calculation(&state, &p.id).await;
-    }
     Ok(Json(json!({"ok":true})))
 }
 
 pub(crate) async fn export(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<crate::reporting::ReportQuery>,
 ) -> ApiResult<Json<Value>> {
     let mut tx = state.pool.begin().await?;
-    // All mutations and settlement lock the period first: the statement is one ledger version.
-    let period: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR SHARE")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(missing)?;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bets WHERE period_id=?")
-        .bind(&id)
+    let scope = crate::reporting::scope(&mut tx, &id, query.combined).await?;
+    let predicate = scope.bets();
+    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM bets WHERE {predicate}"))
+        .bind(&scope.key)
         .fetch_one(&mut *tx)
         .await?;
     if count > 10000 {
@@ -285,8 +277,14 @@ pub(crate) async fn export(
             "本期含撤销的分项超过 10000 条，无法一次导出；未截断任何记录",
         ));
     }
-    let rows = sqlx::query(&format!("SELECT {BET_COLUMNS},atoms,results FROM bets WHERE period_id=? ORDER BY created_at,slip_id,slip_position,id"))
-        .bind(&id).fetch_all(&mut *tx).await?;
+    let all_bets: Vec<BetSummary> =
+        sqlx::query_as(&format!("SELECT {BET_COLUMNS} FROM bets WHERE {predicate}"))
+            .bind(&scope.key)
+            .fetch_all(&mut *tx)
+            .await?;
+    let settled = scope.settled(&all_bets);
+    let rows = sqlx::query(&format!("SELECT {BET_COLUMNS},atoms,results FROM bets WHERE {predicate} ORDER BY created_at,slip_id,slip_position,id"))
+        .bind(&scope.key).fetch_all(&mut *tx).await?;
     let mut bettors = BTreeMap::<String, (LedgerTotals, Vec<Value>)>::new();
     let mut units = 0;
     for row in rows {
@@ -302,7 +300,7 @@ pub(crate) async fn export(
         let (totals, bets) = bettors.entry(b.bettor.clone()).or_insert_with(|| {
             (
                 LedgerTotals {
-                    net: (period.state == "settled").then_some(0),
+                    net: Some(0),
                     ..Default::default()
                 },
                 vec![],
@@ -317,7 +315,7 @@ pub(crate) async fn export(
                     b.payout,
                     b.void_stake,
                 ),
-                period.state == "settled",
+                b.status == "settled",
                 false,
             )?;
         }
@@ -334,6 +332,6 @@ pub(crate) async fn export(
         .map(|(name, (totals, bets))| json!({"name":name,"totals":totals,"bets":bets}))
         .collect();
     Ok(Json(
-        json!({"period":id,"market":period.market,"settled":period.state=="settled","draw":period.draw,"bet_version":period.bet_version,"generated_at":state.now().format("%Y-%m-%d %H:%M:%S").to_string(),"bettors":groups}),
+        json!({"period":id,"business_date":scope.periods[0].business_date,"combined":scope.combined,"market":scope.periods[0].market,"settled":settled,"draw":scope.periods[0].draw,"periods":scope.periods,"bet_version":checked_sum(scope.periods.iter().map(|p|p.bet_version))?,"generated_at":state.now().format("%Y-%m-%d %H:%M:%S").to_string(),"bettors":groups}),
     ))
 }

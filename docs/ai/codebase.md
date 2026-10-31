@@ -17,8 +17,8 @@
 | `features.rs`          | 客户模块可用性与最近录注方式                         |
 | `text_entry.rs`        | 文本单预览、简称与金额偏好、投注人费率关联           |
 | `market.rs`            | 市场身份、香港期次建立与跨日录入边界                 |
-| `worker.rs`            | 开奖拉取、结算恢复、风险任务调度与结果持久化         |
-| `risk.rs`              | 有截止时间和取消能力的精确极值求解                   |
+| `worker.rs`            | 开奖拉取、结算恢复与结果持久化                       |
+| `reporting.rs`         | 录入业务日期范围、合并日报与历史日期查询             |
 | `hosted/accounts.rs`   | 密码、Cookie、会话、账号有效性与授权兑换             |
 | `hosted/portal.rs`     | 客户端入口、会话解析、授权与租户路由                 |
 | `hosted/management.rs` | 管理端入口、客户开通、迁移、管理员及删除             |
@@ -38,7 +38,8 @@
 | `components/BetEntry.svelte`、`SlipComposer.svelte`                      | 手工选项和组合单草稿                   |
 | `components/TextEntry.svelte`                                            | 文本校验、确认弹窗与提交               |
 | `components/RecordsTable.svelte`、`SlipDetail.svelte`                    | 单据展示和操作入口                     |
-| `components/Statistics.svelte`、`BettorExport.svelte`                    | 统计与导出                             |
+| `components/Statistics.svelte`、`BettorExport.svelte`                    | 合并统计与导出                         |
+| `components/DrawPanel.svelte`                                            | 港澳开奖统一呈现                       |
 | `components/PlayEditor.svelte`、`BatchEditor.svelte`、`PlayOrder.svelte` | 玩法设置                               |
 | `components/SystemSettings.svelte`                                       | 模块、映射与账号相关设置               |
 | `components/Modal.svelte`、`lib/modal.ts`                                | 模态状态、焦点及页面锁定               |

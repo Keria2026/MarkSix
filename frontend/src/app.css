@@ -700,9 +700,9 @@ details[open] > summary svg {
   margin-top: 12px;
   overflow-wrap: anywhere;
 }
-.insights-grid {
+.draw-grid {
   display: grid;
-  grid-template-columns: 1.47fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
   margin-bottom: 23px;
   align-items: stretch;
@@ -718,8 +718,7 @@ details[open] > summary svg {
   align-items: center;
   gap: 9px;
 }
-.draw-panel,
-.risk-panel {
+.draw-panel {
   padding: 24px 25px;
   border-radius: 20px;
 }
@@ -800,76 +799,6 @@ details[open] > summary svg {
   line-height: 43px;
   margin: 0 2px;
 }
-.risk-state {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 20px;
-}
-.risk-state small {
-  color: #4d5563;
-  font-size: 11px;
-}
-.risk-state .status-badge {
-  background: #eaf3f1;
-  color: #385d52;
-  font-size: 12px;
-}
-.risk-scale {
-  height: 7px;
-  margin: 18px 0 14px;
-  border-radius: 20px;
-  background: linear-gradient(
-    90deg,
-    #86c6b3,
-    #cae0d3 40%,
-    #f2e1d3 65%,
-    #e9b1a9
-  );
-  position: relative;
-  opacity: 0.9;
-}
-.risk-scale span {
-  display: block;
-  width: 3px;
-  height: 13px;
-  position: absolute;
-  left: 50%;
-  top: -3px;
-  background: #fff;
-  border: 1px solid #b9c4d6;
-  border-radius: 3px;
-}
-.risk-endpoints {
-  display: flex;
-  justify-content: space-between;
-  font-size: 9px;
-  color: #4e5769;
-}
-.risk-endpoints > span:last-child {
-  text-align: right;
-}
-.risk-endpoints strong {
-  display: block;
-  font-size: 16px;
-  letter-spacing: -0.4px;
-  font-weight: 570;
-  margin-top: 7px;
-}
-.risk-examples {
-  font-size: 10px;
-  margin-top: 15px;
-  color: #495669;
-}
-.risk-examples summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.risk-examples p {
-  margin-top: 14px;
-  font-size: 10px;
-}
 .balls.compact {
   margin: 9px 0 0;
   gap: 5px;
@@ -885,15 +814,6 @@ details[open] > summary svg {
   font-size: 13px;
   margin: 0 1px;
 }
-.risk-pending {
-  min-height: 167px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  text-align: center;
-}
 .loading-orbit {
   display: grid;
   place-items: center;
@@ -903,16 +823,6 @@ details[open] > summary svg {
   background: #edf0fb88;
   border-radius: 50%;
   margin-bottom: 3px;
-}
-.risk-pending strong {
-  font-size: 12px;
-  font-weight: 500;
-}
-.risk-pending p {
-  font-size: 10px;
-  color: #4f5b6c;
-  max-width: 270px;
-  line-height: 1.7;
 }
 .ledger-row {
   display: flex;
@@ -1417,36 +1327,6 @@ details[open] > summary svg {
   letter-spacing: -1px;
   color: #2d569f;
   overflow-wrap: anywhere;
-}
-.quote-box {
-  background: linear-gradient(130deg, #f0f5ffab, #f2f0fb80);
-  border: 1px solid #fff;
-  border-radius: 13px;
-  padding: 16px;
-  margin-top: 4px;
-}
-.quote-label {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #405a87;
-  font-size: 10px;
-}
-.quote-label > svg:last-child:not(:first-child) {
-  margin-left: auto;
-}
-.quote-box .ledger-row {
-  margin-top: 16px;
-  font-size: 10px;
-}
-.quote-box .ledger-row strong {
-  font-size: 11px;
-}
-.quote-box > p {
-  font-size: 9px;
-  color: #525b6b;
-  margin-top: 17px;
-  line-height: 1.7;
 }
 .compact-notice {
   margin-top: 20px;
@@ -2328,8 +2208,7 @@ details[open] > summary svg {
   .ball-plus {
     line-height: 50px;
   }
-  .draw-panel,
-  .risk-panel {
+  .draw-panel {
     padding: 29px;
   }
   .balls {
@@ -2361,8 +2240,7 @@ details[open] > summary svg {
   .stats-grid {
     gap: 11px;
   }
-  .draw-panel,
-  .risk-panel {
+  .draw-panel {
     padding: 20px 18px;
   }
   .ball {
@@ -2377,8 +2255,8 @@ details[open] > summary svg {
   .balls {
     gap: 5px;
   }
-  .insights-grid {
-    grid-template-columns: 1.25fr 1fr;
+  .draw-grid {
+    grid-template-columns: minmax(0, 1fr);
     gap: 15px;
   }
   .bet-layout {
@@ -2505,9 +2383,6 @@ details[open] > summary svg {
   }
   .bet-summary .selected-tags {
     margin-bottom: 15px;
-  }
-  .bet-summary .quote-box {
-    margin-top: 8px;
   }
   .option-grid.number-grid {
     grid-template-columns: repeat(7, 1fr);
@@ -2666,17 +2541,15 @@ details[open] > summary svg {
   .stat-label {
     font-size: 10px;
   }
-  .insights-grid {
+  .draw-grid {
     grid-template-columns: 1fr;
     gap: 16px;
     margin-bottom: 16px;
   }
-  .draw-panel,
-  .risk-panel {
+  .draw-panel {
     padding: 21px 20px;
   }
-  .draw-panel .section-head h2,
-  .risk-panel .section-head h2 {
+  .draw-panel .section-head h2 {
     font-size: 15px;
   }
   .balls {
@@ -2690,19 +2563,6 @@ details[open] > summary svg {
   }
   .ball-plus {
     line-height: 37px;
-  }
-  .risk-pending {
-    min-height: 120px;
-  }
-  .risk-pending .loading-orbit {
-    display: none;
-  }
-  .risk-examples .compact .ball {
-    width: 29px;
-    height: 29px;
-  }
-  .risk-endpoints strong {
-    font-size: 19px;
   }
   .records-panel > .section-head,
   .history-panel > .section-head,
@@ -3036,12 +2896,6 @@ details[open] > summary svg {
 .ball-caption {
   font-size: 12px;
 }
-.risk-endpoints {
-  font-size: 11px;
-}
-.risk-examples {
-  font-size: 11px;
-}
 th {
   font-size: 12px;
 }
@@ -3072,15 +2926,6 @@ td {
 }
 .field-help {
   font-size: 11px;
-}
-.quote-box .ledger-row {
-  font-size: 11px;
-}
-.quote-box .ledger-row strong {
-  font-size: 12px;
-}
-.quote-box > p {
-  font-size: 10px;
 }
 .selection-description,
 .selection-meta {
@@ -3402,7 +3247,7 @@ td {
 }
 
 @media (max-width: 380px) {
-  .insights-grid {
+  .draw-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .draw-panel .section-head {

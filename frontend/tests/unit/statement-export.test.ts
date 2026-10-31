@@ -101,3 +101,25 @@ test("Hong Kong statement uses the accepted source issue instead of its internal
   const pdf = await PDFDocument.load(files["样本.pdf"]);
   expect(pdf.getTitle()).toBe("香港 第2040007期 · 样本 · 投注对账单");
 });
+
+test("combined PDF title follows the entry date without assigning the whole statement to Macau", async () => {
+  const data = emptyStatement();
+  data.combined = true;
+  data.business_date = "2040-01-01";
+  const bytes = new Uint8Array(
+    await Bun.file(
+      new URL("../../src/assets/NotoSansSC-Regular.ttf", import.meta.url),
+    ).arrayBuffer(),
+  );
+  const files = unzipSync(
+    await createBettorArchive(
+      data,
+      bytes,
+      new AbortController().signal,
+      () => {},
+      "pdf",
+    ),
+  );
+  const pdf = await PDFDocument.load(files["样本.pdf"]);
+  expect(pdf.getTitle()).toBe("录入日期 2040-01-01 · 样本 · 投注对账单");
+});

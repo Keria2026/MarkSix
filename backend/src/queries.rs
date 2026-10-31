@@ -20,6 +20,8 @@ pub(crate) struct PeriodQuery {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BetQuery {
+    #[serde(default)]
+    pub combined: bool,
     pub period: Option<String>,
     pub page: Option<u32>,
     pub min_amount: Option<String>,
@@ -157,15 +159,20 @@ pub(crate) async fn search_bets(
 pub(crate) async fn bet_filters(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<crate::reporting::ReportQuery>,
 ) -> ApiResult<Json<Value>> {
-    let bettors: Vec<String> =
-        sqlx::query_scalar("SELECT DISTINCT bettor FROM bets WHERE period_id=? ORDER BY bettor")
-            .bind(&id)
-            .fetch_all(&state.pool)
-            .await?;
+    let mut tx = state.pool.begin().await?;
+    let scope = crate::reporting::scope(&mut tx, &id, q.combined).await?;
+    let predicate = scope.bets();
+    let bettors: Vec<String> = sqlx::query_scalar(&format!(
+        "SELECT DISTINCT bettor FROM bets WHERE {predicate} ORDER BY bettor"
+    ))
+    .bind(&scope.key)
+    .fetch_all(&mut *tx)
+    .await?;
     // Snapshot names remain discoverable after a play is renamed or deleted.
-    let rows = sqlx::query("SELECT play_id,CAST(MAX(JSON_UNQUOTE(JSON_EXTRACT(rule,'$.name'))) AS CHAR CHARACTER SET utf8mb4) name FROM bets WHERE period_id=? GROUP BY play_id ORDER BY name,play_id")
-        .bind(&id).fetch_all(&state.pool).await?;
+    let rows = sqlx::query(&format!("SELECT play_id,CAST(MAX(JSON_UNQUOTE(JSON_EXTRACT(rule,'$.name'))) AS CHAR CHARACTER SET utf8mb4) name FROM bets WHERE {predicate} GROUP BY play_id ORDER BY name,play_id"))
+        .bind(&scope.key).fetch_all(&mut *tx).await?;
     let plays: Vec<Value> = rows
         .iter()
         .map(|row| Ok(json!({"id":row.try_get::<i64,_>("play_id")?,"name":row.try_get::<String,_>("name")?})))

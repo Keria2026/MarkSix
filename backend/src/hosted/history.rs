@@ -95,7 +95,7 @@ async fn erase(
             .fetch_all(&mut *tx)
             .await?;
     let links: Vec<(String, String)> = sqlx::query_as(
-        "SELECT s.period_id,b.period_id FROM bet_slips s JOIN bets b ON b.slip_id=s.id",
+        "SELECT s.period_id,b.period_id FROM bet_slips s JOIN bets b ON b.slip_id=s.id UNION SELECT anchor.id,b.period_id FROM bets b JOIN periods anchor ON anchor.market='macau' AND anchor.business_date=b.entry_date",
     )
     .fetch_all(&mut *tx)
     .await?;

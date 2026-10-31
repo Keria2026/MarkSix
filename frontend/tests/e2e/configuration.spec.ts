@@ -208,7 +208,7 @@ test("account statement exports a real PNG archive and supports cancelling an ou
   const pending = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("**/bettor-export", async (route) => {
+  await page.route("**/bettor-export?combined=true", async (route) => {
     await pending;
     await route.fulfill({ json: { bettors: [] } }).catch(() => {});
   });

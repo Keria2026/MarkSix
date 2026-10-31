@@ -11,13 +11,10 @@
     LoaderCircle,
     Plus,
     ReceiptText,
-    Sparkles,
   } from "lucide-svelte";
   import {
-    ApiError,
     money,
     entryCents,
-    signed,
     label,
     options,
     basicCount,
@@ -32,7 +29,6 @@
   import type {
     Bootstrap,
     Period,
-    Quote,
     BetDraft,
     SlipDraftLine,
     api as Api,
@@ -58,7 +54,7 @@
     onconfigure: () => Promise<void>;
     onadd: (line: SlipDraftLine) => boolean;
   } = $props();
-  // Abort quote/submission responses when leaving this form as well as logout.
+  // Abort submission responses when leaving this form as well as logout.
   const requests = createRequestScope(
     () => {},
     (path, options) => accountApi(path, options),
@@ -130,9 +126,6 @@
   function fail(e: unknown) {
     return e instanceof Error ? e.message : "操作失败，请重试";
   }
-  let quote = $state<Quote | null>(null),
-    quoteState = $state<"idle" | "loading" | "ready" | "error">("idle"),
-    quoteError = $state("");
   const matchingPlays = $derived(
     boot?.plays.filter(
       (p) =>
@@ -203,7 +196,7 @@
     (entryCents(draft.amount) ?? 0n) *
       BigInt(draft.packageMode ? draft.selections.length : selectedCount),
   );
-  const quoteKey = $derived(
+  const submissionBody = $derived(
     inputValid && today && currentPlay
       ? JSON.stringify({
           period: today.id,
@@ -293,9 +286,9 @@
       selectPlay((exact ?? matchingPlays[0]).id);
   }
   async function submitBet() {
-    if (!inputValid || !quoteKey || !draft.bettor.trim()) return;
+    if (!inputValid || !submissionBody || !draft.bettor.trim()) return;
     busy = true;
-    const body = JSON.parse(quoteKey);
+    const body = JSON.parse(submissionBody);
     delete body.request_id;
     const key = JSON.stringify(body);
     if (!draft.pendingSubmission || draft.pendingSubmission.key !== key)
@@ -313,7 +306,7 @@
       notify(
         entryPeriod?.draw
           ? "投注已记录并按本期开奖结果结算"
-          : "投注已记录，正在更新本期风险",
+          : "投注已记录，等待开奖结算",
       );
       await onrecorded();
     } catch (e) {
@@ -322,45 +315,6 @@
       busy = false;
     }
   }
-  const quoteDraw = $derived(JSON.stringify(entryPeriod?.draw));
-  $effect(() => {
-    const key = quoteKey;
-    const isBetting = today.accepting_entries;
-    void quoteDraw;
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout>;
-    quote = null;
-    quoteError = "";
-    quoteState = key && isBetting ? "loading" : "idle";
-    async function calculate() {
-      try {
-        const result = await api<Quote>("/quote", {
-          method: "POST",
-          body: key,
-          signal: controller.signal,
-        });
-        if (!controller.signal.aborted) {
-          quote = result;
-          quoteState = "ready";
-        }
-      } catch (e) {
-        if (controller.signal.aborted) return;
-        if (e instanceof ApiError && e.status === 429) {
-          quoteError = "正在等待精确计算，稍后自动重试";
-          retry = setTimeout(calculate, 2000);
-        } else {
-          quoteState = "error";
-          quoteError = fail(e);
-        }
-      }
-    }
-    const timer = key && isBetting ? setTimeout(calculate, 450) : undefined;
-    return () => {
-      clearTimeout(timer);
-      clearTimeout(retry);
-      controller.abort();
-    };
-  });
   const validAmount = $derived(entryCents(draft.amount) !== null);
 </script>
 
@@ -640,39 +594,6 @@
     </div>
     <div class="summary-total">
       <span>总投注本金</span><strong>{money(stakePreview)}</strong>
-    </div>
-    <div class="quote-box">
-      <div class="quote-label">
-        <Sparkles size={15} /><span>投注者收益预览</span
-        >{#if quoteState === "loading"}<LoaderCircle
-            class="spin"
-            size={14}
-          />{/if}
-      </div>
-      <div class="ledger-row">
-        <span>{quote?.settled ? "实际含本返还" : "最大含本返还"}</span><strong
-          >{money(quote?.max_return)}</strong
-        >
-      </div>
-      <div class="ledger-row">
-        <span>{quote?.settled ? "实际反水" : "预计反水"}</span><strong
-          >{money(quote?.rebate)}</strong
-        >
-      </div>
-      <div class="ledger-row">
-        <span
-          >{quote?.settled
-            ? "实际净输赢（含反水）"
-            : "最大净盈利（含反水）"}</span
-        ><strong
-          class:positive={(quote?.max_profit ?? 0) > 0}
-          class:negative={(quote?.max_profit ?? 0) < 0}
-          >{quote ? signed(quote.max_profit) : "—"}</strong
-        >
-      </div>
-      {#if quoteError}<p class:negative={quoteState === "error"}>
-          {quoteError}
-        </p>{/if}
     </div>
     {#if selectedCount > 1000}<div class="inline-error">
         <AlertCircle size={15} />单次最多 1000 条基础注，请减少选项。

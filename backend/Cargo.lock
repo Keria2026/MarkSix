@@ -943,7 +943,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "thiserror",
  "tokio",
  "tower",
  "tower-http",

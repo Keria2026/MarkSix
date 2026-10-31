@@ -743,17 +743,12 @@ async fn query_export_preferences_cancellation_and_mapping_contract() {
     quote["period"] = period.into();
     quote["bettor"] = "synthetic-query".into();
     quote["request_id"] = uuid::Uuid::new_v4().to_string().into();
-    let priced = ok(&app, "POST", "/api/quote", quote.clone(), &cookie).await;
-    assert_eq!(priced["stake"], 2000);
-    assert_eq!(priced["max_return"], 44000);
-    let permit = state.risk_gate.clone().acquire_owned().await.unwrap();
     assert_eq!(
         call(&app, "POST", "/api/quote", quote.clone(), &cookie)
             .await
             .0,
-        StatusCode::TOO_MANY_REQUESTS
+        StatusCode::NOT_FOUND
     );
-    drop(permit);
     ok(
         &app,
         "PUT",
@@ -868,10 +863,6 @@ async fn query_export_preferences_cancellation_and_mapping_contract() {
         .await
         .unwrap();
     assert_eq!(
-        ok(&app, "POST", "/api/quote", quote, &cookie).await["settled"],
-        true
-    );
-    assert_eq!(
         call(
             &app,
             "POST",
@@ -881,7 +872,7 @@ async fn query_export_preferences_cancellation_and_mapping_contract() {
         )
         .await
         .0,
-        StatusCode::CONFLICT
+        StatusCode::NOT_FOUND
     );
     ok(&app, "POST", "/api/logout", json!({}), &cookie).await;
     assert_eq!(
@@ -1057,25 +1048,6 @@ async fn package_rounding_mutations_and_preview_failure_contract() {
         &cookie,
     )
     .await;
-    sqlx::query("UPDATE periods SET risk_status='failed' WHERE id=?")
-        .bind(period)
-        .execute(&pool)
-        .await
-        .unwrap();
-    ok(
-        &app,
-        "POST",
-        &format!("/api/periods/{period}/risk"),
-        json!({}),
-        &cookie,
-    )
-    .await;
-    let status: String = sqlx::query_scalar("SELECT risk_status FROM periods WHERE id=?")
-        .bind(period)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(status, "queued");
     pool.close().await;
 }
 
@@ -1098,7 +1070,6 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
     let clock = time.clone();
     let mut state = store::AppState::new(pool.clone()).unwrap();
     state.clock = Arc::new(move || *clock.read().unwrap());
-    state.risk_gate = Arc::new(tokio::sync::Semaphore::new(0));
     state.client = reqwest::Client::builder().no_proxy().build().unwrap();
     let source = Arc::new(RwLock::new(
         json!({"expect":"2026115","openTime":"2026-10-27 21:32:32","openCode":"47,21,04,02,24,18,31","zodiac":"猴,狗,兔,蛇,羊,牛,鼠","wave":"blue,green,blue,red,red,red,blue","verify":false}),
@@ -1108,18 +1079,24 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
     let count = requests.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     state.hk_draw_url = format!("http://{}/hk", listener.local_addr().unwrap());
+    state.draw_url = format!("http://{}/macau", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
-        let router = Router::new().route(
-            "/hk",
-            axum::routing::get(move || {
-                let response = response.clone();
-                let count = count.clone();
-                async move {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    axum::Json(response.read().unwrap().clone())
-                }
-            }),
-        );
+        let router = Router::new()
+            .route(
+                "/hk",
+                axum::routing::get(move || {
+                    let response = response.clone();
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(response.read().unwrap().clone())
+                    }
+                }),
+            )
+            .route(
+                "/macau",
+                axum::routing::get(|| async { axum::Json(json!([])) }),
+            );
         axum::serve(listener, router).await.unwrap();
     });
     let app = api::router(state.clone());
@@ -1141,6 +1118,7 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
         .unwrap();
     let macau = boot["today"]["id"].as_str().unwrap().to_owned();
     let hk = market::ensure_hk(&state).await.unwrap();
+    *time.write().unwrap() = hk.business_date.and_hms_opt(21, 34, 0).unwrap();
     worker::tick(&state).await.unwrap();
     assert_eq!(
         requests.load(Ordering::SeqCst),
@@ -1151,6 +1129,27 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
     let mut hk_line = line.clone();
     hk_line["market"] = json!("hk");
     let input = json!({"period":macau,"bettor":"synthetic-markets","request_id":uuid::Uuid::new_v4().to_string(),"items":[line,hk_line]});
+    ok(
+        &app,
+        "POST",
+        "/api/slips/preview",
+        json!({"period":macau,"bettor":"synthetic-markets","items":input["items"]}),
+        &cookie,
+    )
+    .await;
+    let mut rejected = input.clone();
+    rejected["items"][1]["selections"] = json!([50]);
+    assert_eq!(
+        call(&app, "POST", "/api/slips", rejected, &cookie).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    worker::tick(&state).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "preview/rejected bets do not start polling"
+    );
+    *time.write().unwrap() = hk.business_date.and_hms_opt(12, 0, 0).unwrap();
     let receipt = ok(&app, "POST", "/api/slips", input.clone(), &cookie).await;
     let id = receipt["id"].as_str().unwrap();
     let replay = ok(&app, "POST", "/api/slips", input.clone(), &cookie).await;
@@ -1228,14 +1227,52 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
         &cookie,
     )
     .await;
+    *time.write().unwrap() = hk.business_date.and_hms_opt(21, 33, 59).unwrap();
+    worker::tick(&state).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "accepted bets wait until 21:34 Beijing time"
+    );
+    let before: store::Period = sqlx::query_as("SELECT * FROM periods WHERE id=?")
+        .bind(&hk.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(before.last_fetch_at.is_none());
+    assert_eq!(store::view(&state, before).await.unwrap().phase, "open");
+    *time.write().unwrap() = hk.business_date.and_hms_opt(21, 34, 0).unwrap();
     worker::tick(&state).await.unwrap();
     assert_eq!(requests.load(Ordering::SeqCst), 1);
+    worker::tick(&state).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "do not refetch within 60 seconds"
+    );
+    sqlx::query(
+        "UPDATE periods SET last_fetch_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 60 SECOND) WHERE id=?",
+    )
+    .bind(&hk.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    worker::tick(&state).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        2,
+        "retry after 60 seconds even when the result is still old"
+    );
     let unchanged: store::Period = sqlx::query_as("SELECT * FROM periods WHERE id=?")
         .bind(&hk.id)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert!(unchanged.draw.is_none());
+    assert_eq!(
+        store::view(&state, unchanged.clone()).await.unwrap().phase,
+        "fetching"
+    );
     // Macau result cannot settle the HK leg.
     let raw = json!({"expect":macau,"openTime":"2026-10-31 21:34:00","openCode":"1,2,3,4,5,6,7","zodiac":"鼠,牛,虎,兔,龙,蛇,马","wave":"red,red,blue,blue,green,green,red"});
     worker::accept_draw(&state, &parse_draw(&raw).unwrap(), &raw)
@@ -1283,6 +1320,18 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
         .await
         .unwrap();
     assert_eq!(done.state, "settled");
+    let fetched = requests.load(Ordering::SeqCst);
+    sqlx::query("UPDATE periods SET last_fetch_at=NULL WHERE id=?")
+        .bind(&hk.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    worker::tick(&state).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        fetched,
+        "accepted draw stops polling"
+    );
     let complete = ok(&app, "GET", &format!("/api/slips/{id}"), json!({}), &cookie).await;
     assert_eq!(complete["status"], "settled");
     assert_eq!(complete["items"][0]["payout"], 0);
@@ -1357,6 +1406,70 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
         .await
         .unwrap();
     assert_eq!(reset.draw.as_ref().unwrap().expect, "2027007");
+    // A first bet entered after 21:34 starts on the next tick; cancelling all
+    // outstanding HK bets stops requests even when the retry interval is due.
+    *time.write().unwrap() = chrono::NaiveDate::from_ymd_opt(2027, 1, 3)
+        .unwrap()
+        .and_hms_opt(22, 0, 0)
+        .unwrap();
+    let current = store::ensure_period(&state, business_date(state.now()))
+        .await
+        .unwrap();
+    let mut late = input.clone();
+    late["period"] = json!(current.id);
+    late["items"] = json!([hk_line]);
+    late["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    let saved = ok(&app, "POST", "/api/slips", late, &cookie).await;
+    let saved_id = saved["id"].as_str().unwrap();
+    let details = ok(
+        &app,
+        "GET",
+        &format!("/api/slips/{saved_id}"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    let before_late = requests.load(Ordering::SeqCst);
+    worker::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), before_late + 1);
+    ok(&app, "POST", &format!("/api/slips/{saved_id}/cancel"),
+        json!({"versions":[{"id":details["items"][0]["id"],"revision":details["items"][0]["revision"]}]}), &cookie).await;
+    sqlx::query(
+        "UPDATE periods SET last_fetch_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 60 SECOND) WHERE id=?",
+    )
+    .bind(details["items"][0]["period_id"].as_str().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    worker::tick(&state).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        before_late + 1,
+        "cancelled HK bets do not keep polling alive"
+    );
+    *time.write().unwrap() = chrono::NaiveDate::from_ymd_opt(2027, 1, 4)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let current = store::ensure_period(&state, business_date(state.now()))
+        .await
+        .unwrap();
+    let mut resumed = input.clone();
+    resumed["period"] = json!(current.id);
+    resumed["items"] = json!([hk_line]);
+    resumed["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    ok(&app, "POST", "/api/slips", resumed, &cookie).await;
+    let resumed = market::ensure_hk(&state).await.unwrap();
+    assert_eq!(
+        resumed.business_date, current.business_date,
+        "cancelled history cannot start today's polling early"
+    );
+    assert!(resumed.last_fetch_at.is_none() && resumed.error.is_none());
+    worker::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), before_late + 1);
+    *time.write().unwrap() = current.business_date.and_hms_opt(21, 34, 0).unwrap();
+    worker::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), before_late + 2);
     server.abort();
     pool.close().await;
 }

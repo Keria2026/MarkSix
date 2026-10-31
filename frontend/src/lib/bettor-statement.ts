@@ -1,7 +1,7 @@
 import { PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { zipSync } from "fflate";
-import { money } from "./types";
+import { money, marketName } from "./types";
 import { statementFilename, statementRows, statementTotals } from "./statement";
 import type {
   BettorStatement,
@@ -115,11 +115,11 @@ function layout(
     text("投注单", LEFT, y, 13);
     end("金额单位：元", RIGHT, y, 8.5, muted);
     rect(LEFT, y - 42, RIGHT - LEFT, 27, [0.937, 0.953, 0.973]);
-    text("序号", 55, y - 33, 9, muted);
+    text("序号 / 市场", 55, y - 33, 9, muted, 65);
     end("下注本金", 190, y - 33, 9, muted, 90);
     end("中奖金额", 300, y - 33, 9, muted, 100);
     end(
-      data.settled ? "水钱（比例）" : "预计水钱（比例）",
+      total.net !== null ? "水钱（比例）" : "预计水钱（比例）",
       425,
       y - 33,
       9,
@@ -135,7 +135,7 @@ function layout(
   function continuation() {
     start();
     text(
-      `投注人：${name}  ｜  ${data.market === "hk" ? "香港" : "新澳门"} 第 ${data.draw?.expect ?? data.period} 期`,
+      `投注人：${name}  ｜  ${data.combined ? `录入日期 ${data.business_date}` : `${marketName(data.market)} 第 ${data.draw?.expect ?? data.period} 期`}`,
       LEFT,
       688,
       11,
@@ -143,7 +143,7 @@ function layout(
     return 652;
   }
   text(
-    `投注人：${name}  ｜  ${data.market === "hk" ? "香港" : "新澳门"} 第 ${data.draw?.expect ?? data.period} 期`,
+    `投注人：${name}  ｜  ${data.combined ? `录入日期 ${data.business_date}` : `${marketName(data.market)} 第 ${data.draw?.expect ?? data.period} 期`}`,
     LEFT,
     688,
     11,
@@ -161,7 +161,7 @@ function layout(
     if (
       i === rows.length - 1 &&
       lines.length <= 15 &&
-      y < Math.max(30, lines.length * 13 + 14) + 120
+      y < Math.max(45, lines.length * 13 + 14) + 120
     )
       y = header(continuation());
     while (line < lines.length) {
@@ -176,10 +176,19 @@ function layout(
       text(
         `${String(i + 1).padStart(3, "0")}${line ? "（续）" : ""}`,
         55,
-        center,
+        center + 7,
         9,
         muted,
         53,
+      );
+      text(marketName(row.market), 55, center - 6, 8, muted, 60);
+      text(
+        row.expect ?? (row.market === "macau" ? row.periodId : "待开奖"),
+        55,
+        center - 18,
+        7,
+        muted,
+        60,
       );
       end(line ? "—" : money(row.stake, false), 190, center, 10, ink, 90);
       end(
@@ -200,7 +209,7 @@ function layout(
         netColor(row.net),
         100,
       );
-      const height = Math.max(30, count * 13 + 14);
+      const height = Math.max(45, count * 13 + 14);
       rule(y - height + 12);
       y -= height;
       line += count;
@@ -212,7 +221,7 @@ function layout(
   text("合计", 55, y - 10, 10);
   end("总本金", 190, y + 1, 8, muted, 90);
   end("总中奖金额", 300, y + 1, 8, muted, 100);
-  end(data.settled ? "总反水" : "预计总反水", 425, y + 1, 8, muted, 115);
+  end(total.net !== null ? "总反水" : "预计总反水", 425, y + 1, 8, muted, 115);
   end("总净输赢", 538, y + 1, 8, muted, 100);
   end(money(total.stake, false), 190, y - 18, 10, ink, 90);
   end(
@@ -229,7 +238,7 @@ function layout(
     ops = page;
     rule(57);
     text(
-      `${data.market === "hk" ? "香港" : "新澳门"} 第 ${data.draw?.expect ?? data.period} 期`,
+      `${data.combined ? `录入日期 ${data.business_date}` : `${marketName(data.market)} 第 ${data.draw?.expect ?? data.period} 期`}`,
       LEFT,
       37,
       8,
@@ -366,7 +375,7 @@ export async function createBettorArchive(
       const name = statementFilename(bettor.name, used, format);
       if (format === "pdf") {
         doc.setTitle(
-          `${data.market === "hk" ? "香港" : "新澳门"} 第${data.draw?.expect ?? data.period}期 · ${bettor.name} · 投注对账单`,
+          `${data.combined ? `录入日期 ${data.business_date}` : `${marketName(data.market)} 第${data.draw?.expect ?? data.period}期`} · ${bettor.name} · 投注对账单`,
         );
         doc.setProducer("MarkSix");
         await paintPdf(doc, font, pages, signal);

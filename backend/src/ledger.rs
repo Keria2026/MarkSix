@@ -12,7 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, Row, types::Json as DbJson};
-use std::{collections::BTreeMap, sync::atomic::Ordering};
+use std::collections::BTreeMap;
 
 pub fn party(value: &str) -> Result<String, ApiError> {
     let value = value.trim();
@@ -25,6 +25,7 @@ pub fn party(value: &str) -> Result<String, ApiError> {
 }
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Layoff {
+    pub market: String,
     pub id: String,
     pub bet_id: String,
     pub period_id: String,
@@ -41,7 +42,7 @@ pub struct Layoff {
     pub created_at: chrono::NaiveDateTime,
     pub cancelled_at: Option<chrono::NaiveDateTime>,
 }
-pub const LAYOFF_COLUMNS: &str = "id,bet_id,period_id,receiver,amount,unit_count,stake,rebate,status,payout,winning_stake,void_stake,void_units,created_at,cancelled_at";
+pub const LAYOFF_COLUMNS: &str = "(SELECT market FROM bets WHERE bets.id=layoffs.bet_id) AS market,id,bet_id,period_id,receiver,amount,unit_count,stake,rebate,status,payout,winning_stake,void_stake,void_units,created_at,cancelled_at";
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mutation {
@@ -76,13 +77,11 @@ pub(crate) async fn invalidate(
     tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
     period: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status=IF(state='pending','queued','stale'),risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(period).execute(&mut **tx).await?;
+    sqlx::query("UPDATE periods SET bet_version=bet_version+1 WHERE id=?")
+        .bind(period)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
-}
-pub(crate) async fn cancel_calculation(state: &AppState, period: &str) {
-    if let Some(flag) = state.cancellations.lock().await.get(period) {
-        flag.store(true, Ordering::Relaxed);
-    }
 }
 pub(crate) async fn change_amount(
     State(state): State<AppState>,
@@ -276,7 +275,6 @@ async fn mutate(
     invalidate(&mut tx, &period).await?;
     crate::worker::settle_recorded(&mut tx, &p).await?;
     tx.commit().await?;
-    cancel_calculation(&state, &period).await;
     Ok(Json(response))
 }
 pub(crate) async fn cancel_layoff(
@@ -324,7 +322,6 @@ pub(crate) async fn cancel_layoff(
     invalidate(&mut tx, &period).await?;
     crate::worker::settle_recorded(&mut tx, &p).await?;
     tx.commit().await?;
-    cancel_calculation(&state, &period).await;
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Default, Clone, Serialize)]
@@ -353,12 +350,11 @@ impl LedgerTotals {
         self.rebate = checked_sum([self.rebate, rebate])?;
         self.refunded = checked_sum([self.refunded, refunded])?;
         self.payout = checked_sum([self.payout, payout.unwrap_or(0) - refunded])?;
-        if settled {
+        if !settled {
+            self.net = None;
+        } else if let Some(previous) = self.net {
             let net = stake - payout.unwrap_or(0) - rebate;
-            self.net = Some(checked_sum([
-                self.net.unwrap_or(0),
-                if outgoing { -net } else { net },
-            ])?);
+            self.net = Some(checked_sum([previous, if outgoing { -net } else { net }])?);
         }
         Ok(())
     }
@@ -366,6 +362,8 @@ impl LedgerTotals {
 #[derive(Deserialize, Default)]
 pub struct StatisticsPage {
     page: Option<u32>,
+    #[serde(default)]
+    combined: bool,
 }
 pub async fn statistics(
     State(state): State<AppState>,
@@ -374,26 +372,24 @@ pub async fn statistics(
 ) -> ApiResult<Json<Value>> {
     let page = query.page.unwrap_or(1).clamp(1, 100000);
     let mut tx = state.pool.begin().await?;
-    let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR SHARE")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(missing)?;
+    let scope = crate::reporting::scope(&mut tx, &id, query.combined).await?;
+    let bet_predicate = scope.bets();
+    let layoff_predicate = scope.layoffs();
     let bets: Vec<BetSummary> = sqlx::query_as(&format!(
-        "SELECT {BET_COLUMNS} FROM bets WHERE period_id=? AND status<>'cancelled'"
+        "SELECT {BET_COLUMNS} FROM bets WHERE {bet_predicate} AND status<>'cancelled'"
     ))
-    .bind(&id)
+    .bind(&scope.key)
     .fetch_all(&mut *tx)
     .await?;
     let layoffs: Vec<Layoff> = sqlx::query_as(&format!(
-        "SELECT {LAYOFF_COLUMNS} FROM layoffs WHERE period_id=? AND status<>'cancelled'"
+        "SELECT {LAYOFF_COLUMNS} FROM layoffs WHERE {layoff_predicate} AND status<>'cancelled'"
     ))
-    .bind(&id)
+    .bind(&scope.key)
     .fetch_all(&mut *tx)
     .await?;
-    let settled = p.state == "settled";
+    let settled = scope.settled(&bets);
     let empty = LedgerTotals {
-        net: settled.then_some(0),
+        net: Some(0),
         ..Default::default()
     };
     let mut incoming = empty.clone();
@@ -420,7 +416,7 @@ pub async fn statistics(
                     b.payout,
                     b.void_stake,
                 ),
-                settled,
+                b.status == "settled",
                 false,
             )?;
         }
@@ -440,18 +436,20 @@ pub async fn statistics(
                     b.payout,
                     b.void_stake,
                 ),
-                settled,
+                b.status == "settled",
                 true,
             )?;
         }
     }
     let retained = json!({"stake":incoming.stake-outgoing.stake,"rebate":incoming.rebate-outgoing.rebate,"payout":incoming.payout-outgoing.payout,"net":if settled {Some(checked_sum([incoming.net.unwrap_or(0),outgoing.net.unwrap_or(0)])?)} else {None}});
-    let layoffs_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM layoffs WHERE period_id=?")
-        .bind(&id)
-        .fetch_one(&mut *tx)
-        .await?;
-    let layoffs: Vec<Layoff> = sqlx::query_as(&format!("SELECT {LAYOFF_COLUMNS} FROM layoffs WHERE period_id=? ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET ?"))
-        .bind(&id).bind((page-1)*20).fetch_all(&mut *tx).await?;
+    let layoffs_total: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM layoffs WHERE {layoff_predicate}"
+    ))
+    .bind(&scope.key)
+    .fetch_one(&mut *tx)
+    .await?;
+    let layoffs: Vec<Layoff> = sqlx::query_as(&format!("SELECT {LAYOFF_COLUMNS} FROM layoffs WHERE {layoff_predicate} ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET ?"))
+        .bind(&scope.key).bind((page-1)*20).fetch_all(&mut *tx).await?;
     tx.commit().await?;
     let groups = |map: BTreeMap<String, LedgerTotals>| {
         map.into_iter()
@@ -459,7 +457,7 @@ pub async fn statistics(
             .collect::<Vec<_>>()
     };
     Ok(Json(
-        json!({"period":id,"settled":settled,"incoming":incoming,"outgoing":outgoing,"retained":retained,"bettors":groups(bettors),"receivers":groups(receivers),"layoffs":layoffs,"layoffs_total":layoffs_total,"layoffs_page":page}),
+        json!({"period":id,"business_date":scope.periods[0].business_date,"combined":scope.combined,"settled":settled,"incoming":incoming,"outgoing":outgoing,"retained":retained,"bettors":groups(bettors),"receivers":groups(receivers),"layoffs":layoffs,"layoffs_total":layoffs_total,"layoffs_page":page}),
     ))
 }
 pub async fn parties(State(state): State<AppState>) -> ApiResult<Json<Value>> {

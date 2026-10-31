@@ -49,6 +49,14 @@ async function openText(page: Page) {
         features,
         plays,
         zodiacs: [],
+        day: {
+          id: "2040001",
+          business_date: "2040-01-01",
+          phase: "open",
+          state: "pending",
+          totals,
+          periods: [],
+        },
         today: {
           id: "2040001",
           business_date: "2040-01-01",
@@ -58,7 +66,6 @@ async function openText(page: Page) {
           mapping: annualMapping(2026),
           bet_version: 0,
           draw: null,
-          risk_status: "stale",
           totals,
           server_time: new Date().toISOString(),
         },
@@ -226,6 +233,68 @@ test("pinyin and reordered fields submit their normalized selections", async ({
   ]);
 });
 
+test("each-number homophones and linked tails retain their meanings through confirmation", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  await page
+    .getByLabel("投注原文")
+    .fill("牛个数70 马牛个数90 羊兔马牛个数90\n268三连尾80 359三连尾60");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await modal.getByPlaceholder("填写投注人").fill("synthetic-tail-entry");
+  await expect(modal.locator(".text-entry-rows > li")).toHaveCount(5);
+  const special = String(plays.find((p) => p.rule.name === "特码")!.id);
+  const tail = String(plays.find((p) => p.rule.name === "三尾连")!.id);
+  for (const [index, id] of [special, special, special].entries()) {
+    await expect(
+      modal.getByLabel(`第${index + 1}项对应玩法`, { exact: true }),
+    ).toHaveValue(id);
+  }
+  await expect(
+    modal.getByRole("combobox", { name: "“三连尾”对应玩法", exact: true }),
+  ).toHaveValue(tail);
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const { items } = writes[0] as {
+    items: {
+      play_id: number;
+      selections: number[];
+      amount: string;
+      package_zodiacs?: number[];
+      compound: boolean;
+    }[];
+  };
+  expect(
+    items.map((i) => ({
+      play: plays.find((p) => p.id === i.play_id)!.rule.name,
+      selections: i.selections,
+      amount: i.amount,
+    })),
+  ).toEqual([
+    { play: "特码", selections: [6, 18, 30, 42], amount: "70" },
+    {
+      play: "特码",
+      selections: [1, 6, 13, 18, 25, 30, 37, 42, 49],
+      amount: "90",
+    },
+    {
+      play: "特码",
+      selections: [
+        1, 4, 6, 12, 13, 16, 18, 24, 25, 28, 30, 36, 37, 40, 42, 48, 49,
+      ],
+      amount: "90",
+    },
+    { play: "三尾连", selections: [2, 6, 8], amount: "80" },
+    { play: "三尾连", selections: [3, 5, 9], amount: "60" },
+  ]);
+  expect(items.every((i) => !i.compound && !i.package_zodiacs)).toBe(true);
+});
+
 test("leading totals validate future rows and track edits", async ({
   page,
 }) => {
@@ -299,7 +368,7 @@ test("a mixed Macau and Hong Kong slip keeps market choices in the confirmed req
   page,
 }) => {
   const writes = await openText(page);
-  await page.getByLabel("投注原文").fill("香港特码12各100\n澳门特码13各200");
+  await page.getByLabel("投注原文").fill("特码12各100香港\n特码13澳门各200");
   await page.getByRole("button", { name: "校验", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "确认投注单" });
   await expect(dialog.getByLabel("第1项市场", { exact: true })).toHaveValue(
@@ -329,4 +398,25 @@ test("a mixed Macau and Hong Kong slip keeps market choices in the confirmed req
     { market: "hk", amount: "100", selections: [12] },
     { market: "macau", amount: "200", selections: [13] },
   ]);
+});
+
+test("conflicting market markers require an explicit choice before submission", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  await page.getByLabel("投注原文").fill("香港特码12各100澳门");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "确认投注单" });
+  await dialog.getByPlaceholder("填写投注人").fill("synthetic-market-conflict");
+  await expect(
+    dialog.getByRole("button", { name: "确认录入", exact: true }),
+  ).toBeDisabled();
+  await expect(dialog.getByLabel("第1项市场", { exact: true })).toHaveValue("");
+  await dialog.getByLabel("第1项市场", { exact: true }).selectOption("hk");
+  await dialog.getByRole("button", { name: "确认录入", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toHaveLength(1);
+  expect((writes[0] as { items: { market: string }[] }).items[0].market).toBe(
+    "hk",
+  );
 });

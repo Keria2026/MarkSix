@@ -1,4 +1,4 @@
-use crate::{domain::*, risk, store::*};
+use crate::{domain::*, store::*};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Extension, Json, Router,
@@ -14,10 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, types::Json as DbJson};
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub struct ApiError(pub StatusCode, pub String);
@@ -116,10 +113,11 @@ pub fn router(state: AppState) -> Router {
         .route("/slips/{id}/cancel", post(crate::records::cancel))
         .route("/periods/{id}/bettor-export", get(crate::records::export))
         .route("/bets/search", post(crate::queries::search_bets))
-        .route("/periods/{id}/risk", post(retry_risk))
         .route("/bets/{id}/amount", put(crate::ledger::change_amount))
         .route("/bets/{id}/layoffs", post(crate::ledger::fly_out))
         .route("/layoffs/{id}/cancel", post(crate::ledger::cancel_layoff))
+        .route("/days", get(crate::reporting::days))
+        .route("/days/{id}", get(crate::reporting::day))
         .route("/periods/{id}/statistics", get(crate::ledger::statistics))
         .route(
             "/periods/{id}/bet-filters",
@@ -128,7 +126,6 @@ pub fn router(state: AppState) -> Router {
         .route("/parties", get(crate::ledger::parties))
         .route("/bets/{id}", get(bet_detail))
         .route("/bets/{id}/cancel", post(cancel_bet))
-        .route("/quote", post(quote))
         .route("/plays", post(create_play))
         .route(
             "/plays/{id}",
@@ -340,35 +337,8 @@ async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(
-        json!({"today":view(&state,today).await?,"hk":hk,"plays":plays,"zodiacs":ZODIACS,"features":crate::features::read(&state.pool).await?}),
+        json!({"day":crate::reporting::view(&state,&today.id).await?,"today":view(&state,today).await?,"hk":hk,"plays":plays,"zodiacs":ZODIACS,"features":crate::features::read(&state.pool).await?}),
     ))
-}
-async fn retry_risk(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<Value>> {
-    let mut tx = state.pool.begin().await?;
-    let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(missing)?;
-    if p.state != "pending" {
-        return Err(conflict("本期已经开奖或停止抓取，不能重新预测"));
-    }
-    if matches!(p.risk_status.as_str(), "failed" | "timeout" | "stale") {
-        sqlx::query("UPDATE periods SET risk_status='queued',risk_requested_at=UTC_TIMESTAMP(6),risk_task_id=NULL,risk_error=NULL,risk_result=NULL WHERE id=?")
-            .bind(&id).execute(&mut *tx).await?;
-        audit(
-            &mut tx,
-            Some(&id),
-            "risk_requeued",
-            json!({"version": p.bet_version}),
-        )
-        .await?;
-    }
-    tx.commit().await?;
-    Ok(Json(json!({"ok":true})))
 }
 async fn bet_detail(
     State(state): State<AppState>,
@@ -401,31 +371,6 @@ async fn bet_detail(
     Ok(Json(
         json!({"record":summary,"atoms":atoms,"results":results,"layoffs":layoffs,"events":events}),
     ))
-}
-async fn current_plan(state: &AppState, input: &BetInput) -> ApiResult<(Period, Play, BetPlan)> {
-    let p = if input.market == crate::market::Market::Hk {
-        crate::market::ensure_hk(state).await?
-    } else {
-        ensure_period(state, business_date(state.now())).await?
-    };
-    if input.period != p.id
-        && !(input.market == crate::market::Market::Hk
-            && input.period == period_id(business_date(state.now())))
-    {
-        return Err(conflict("期次已切换，请刷新后重新录入"));
-    }
-    let play: Play = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL",
-    )
-    .bind(input.play_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(missing)?;
-    if play.version != input.play_version || !play.enabled {
-        return Err(conflict("玩法配置已变更或停用，请刷新并确认最新规则"));
-    }
-    let plan = plan(&play.rule, input, &p.mapping)?;
-    Ok((p, play, plan))
 }
 async fn cancel_bet(
     State(state): State<AppState>,
@@ -465,70 +410,14 @@ async fn cancel_bet(
         .bind(&id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE periods SET bet_version=bet_version+1,risk_status=IF(state='pending','queued','stale'),risk_requested_at=UTC_TIMESTAMP(6),risk_error=NULL WHERE id=?").bind(&period).execute(&mut *tx).await?;
+    sqlx::query("UPDATE periods SET bet_version=bet_version+1 WHERE id=?")
+        .bind(&period)
+        .execute(&mut *tx)
+        .await?;
     audit(&mut tx, Some(&period), "bet_cancelled", json!({"id":id})).await?;
     crate::worker::settle_recorded(&mut tx, &p).await?;
     tx.commit().await?;
-    if let Some(flag) = state.cancellations.lock().await.get(&period) {
-        flag.store(true, Ordering::Relaxed);
-    }
     Ok(Json(json!({"ok":true})))
-}
-async fn quote(
-    State(state): State<AppState>,
-    Json(input): Json<BetInput>,
-) -> ApiResult<Json<Value>> {
-    let started = Instant::now();
-    let (period, _, plan) = current_plan(&state, &input).await?;
-    if let Some(draw) = &period.draw {
-        let results = settle(&plan.atoms, draw);
-        let payout = checked_sum(results.iter().map(|r| r.payout))?;
-        let rebate = checked_sum(results.iter().map(|r| r.rebate))?;
-        return Ok(Json(
-            json!({"units":plan.atoms.len(),"stake":plan.stake,"rebate":rebate,"max_return":payout,"max_profit":checked_sum([payout,rebate,-plan.stake])?,"result":null,"settled":true}),
-        ));
-    }
-
-    let permit = state.risk_gate.clone().try_acquire_owned().map_err(|_| {
-        ApiError(
-            StatusCode::TOO_MANY_REQUESTS,
-            "精确计算正在运行，稍后自动重试".into(),
-        )
-    })?;
-    let atoms = plan.atoms.clone();
-    let mapping = period.mapping.0;
-    let result = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let result = risk::solve(
-            &atoms,
-            &mapping,
-            Duration::from_secs(60).saturating_sub(started.elapsed()),
-            &AtomicBool::new(false),
-        )?;
-        let max_return = if atoms.iter().any(|a| a.void_on_49) {
-            let mut payout_only = atoms.clone();
-            for a in &mut payout_only {
-                a.rebate = 0;
-            }
-            risk::solve(
-                &payout_only,
-                &mapping,
-                Duration::from_secs(60).saturating_sub(started.elapsed()),
-                &AtomicBool::new(false),
-            )?
-            .max_payout
-        } else {
-            result.max_payout
-        };
-        Ok::<_, risk::RiskError>((result, max_return))
-    })
-    .await
-    .map_err(anyhow::Error::from)?;
-    let (result, max_return) =
-        result.map_err(|e| ApiError(StatusCode::REQUEST_TIMEOUT, e.to_string()))?;
-    Ok(Json(
-        json!({"units":plan.atoms.len(),"stake":plan.stake,"rebate":plan.rebate,"max_return":max_return,"max_profit":-result.min_net,"result":result}),
-    ))
 }
 async fn create_play(
     State(state): State<AppState>,

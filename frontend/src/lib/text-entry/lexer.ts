@@ -30,14 +30,35 @@ export interface Token {
   labels?: string[];
 }
 
+export const marketLabels = [
+  "香港六合彩",
+  "新澳门",
+  "新澳",
+  "澳门",
+  "香港",
+  "澳",
+  "港",
+  "香",
+];
+// Canonicalize only amount operators; ordinary words and configured play names
+// retain their spelling and source span.
+const amountAliases: Record<string, string> = {
+  个: "各",
+  個: "各",
+  个数: "各数",
+  各个数: "各数",
+  個數: "各数",
+  各個數: "各数",
+  个肖: "各肖",
+  個肖: "各肖",
+  个组: "各组",
+  個組: "各组",
+};
 const operators: [string, TokenKind][] = [
-  ...["新澳门", "新澳", "澳门", "澳", "香港六合彩", "香港", "港", "香"].map(
-    (s): [string, TokenKind] => [s, "market"],
-  ),
+  ...marketLabels.map((s): [string, TokenKind] => [s, "market"]),
   ...[
     "各号",
-    "各个数",
-    "个数",
+    ...Object.keys(amountAliases),
     "各组",
     "每组",
     "每尾",
@@ -47,7 +68,6 @@ const operators: [string, TokenKind][] = [
     "各/",
     "各数",
     "各注",
-    "个组",
     "每个",
     "每注",
     "每肖",
@@ -145,6 +165,8 @@ export function tokenize(
         continue;
       const exact = dictionary.find(([name]) => name === input);
       if (exact) return [...exact, length];
+      // Literal numerals must not become homophones such as 零 -> 另.
+      if (/^[零〇一二两三四五六七八九十百千万]+$/u.test(input)) continue;
       const matches = phonetic.get(sound(input));
       if (!matches?.length) continue;
       const kinds = new Set(matches.map(([, kind]) => kind));
@@ -155,8 +177,12 @@ export function tokenize(
         if (canResolvePlay?.(input)) return [input, kind, length];
         continue;
       }
-      const names = new Set(matches.map(([name]) => name));
-      if (names.size === 1) return [matches[0][0], kind, length];
+      const names = new Set(
+        matches.map(([name]) =>
+          kind === "amount" ? (amountAliases[name] ?? name) : name,
+        ),
+      );
+      if (names.size === 1) return [[...names][0], kind, length];
     }
   }
   const spaced = dictionary
@@ -249,7 +275,13 @@ export function tokenize(
         candidate && match(rest.slice(candidate[0].length - 1))?.[1] !== "play"
           ? candidate
           : null;
-      text = money?.[0] ?? /^\d+/u.exec(rest)![0];
+      // In 2683连尾, the final 3 qualifies 连尾 and the preceding 268 is
+      // the selection. An explicit amount operator still owns its full number.
+      const tailPrefix =
+        previousSignificant()?.kind === "amount"
+          ? undefined
+          : /^(\d+)[2-9](?=\s*(?:连\s*尾|尾\s*连))/u.exec(rest)?.[1];
+      text = money?.[0] ?? tailPrefix ?? /^\d+/u.exec(rest)![0];
       kind = money ? "money" : "number";
     } else if (/^[零〇一二两三四五六七八九十百千万]/u.test(rest)) {
       text = /^[零〇一二两三四五六七八九十百千万]+/u.exec(rest)![0];
@@ -283,8 +315,8 @@ export function tokenize(
       text:
         kind === "currency"
           ? "元"
-          : text === "1组"
-            ? "一组"
+          : kind === "amount"
+            ? (amountAliases[text] ?? (text === "1组" ? "一组" : text))
             : kind === "number"
               ? (monetaryLiteral(text) ?? text)
               : text,

@@ -23,9 +23,12 @@
   let busy = $state(false),
     error = $state(""),
     status = $state("");
+  let observedPeriod = untrack(() => period);
   $effect(() => {
-    period;
+    const next = period;
     untrack(() => {
+      if (next === observedPeriod) return;
+      observedPeriod = next;
       controller?.abort();
       status = "";
       error = "";
@@ -46,7 +49,7 @@
     status = "正在读取账单…";
     try {
       const data = await requests.api<BettorStatement>(
-        `/periods/${requestedPeriod}/bettor-export`,
+        `/periods/${requestedPeriod}/bettor-export?combined=true`,
         { signal },
       );
       if (!data.bettors.length) throw new Error("本期暂无投注人记录");
@@ -71,7 +74,7 @@
       );
       const link = document.createElement("a");
       link.href = url;
-      link.download = `第${requestedPeriod}期-投注人对账单-${requestedFormat}.zip`;
+      link.download = `${data.business_date ?? requestedPeriod}-投注人对账单-${requestedFormat}.zip`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       status = `已导出全部投注人 ${requestedFormat.toUpperCase()} 账单`;

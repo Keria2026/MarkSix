@@ -35,6 +35,17 @@ const meanings: Record<string, string> = Object.fromEntries(
         ];
       }),
     ),
+    // 尾连 / 连尾 are the same explicitly tail-qualified play. Keep the whole
+    // label even when unconfigured, so it cannot fall back to a zodiac 连 alias.
+    ...Object.fromEntries(
+      Array.from({ length: 8 }, (_, i) => i + 2).map((n) => {
+        const cn = "一二三四五六七八九"[n - 1];
+        return [
+          cn + "尾连",
+          [cn + "尾连", n + "尾连", cn + "连尾", n + "连尾"],
+        ];
+      }),
+    ),
     一肖中: [
       "一肖中",
       "一有",

@@ -667,13 +667,16 @@
               {#if !row.summary}<label
                   >市场<select
                     aria-label={`第${index + 1}项市场`}
-                    value={row.market ?? "macau"}
+                    value={row.marketConflict ? "" : (row.market ?? "macau")}
                     disabled={busy}
                     onchange={(event) => {
                       row.market = event.currentTarget.value as "macau" | "hk";
+                      row.marketConflict = false;
                     }}
-                    ><option value="macau">新澳门</option><option value="hk"
-                      >香港</option
+                    >{#if row.marketConflict}<option value="" disabled
+                        >请确认市场</option
+                      >{/if}<option value="macau">新澳门</option><option
+                      value="hk">香港</option
                     ></select
                   ></label
                 >{/if}

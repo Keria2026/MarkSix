@@ -216,8 +216,9 @@ async fn hosted_tenant_and_credential_contract() {
     let lease = r.lease(&accounts[0]).await.unwrap();
     let old_date = today().pred_opt().unwrap();
     let old = crate::store::ensure_period(&lease, old_date).await.unwrap();
-    sqlx::query("UPDATE bets SET period_id=?")
+    sqlx::query("UPDATE bets SET period_id=?,entry_date=?")
         .bind(&old.id)
+        .bind(old_date)
         .execute(&lease.pool)
         .await
         .unwrap();
@@ -288,6 +289,18 @@ async fn hosted_tenant_and_credential_contract() {
     for (started, _) in c.attempts.lock().await.values_mut() {
         *started = std::time::Instant::now() - std::time::Duration::from_secs(61);
     }
+    // Pending HK also protects a standalone entry's reporting-date anchor.
+    let old_single_date = old_date.pred_opt().unwrap();
+    let old_single = crate::store::ensure_period(&lease, old_single_date)
+        .await
+        .unwrap();
+    let single = ok(&app, "POST", "/api/bets", json!({"period":boot["today"]["id"],"market":"hk","bettor":"synthetic-single-hk","request_id":uuid::Uuid::new_v4().to_string(),"play_id":p["id"],"play_version":p["version"],"selections":[9],"compound":false,"amount":"10"}), &ca).await;
+    sqlx::query("UPDATE bets SET entry_date=? WHERE id=?")
+        .bind(old_single_date)
+        .bind(single["id"].as_str().unwrap())
+        .execute(&lease.pool)
+        .await
+        .unwrap();
     // A pending HK leg protects its mixed-slip parent and its Macau sibling.
     let mixed = json!({"period":boot["today"]["id"],"bettor":"synthetic-preserve-hk","request_id":uuid::Uuid::new_v4().to_string(),"items":[{"play_id":p["id"],"play_version":p["version"],"selections":[8],"compound":false,"amount":"20"},{"market":"hk","play_id":p["id"],"play_version":p["version"],"selections":[9],"compound":false,"amount":"30"}]});
     let mixed_receipt = ok(&app, "POST", "/api/slips", mixed, &ca).await;
@@ -295,6 +308,12 @@ async fn hosted_tenant_and_credential_contract() {
     let old = crate::store::ensure_period(&lease, old_date).await.unwrap();
     sqlx::query("UPDATE bets SET period_id=? WHERE slip_id=? AND market='macau'")
         .bind(&old.id)
+        .bind(mixed_id)
+        .execute(&lease.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE bets SET entry_date=? WHERE slip_id=?")
+        .bind(old_date)
         .bind(mixed_id)
         .execute(&lease.pool)
         .await
@@ -328,6 +347,14 @@ async fn hosted_tenant_and_credential_contract() {
             .unwrap(),
         2
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM periods WHERE id=?")
+            .bind(&old_single.id)
+            .fetch_one(&lease.pool)
+            .await
+            .unwrap(),
+        1
+    );
     // Once the HK period has an archived draw, both sides may be removed together.
     let archived_draw = crate::domain::Draw {
         expect: "2026116".into(),
@@ -353,6 +380,14 @@ async fn hosted_tenant_and_credential_contract() {
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets WHERE slip_id=?")
             .bind(mixed_id)
+            .fetch_one(&lease.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM periods WHERE id=?")
+            .bind(&old_single.id)
             .fetch_one(&lease.pool)
             .await
             .unwrap(),

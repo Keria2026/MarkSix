@@ -59,16 +59,9 @@ async fn bounded_pools_pin_live_leases_evict_idle_entries_and_reap_deleted_tenan
             .unwrap(),
         "synthetic"
     );
-    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    newest
-        .cancellations
-        .lock()
-        .await
-        .insert("synthetic-period".into(), cancelled.clone());
     assert!(!registry.states.lock().await[&accounts[12].id].evictable());
     drop(newest);
     registry.sweep().await.unwrap();
-    assert!(cancelled.load(Ordering::Relaxed));
     assert!(
         registry
             .states

@@ -25,6 +25,7 @@ function sample(settled = true): Bettor {
         record: {
           id: "b",
           slip_id: "slip",
+          period_id: "2040001",
           created_at: "2040-01-01T00:00:00",
           status: settled ? "settled" : "pending",
           unit_count: 1,
@@ -48,6 +49,9 @@ test("statement totals use the bettor's financial direction and leave pending pa
   expect(rows).toEqual([
     {
       id: "slip",
+      market: "macau",
+      expect: null,
+      periodId: "2040001",
       createdAt: "2040-01-01T00:00:00",
       stake: 10000n,
       payout: 20000n,
@@ -254,4 +258,73 @@ test("separate slips sort by creation and identity and aggregate distinct rebate
       { rate: "2.5", base: 10000n, amount: 250n },
     ],
   });
+});
+
+test("a mixed receipt keeps market labels and partial settlement without inventing a final net", () => {
+  const data = sample();
+  data.bets[0].record.expect = "2040001";
+  const pending = sample(false).bets[0];
+  pending.record.id = "hk";
+  pending.record.market = "hk";
+  pending.record.period_id = "hk-internal";
+  data.bets.push(pending);
+  Object.assign(data.totals, {
+    stake: 20000,
+    payout: 20000,
+    rebate: 400,
+    net: null,
+    records: 2,
+    units: 2,
+  });
+  const rows = statementRows(data, false);
+  expect(
+    rows.map((r) => ({
+      market: r.market,
+      expect: r.expect,
+      stake: r.stake,
+      payout: r.payout,
+      net: r.net,
+    })),
+  ).toEqual([
+    {
+      market: "macau",
+      expect: "2040001",
+      stake: 10000n,
+      payout: 20000n,
+      net: 10200n,
+    },
+    { market: "hk", expect: null, stake: 10000n, payout: null, net: null },
+  ]);
+  expect(statementTotals(rows, false).stake).toBe(20000n);
+  expect(statementTotals(rows, false).net).toBeNull();
+  // A settled void must use the actual zero rebate even while HK is pending.
+  Object.assign(data.bets[0].record, {
+    payout: 10000,
+    rebate: 0,
+    void_stake: 10000,
+  });
+  Object.assign(data.bets[0].results![0], {
+    payout: 10000,
+    rebate: 0,
+    voided: true,
+  });
+  Object.assign(data.totals, {
+    stake: 10000,
+    payout: 0,
+    rebate: 200,
+    refunded: 10000,
+  });
+  const partial = statementRows(data, false);
+  expect(partial[0].net).toBe(0n);
+  expect(partial[0].bands).toEqual([]);
+  expect(statementTotals(partial, false).rebate).toBe(200n);
+});
+
+test("a fully settled bettor keeps a final total while other bettors await a different market", () => {
+  const data = sample();
+  const totals = statementTotals(statementRows(data, false), false);
+  expect(totals.payout).toBe(20000n);
+  expect(totals.net).toBe(10200n);
+  data.totals.net = null;
+  expect(() => statementRows(data, false)).toThrow("账单明细与汇总不一致");
 });
