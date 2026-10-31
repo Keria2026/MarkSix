@@ -601,6 +601,180 @@ async fn ok(app: &Router, method: &str, path: &str, body: Value, cookie: &str) -
 
 #[tokio::test]
 #[ignore = "requires isolated marksix_test database"]
+async fn zero_tail_rebate_configuration_snapshots_settlement_and_exports() {
+    let pool = database::reset().await.unwrap();
+    let mut state = store::AppState::new(pool.clone()).unwrap();
+    let date = chrono::NaiveDate::from_ymd_opt(2040, 1, 1).unwrap();
+    state.clock = Arc::new(move || date.and_hms_opt(12, 0, 0).unwrap());
+    let app = api::router(state.clone());
+    let (_, _, cookie) = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"username":"test-admin","password":std::env::var("TEST_ADMIN_PASSWORD").unwrap()}),
+        "",
+    )
+    .await;
+    let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let period = boot["today"]["id"].as_str().unwrap();
+    let play = boot["plays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["rule"]["name"] == "尾中")
+        .unwrap();
+    assert!(play["rule"]["zero_tail_rebate_percent"].is_null());
+    let id = play["id"].as_i64().unwrap();
+    let mut rule = play["rule"].clone();
+    rule["odds"] = json!("2");
+    rule["zero_tail_odds"] = json!("3");
+    rule["rebate_percent"] = json!("3");
+    rule["zero_tail_rebate_percent"] = json!("7.25");
+    ok(
+        &app,
+        "PUT",
+        &format!("/api/plays/{id}"),
+        json!({"version":1,"rule":rule,"enabled":true}),
+        &cookie,
+    )
+    .await;
+    let line =
+        json!({"play_id":id,"play_version":2,"selections":[0,2],"compound":false,"amount":"100"});
+    let preview = ok(
+        &app,
+        "POST",
+        "/api/slips/preview",
+        json!({"period":period,"bettor":"synthetic-zero-tail","items":[line]}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(preview["valid"], true);
+    assert_eq!(preview["units"], 2);
+    assert_eq!(preview["stake"], 20000);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    ok(&app, "POST", "/api/slips", json!({"period":period,"bettor":"synthetic-zero-tail","request_id":uuid::Uuid::new_v4().to_string(),"items":[line]}), &cookie).await;
+    let bet_id: String = sqlx::query_scalar("SELECT id FROM bets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT rebate FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1025
+    );
+    let exported = ok(
+        &app,
+        "GET",
+        &format!("/api/plays/export?id={id}"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        exported["plays"][0]["rule"]["zero_tail_rebate_percent"],
+        "7.25"
+    );
+    // A later rule version must not change already accepted atoms or their flyouts.
+    ok(&app,"POST","/api/plays/batch",json!({"action":"update","targets":[{"id":id,"version":2}],"rule":{"zero_tail_rebate_percent":"1.5"}}),&cookie).await;
+    ok(
+        &app,
+        "PUT",
+        "/api/settings/features",
+        json!({"layoffs":true,"manual_entry":true,"text_entry":true}),
+        &cookie,
+    )
+    .await;
+    ok(&app,"POST",&format!("/api/bets/{bet_id}/layoffs"),json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":1,"amount":"20","receiver":"synthetic-zero-receiver"}),&cookie).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT rebate FROM layoffs")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        205
+    );
+    let mut draw = Draw::predicted([10, 12, 3, 4, 5, 6, 7], &Mapping::default());
+    draw.expect = period.into();
+    draw.open_time = date.and_hms_opt(21, 34, 0).unwrap();
+    worker::accept_draw(&state, &draw, &json!({}))
+        .await
+        .unwrap();
+    worker::accept_draw(&state, &draw, &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64)>("SELECT payout,rebate FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        (50000, 1025)
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64)>("SELECT payout,rebate FROM layoffs")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        (10000, 205)
+    );
+    let stats = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{period}/statistics?combined=true"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(stats["retained"]["stake"], 16000);
+    assert_eq!(stats["retained"]["rebate"], 820);
+    assert_eq!(stats["retained"]["net"], -24820);
+    let report = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{period}/bettor-export?combined=true"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    let bettor = &report["bettors"][0];
+    assert_eq!(bettor["totals"]["rebate"], 1025);
+    assert_eq!(bettor["totals"]["net"], -31025);
+    assert_eq!(
+        bettor["bets"][0]["record"]["rule"]["zero_tail_rebate_percent"],
+        "7.25"
+    );
+    assert_eq!(bettor["bets"][0]["atoms"][0]["rebate_percent"], "7.25");
+    assert_eq!(bettor["bets"][0]["atoms"][1]["rebate_percent"], "3");
+    // Portable files preserve the optional rate; clearing it does not mutate old bets.
+    ok(&app, "POST", "/api/plays/import", exported, &cookie).await;
+    ok(&app,"POST","/api/plays/batch",json!({"action":"update","targets":[{"id":id,"version":4}],"rule":{"zero_tail_rebate_percent":null}}),&cookie).await;
+    let cleared = ok(
+        &app,
+        "GET",
+        &format!("/api/plays/export?id={id}"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert!(cleared["plays"][0]["rule"]["zero_tail_rebate_percent"].is_null());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT rebate FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1025
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated marksix_test database"]
 async fn query_export_preferences_cancellation_and_mapping_contract() {
     let pool = database::reset().await.unwrap();
     let mut state = store::AppState::new(pool.clone()).unwrap();

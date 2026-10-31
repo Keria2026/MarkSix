@@ -79,6 +79,12 @@
           nullable: true,
         },
         {
+          key: "zero_tail_rebate_percent",
+          label: "0 尾特殊反水（%）",
+          decimal: true,
+          nullable: true,
+        },
+        {
           key: "special_hit_odds",
           label: "一特一平赔率",
           decimal: true,

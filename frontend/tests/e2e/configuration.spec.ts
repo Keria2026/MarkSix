@@ -27,10 +27,16 @@ test("configuration editor preserves values after failure, then creates, batches
   await dialog.getByLabel("投注对象", { exact: true }).selectOption("tail");
   await dialog.getByLabel("启用 0 尾特殊赔率").check();
   await dialog.getByLabel("0 尾含本赔率").fill("2");
+  await dialog.getByLabel("启用 0 尾特殊反水").check();
+  await dialog.getByLabel("0 尾反水（%）", { exact: true }).fill("7.25");
   await dialog.getByLabel("启用本命生肖特殊赔率").check();
   await dialog.getByLabel("启用本命肖特殊反水").check();
   await dialog.getByLabel("投注对象", { exact: true }).selectOption("number");
+  await expect(dialog.getByLabel("启用 0 尾特殊反水")).toBeHidden();
+  await dialog.getByLabel("投注对象", { exact: true }).selectOption("tail");
+  await dialog.getByLabel("启用 0 尾特殊反水").check();
   await dialog.getByLabel("命中条件").selectOption("hard_pair");
+  await expect(dialog.getByLabel("启用 0 尾特殊反水")).toBeHidden();
   await dialog.getByLabel("命中条件").selectOption("all");
   await dialog.getByLabel("投注对象", { exact: true }).selectOption("number");
   let reject = true;
@@ -69,6 +75,73 @@ test("configuration editor preserves values after failure, then creates, batches
   await expect(
     page.getByLabel("选择玩法 合成配置测试", { exact: true }),
   ).toBeHidden();
+});
+
+test("zero-tail rebate can be validated, saved as zero, batch updated and cleared", async ({
+  page,
+}) => {
+  await settings(page);
+  await page.getByRole("button", { name: "新建玩法", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: "新建玩法" });
+  await dialog.getByLabel("玩法名称").fill("合成0尾反水");
+  await dialog.getByLabel("投注对象", { exact: true }).selectOption("tail");
+  await dialog.getByLabel("开奖对比范围").selectOption("all");
+  await dialog.getByLabel("反水比例（%）", { exact: true }).fill("3");
+  await dialog.getByLabel("启用 0 尾特殊反水").check();
+  const rate = dialog.getByLabel("0 尾反水（%）", { exact: true });
+  await expect(rate).toHaveValue("3");
+  await dialog.getByLabel("启用 0 尾特殊反水").uncheck();
+  await expect(rate).toBeHidden();
+  await dialog.getByLabel("启用 0 尾特殊反水").check();
+  await rate.fill("100.01");
+  await dialog.getByRole("button", { name: "保存玩法" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("0 尾特殊反水");
+  await expect(rate).toHaveValue("100.01");
+  await rate.fill("7.25");
+  await dialog.getByRole("button", { name: "保存玩法" }).click();
+  await expect(dialog).toBeHidden();
+  await page.getByLabel("搜索配置玩法").fill("合成0尾反水");
+  await page.getByRole("button", { name: /^合成0尾反水/ }).click();
+  dialog = page.getByRole("dialog", { name: "编辑玩法" });
+  await expect(dialog.getByLabel("启用 0 尾特殊反水")).toBeChecked();
+  await expect(dialog.getByLabel("0 尾反水（%）", { exact: true })).toHaveValue(
+    "7.25",
+  );
+  await dialog.getByLabel("0 尾反水（%）", { exact: true }).fill("0");
+  await dialog.getByRole("button", { name: "保存玩法" }).click();
+  await expect(dialog).toBeHidden();
+  async function exportedRate() {
+    const response = await page.request.get("/api/plays/export");
+    expect(response.ok()).toBe(true);
+    const data = await response.json();
+    return data.plays.find(
+      (p: { rule: { name: string } }) => p.rule.name === "合成0尾反水",
+    ).rule.zero_tail_rebate_percent;
+  }
+  expect(await exportedRate()).toBe("0");
+  for (const clear of [false, true]) {
+    await page.getByLabel("选择玩法 合成0尾反水", { exact: true }).check();
+    await page.getByRole("button", { name: "批量调整" }).click();
+    dialog = page.getByRole("dialog");
+    await dialog.getByText("特殊赔率与反水", { exact: true }).click();
+    if (clear) await dialog.getByLabel("清除0 尾特殊反水（%）").check();
+    else await dialog.getByLabel("批量0 尾特殊反水（%）").fill("6.5");
+    await dialog.getByRole("button", { name: "保存批量调整" }).click();
+    await expect(dialog).toBeHidden();
+    expect(await exportedRate()).toBe(clear ? null : "6.5");
+  }
+  await page.getByRole("button", { name: /^合成0尾反水/ }).click();
+  dialog = page.getByRole("dialog", { name: "编辑玩法" });
+  await expect(dialog.getByLabel("启用 0 尾特殊反水")).not.toBeChecked();
+  await expect(
+    dialog.getByLabel("0 尾反水（%）", { exact: true }),
+  ).toBeHidden();
+  await dialog.getByRole("button", { name: "关闭对话框" }).click();
+  await page.getByLabel("选择玩法 合成0尾反水", { exact: true }).check();
+  await page.getByRole("button", { name: "批量删除" }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "确认批量删除" }).click();
+  await expect(dialog).toBeHidden();
 });
 
 test("settings save future mapping and reset failed switches; history retry retains its request id", async ({

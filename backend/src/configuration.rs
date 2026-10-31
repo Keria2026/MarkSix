@@ -278,6 +278,7 @@ pub async fn batch(
             "minimum_hits",
             "special_odds",
             "zero_tail_odds",
+            "zero_tail_rebate_percent",
             "special_rebate_percent",
         ];
         if rule.keys().any(|key| !FIELDS.contains(&key.as_str())) {

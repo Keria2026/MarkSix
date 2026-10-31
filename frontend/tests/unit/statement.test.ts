@@ -101,6 +101,44 @@ test("same slip merges normalized rebate bands without mutating original atoms",
   expect(data.bets[0].atoms[0].stake).toBe(10000);
 });
 
+test("zero-tail and ordinary rebates export as separate bands from stored atoms", () => {
+  const data = sample();
+  Object.assign(data.totals, {
+    units: 2,
+    stake: 20000,
+    payout: 50000,
+    rebate: 1025,
+    net: -31025,
+  });
+  const bet = data.bets[0];
+  Object.assign(bet.record, {
+    unit_count: 2,
+    stake: 20000,
+    payout: 50000,
+    rebate: 1025,
+  });
+  Object.assign(bet.record.rule, {
+    kind: "tail",
+    rebate_percent: "3",
+    zero_tail_rebate_percent: "7.25",
+  });
+  bet.atoms = [
+    { options: [0], stake: 10000, rebate: 725, rebate_percent: "7.25" } as Atom,
+    { options: [2], stake: 10000, rebate: 300, rebate_percent: "3" } as Atom,
+  ];
+  bet.results = [
+    { payout: 30000, rebate: 725, voided: false } as AtomResult,
+    { payout: 20000, rebate: 300, voided: false } as AtomResult,
+  ];
+  const [row] = statementRows(data, true);
+  expect(row.bands).toEqual([
+    { rate: "3", base: 10000n, amount: 300n },
+    { rate: "7.25", base: 10000n, amount: 725n },
+  ]);
+  expect(row.net).toBe(31025n);
+  expect(statementTotals([row], true).rebate).toBe(1025n);
+});
+
 test("void returns stake and removes rebate from both rows and totals", () => {
   const data = sample();
   Object.assign(data.bets[0].record, {
