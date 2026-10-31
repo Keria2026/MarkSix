@@ -1463,17 +1463,42 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
     assert_eq!(requests.load(Ordering::SeqCst), before_late + 1);
     ok(&app, "POST", &format!("/api/slips/{saved_id}/cancel"),
         json!({"versions":[{"id":details["items"][0]["id"],"revision":details["items"][0]["revision"]}]}), &cookie).await;
-    sqlx::query("UPDATE periods SET last_fetch_at=NULL WHERE id=?")
-        .bind(details["items"][0]["period_id"].as_str().unwrap())
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE periods SET last_fetch_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 60 SECOND) WHERE id=?",
+    )
+    .bind(details["items"][0]["period_id"].as_str().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
     worker::tick(&state).await.unwrap();
     assert_eq!(
         requests.load(Ordering::SeqCst),
         before_late + 1,
         "cancelled HK bets do not keep polling alive"
     );
+    *time.write().unwrap() = chrono::NaiveDate::from_ymd_opt(2027, 1, 4)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let current = store::ensure_period(&state, business_date(state.now()))
+        .await
+        .unwrap();
+    let mut resumed = input.clone();
+    resumed["period"] = json!(current.id);
+    resumed["items"] = json!([hk_line]);
+    resumed["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    ok(&app, "POST", "/api/slips", resumed, &cookie).await;
+    let resumed = market::ensure_hk(&state).await.unwrap();
+    assert_eq!(
+        resumed.business_date, current.business_date,
+        "cancelled history cannot start today's polling early"
+    );
+    assert!(resumed.last_fetch_at.is_none() && resumed.error.is_none());
+    worker::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), before_late + 1);
+    *time.write().unwrap() = current.business_date.and_hms_opt(21, 34, 0).unwrap();
+    worker::tick(&state).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), before_late + 2);
     server.abort();
     pool.close().await;
 }

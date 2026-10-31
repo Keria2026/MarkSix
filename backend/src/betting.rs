@@ -165,14 +165,18 @@ async fn submit(
             .fetch_one(&mut *tx)
             .await?;
         if p.market == "hk" && p.draw.is_none() {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bets WHERE period_id=?")
-                .bind(&p.id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM bets WHERE period_id=? AND status<>'cancelled'",
+            )
+            .bind(&p.id)
+            .fetch_one(&mut *tx)
+            .await?;
             if count == 0 && p.business_date != business_date(received) {
                 p.business_date = business_date(received);
                 p.mapping = current.mapping.clone();
-                sqlx::query("UPDATE periods SET business_date=?,mapping=? WHERE id=?")
+                p.last_fetch_at = None;
+                p.error = None;
+                sqlx::query("UPDATE periods SET business_date=?,mapping=?,last_fetch_at=NULL,error=NULL WHERE id=?")
                     .bind(p.business_date)
                     .bind(&p.mapping)
                     .bind(&p.id)
