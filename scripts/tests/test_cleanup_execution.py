@@ -211,7 +211,15 @@ class CleanupExecution(unittest.TestCase):
                     patch.object(
                         c, "inventory", return_value=([artifact], {1: run}, {}, 2, 3)
                     ),
-                    patch.dict(c.os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}),
+                    patch.dict(
+                        c.os.environ,
+                        {
+                            "GITHUB_ACTIONS": "true",
+                            "GH_TOKEN": "synthetic-token",
+                            "GITHUB_STEP_SUMMARY": str(summary),
+                        },
+                        clear=True,
+                    ),
                     contextlib.redirect_stdout(io.StringIO()),
                 ):
                     if mode == "failure":
@@ -227,3 +235,16 @@ class CleanupExecution(unittest.TestCase):
                     self.assertTrue(summary.is_file())
                 if mode == "dry":
                     client.request.assert_not_called()
+
+    def test_actions_without_token_rejects_before_creating_client(self):
+        with (
+            patch.dict(c.os.environ, {"GITHUB_ACTIONS": "true"}, clear=True),
+            patch.object(sys, "argv", ["cleanup", "--repository", "example/repo"]),
+            patch.object(c, "GitHub") as client,
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+            self.assertRaises(SystemExit) as failure,
+        ):
+            c.main()
+        self.assertEqual(failure.exception.code, 2)
+        self.assertIn("GH_TOKEN is required in Actions", errors.getvalue())
+        client.assert_not_called()
