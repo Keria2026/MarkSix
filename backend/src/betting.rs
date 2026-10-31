@@ -229,6 +229,9 @@ async fn submit(
         }
         plans.push(planned);
     }
+    // The full mixed slip is also displayed and exported as one financial total.
+    // Separate market budgets must not let its combined principal/exposure overflow.
+    checked_sum(plans.iter().flat_map(|p| [p.stake, p.exposure]))?;
     for (market, period) in &targets {
         let incoming: Vec<_> = input
             .items

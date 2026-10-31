@@ -332,9 +332,12 @@ async fn preview_and_submission_reject_unsafe_aggregate_without_writes() {
     assert_eq!(response.0, StatusCode::OK, "{}", response.1);
     assert_eq!(response.1["valid"], true);
     assert_eq!(response.1["stake"], 3_000_000_000_000_000_i64);
-    for count in [2, 4] {
+    for (count, mixed) in [(2, false), (4, false), (2, true), (4, true)] {
         let mut request = preview.clone();
         request["items"] = json!(vec![line.clone(); count]);
+        if mixed {
+            request["items"][1]["market"] = json!("hk");
+        }
         let response = call(&app, "POST", "/api/slips/preview", request.clone(), &cookie).await;
         assert_eq!(
             response.0,
@@ -349,7 +352,7 @@ async fn preview_and_submission_reject_unsafe_aggregate_without_writes() {
                 .contains("安全计算范围")
         );
         request["request_id"] = uuid::Uuid::new_v4().to_string().into();
-        request["entry_mode"] = "text".into();
+        request["entry_mode"] = if mixed { "manual" } else { "text" }.into();
         assert_eq!(
             call(&app, "POST", "/api/slips", request, &cookie).await.0,
             StatusCode::UNPROCESSABLE_ENTITY
@@ -367,6 +370,42 @@ async fn preview_and_submission_reject_unsafe_aggregate_without_writes() {
             .unwrap();
         assert_eq!(count, 0, "{table}");
     }
+    // Two independent period budgets must also serialize edits to a shared slip.
+    let mut small = line.clone();
+    small["amount"] = json!("10000000000000");
+    let mut hk_small = small.clone();
+    hk_small["market"] = json!("hk");
+    let saved = ok(&app, "POST", "/api/slips", json!({"period":boot["today"]["id"],"bettor":"synthetic-mixed-budget","items":[small,hk_small],"request_id":uuid::Uuid::new_v4().to_string()}), &cookie).await;
+    let path = format!("/api/slips/{}", saved["id"].as_str().unwrap());
+    let detail = ok(&app, "GET", &path, json!({}), &cookie).await;
+    let a = &detail["items"][0];
+    let b = &detail["items"][1];
+    let a_path = format!("/api/bets/{}/amount", a["id"].as_str().unwrap());
+    let b_path = format!("/api/bets/{}/amount", b["id"].as_str().unwrap());
+    assert_eq!(call(&app, "PUT", &a_path, json!({"amount":"40000000000000","revision":a["revision"],"request_id":uuid::Uuid::new_v4().to_string()}), &cookie).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    let (first, second) = tokio::join!(
+        call(
+            &app,
+            "PUT",
+            &a_path,
+            json!({"amount":"25000000000000","revision":a["revision"],"request_id":uuid::Uuid::new_v4().to_string()}),
+            &cookie
+        ),
+        call(
+            &app,
+            "PUT",
+            &b_path,
+            json!({"amount":"25000000000000","revision":b["revision"],"request_id":uuid::Uuid::new_v4().to_string()}),
+            &cookie
+        ),
+    );
+    let mut statuses = [first.0.as_u16(), second.0.as_u16()];
+    statuses.sort();
+    assert_eq!(statuses, [200, 422]);
+    assert_eq!(
+        ok(&app, "GET", &path, json!({}), &cookie).await["stake"],
+        3_500_000_000_000_000_i64
+    );
     pool.close().await;
 }
 
