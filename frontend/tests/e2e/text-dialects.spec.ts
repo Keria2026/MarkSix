@@ -192,3 +192,73 @@ test("each-zodiac defaults to special packages and allows a different play", asy
   await expect(submit).toBeEnabled();
   await expect(modal.getByText(/包肖 牛、龙/)).toBeVisible();
 });
+
+test("pinyin and reordered fields submit their normalized selections", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  await page
+    .getByLabel("投注原文")
+    .fill(
+      "xin ao er you ma yang each group shi qi；san shi yi、si shi qi te 各35",
+    );
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await modal.getByPlaceholder("填写投注人").fill("合成投注人");
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const body = writes[0] as {
+    items: { play_id: number; selections: number[]; amount: string }[];
+  };
+  expect(
+    body.items.map((i) => ({
+      play: plays.find((p) => p.id === i.play_id)!.rule.name,
+      selections: i.selections,
+      amount: i.amount,
+    })),
+  ).toEqual([
+    { play: "二有", selections: [6, 7], amount: "17" },
+    { play: "特码", selections: [31, 47], amount: "35" },
+  ]);
+});
+
+test("leading totals validate future rows and track edits", async ({
+  page,
+}) => {
+  await openText(page);
+  await page
+    .getByLabel("投注原文")
+    .fill(
+      "合计先写：16组，共560。\n下面这些：马羊猴鸡狗，复式，3/4/5连肖，一组35米。",
+    );
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await modal.getByPlaceholder("填写投注人").fill("合成投注人");
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  await modal.getByLabel("第2项金额", { exact: true }).fill("45");
+  await expect(submit).toBeDisabled();
+  await modal.getByLabel("第1项投注项", { exact: true }).fill("16组共660");
+  await expect(submit).toBeEnabled();
+});
+
+test("cancellation headings preserve the whole source and block submission", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  const raw = "取消这张\n二有龙蛇各35";
+  await page.getByLabel("投注原文").fill(raw);
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await modal.getByPlaceholder("填写投注人").fill("合成投注人");
+  await expect(modal.getByLabel("第1项投注项", { exact: true })).toHaveValue(
+    raw,
+  );
+  await expect(
+    modal.getByRole("button", { name: "确认录入", exact: true }),
+  ).toBeDisabled();
+  expect(writes).toHaveLength(0);
+});
