@@ -119,6 +119,7 @@ export function compileRow(
     const compound = body.includes("复式");
     const postfixPackage =
       row.objectBeforePlay &&
+      /[鼠牛虎兔龙蛇马羊猴鸡狗猪]/u.test(body) &&
       rule.kind === "number" &&
       rule.scope === "special" &&
       rule.quantity === 1 &&
@@ -126,7 +127,7 @@ export function compileRow(
       row.mode === "auto";
     const packageIntent =
       body.includes("包") ||
-      row.marker === "每肖" ||
+      (row.marker === "每肖" && rule.kind === "number") ||
       (row.marker === "各肖" && rule.kind === "number") ||
       postfixPackage;
     if (packageIntent && /^(共|合计)$/u.test(row.marker))
@@ -205,7 +206,7 @@ export function compileRow(
         throw new Error("包肖只适用于单号码玩法与生肖选项");
       // Comma-separated full zodiac sets are separate lines of the same slip.
       const parts = body
-        .split(rule.kind === "zodiac" ? /[,，;；、/]+/u : /[;；]+/u)
+        .split(rule.kind === "zodiac" ? /[,，;；、/\r\n]+/u : /[;；]+/u)
         .filter((s) => s.trim());
       // Newlines can delimit complete groups even when the play and amount
       // follow the entire selection block. Never regroup an incomplete line.
@@ -296,34 +297,67 @@ export function compileText(
   plays: Play[],
   mapping: Mapping,
 ): CompiledRow[] {
-  let units = 0,
-    stake = 0n,
-    valid = true;
-  return rows.map((row) => {
-    if (row.excluded) return { items: [], error: "" };
-    if (row.summary) {
-      const match = readSummary(row.body);
-      const expected = match ? entryCents(match.amount) : null;
-      const error =
-        !match || expected === null
-          ? "合计格式或金额精度不正确，请修改或移除此项"
-          : !valid
-            ? "请先处理前面投注项，再核对合计"
-            : BigInt(match!.count) !== BigInt(units) || expected !== stake
-              ? `原文合计与投注不符：当前 ${units} 组，共 ${stake / 100n}.${String(stake % 100n).padStart(2, "0")} 元`
-              : "";
-      return { items: [], error };
-    }
-    const result = compileRow(row, plays, mapping);
-    if (result.error) valid = false;
+  const compiled = rows.map((row) =>
+    row.excluded || row.summary
+      ? { items: [] as SlipLine[], error: "" }
+      : compileRow(row, plays, mapping),
+  );
+  type Totals = {
+    units: number;
+    stake: bigint;
+    valid: boolean;
+    byPlay: Map<string, number>;
+  };
+  const empty = (): Totals => ({
+    units: 0,
+    stake: 0n,
+    valid: true,
+    byPlay: new Map(),
+  });
+  function accumulate(totals: Totals, result: CompiledRow) {
+    if (result.error) totals.valid = false;
     for (const item of result.items) {
       const rule = plays.find((p) => p.id === item.play_id)!.rule;
       const count = lineUnits(item, rule, mapping);
-      units += count;
-      stake +=
+      totals.units += count;
+      totals.stake +=
         entryCents(item.amount)! *
         BigInt(item.package_zodiacs?.length || count);
+      totals.byPlay.set(rule.name, (totals.byPlay.get(rule.name) ?? 0) + count);
     }
-    return result;
+  }
+  const full = empty();
+  compiled.forEach((result) => accumulate(full, result));
+  const prefix = empty();
+  let precedingBets = 0;
+  return rows.map((row, index) => {
+    if (row.excluded) return compiled[index];
+    if (row.summary) {
+      // A leading summary checks the full slip; later summaries check its prefix.
+      const totals = precedingBets ? prefix : full;
+      const match = readSummary(row.body);
+      const expected = match ? entryCents(match.amount) : null;
+      const detailMismatch =
+        match?.plays.some(
+          (p) => BigInt(p.count) !== BigInt(totals.byPlay.get(p.name) ?? 0),
+        ) ||
+        (match?.plays.length &&
+          match.plays.reduce((n, p) => n + BigInt(p.count), 0n) !==
+            BigInt(match.count));
+      const error =
+        !match || expected === null
+          ? "合计格式或金额精度不正确，请修改或移除此项"
+          : !totals.valid
+            ? "请先处理投注项，再核对合计"
+            : BigInt(match.count) !== BigInt(totals.units) ||
+                expected !== totals.stake ||
+                detailMismatch
+              ? `原文合计与投注不符：当前 ${totals.units} 组，共 ${totals.stake / 100n}.${String(totals.stake % 100n).padStart(2, "0")} 元`
+              : "";
+      return { items: [], error };
+    }
+    precedingBets++;
+    accumulate(prefix, compiled[index]);
+    return compiled[index];
   });
 }

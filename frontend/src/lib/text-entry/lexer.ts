@@ -41,6 +41,7 @@ const operators: [string, TokenKind][] = [
     "个数",
     "各组",
     "每组",
+    "每尾",
     "一组",
     "1组",
     "各肖",
@@ -175,6 +176,11 @@ export function tokenize(
     }));
   const tokens: Token[] = [];
   let cursor = 0;
+  function previousSignificant() {
+    let i = tokens.length - 1;
+    while (tokens[i]?.kind === "separator") i--;
+    return tokens[i];
+  }
   while (cursor < normalized.length) {
     const rest = normalized.slice(cursor);
     const summary = summaryPattern.exec(rest)?.[0];
@@ -189,9 +195,11 @@ export function tokenize(
       continue;
     }
     const combined =
-      /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[./、,]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
-        rest,
-      )?.[0];
+      previousSignificant()?.kind === "amount" && /^\d/u.test(rest)
+        ? undefined
+        : /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[./、]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
+            rest,
+          )?.[0];
     if (combined && !playNames.includes(combined)) {
       const labels =
         combined.replace(/\s/gu, "") === "特平"

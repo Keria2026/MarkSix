@@ -1,3 +1,4 @@
+import { normalizeLanguage } from "./language";
 import type { Play } from "../types";
 import type { TextPreference, TextRow } from "../text-entry";
 import { tokenize } from "./lexer";
@@ -32,6 +33,50 @@ export function parseText(
 ): TextRow[] {
   if (raw.length > 12000)
     throw Error("每单原文最多 12,000 字，请核对后缩短；不会自动拆成多张单");
+  const normalized = normalizeLanguage(raw);
+  if (normalized.review)
+    return [
+      {
+        key: `0:${raw.length}:review`,
+        source: raw,
+        start: 0,
+        end: raw.length,
+        body: raw,
+        playLabel: "请确认更正、取消或历史引用的最终内容",
+        playId: 0,
+        amount: "",
+        marker: "",
+        mode: "auto",
+        customAlias: true,
+      },
+    ];
+  if (normalized.text !== raw) {
+    const rows = parseNormalizedText(normalized.text, plays, learned);
+    let cursor = 0;
+    return rows.map((row, index) => {
+      const originalStart = normalized.spans[row.start]?.start ?? raw.length;
+      const start = Math.min(cursor, originalStart);
+      const end =
+        index === rows.length - 1
+          ? raw.length
+          : (normalized.spans[row.end - 1]?.end ?? originalStart);
+      cursor = Math.max(cursor, end);
+      return {
+        ...row,
+        start,
+        end,
+        source: raw.slice(start, end),
+        key: `${start}:${end}:${index}`,
+      };
+    });
+  }
+  return parseNormalizedText(raw, plays, learned);
+}
+function parseNormalizedText(
+  raw: string,
+  plays: Play[],
+  learned: TextPreference[],
+) {
   const active = plays.filter((p) => p.enabled);
   const habits = learned.filter((h) =>
     active.some((p) => p.id === h.play_id && p.version === h.play_version),
@@ -230,6 +275,11 @@ export function parseText(
     start = end;
     segment = fresh();
   }
+  function previousSignificant(index: number) {
+    let i = index - 1;
+    while (tokens[i]?.kind === "separator") i--;
+    return tokens[i];
+  }
   function nextSignificant(index: number) {
     while (tokens[index]?.kind === "separator") index++;
     return index;
@@ -244,6 +294,23 @@ export function parseText(
         i++;
     }
     return tokens[i]?.kind === "amount" && readAmount(i + 1) !== null;
+  }
+  function postfixPlayAfter(index: number) {
+    let i = index + 1;
+    while (
+      tokens[i]?.kind === "separator" &&
+      !/[\r\n。.;；]/u.test(tokens[i].text)
+    )
+      i++;
+    while (tokens[i]?.kind === "compound") {
+      i++;
+      while (
+        tokens[i]?.kind === "separator" &&
+        !/[\r\n。.;；]/u.test(tokens[i].text)
+      )
+        i++;
+    }
+    return ["play", "plays"].includes(tokens[i]?.kind);
   }
   function readAmount(index: number): { amount: string; last: number } | null {
     let i = index;
@@ -335,6 +402,15 @@ export function parseText(
         continue;
       }
     }
+    if (
+      token.kind === "separator" &&
+      segment.amount &&
+      ((/[。;；]/u.test(token.text) && segment.explicitPlay) ||
+        (/[\r\n]/u.test(token.text) && hasObjects()))
+    ) {
+      emit(token.end);
+      continue;
+    }
     // A tail suffix belongs to the preceding selection, including linked tails.
     if (
       token.kind === "play" &&
@@ -363,6 +439,12 @@ export function parseText(
       else if (/[单双]/u.test(token.text)) infer("parity");
     }
     if (token.kind === "play" || token.kind === "plays") {
+      if (
+        token.text === "平特" &&
+        !segment.explicitPlay &&
+        segment.content.some((t) => t.text === "尾")
+      )
+        token.text = "尾中";
       // A tail qualifier narrows generic 平特 to 尾中.
       if (
         ["尾", "尾中"].includes(token.text) &&
@@ -401,7 +483,12 @@ export function parseText(
           end: token.end,
         });
       segment.explicitPlay = true;
-      if (segment.amount && hasObjects()) emit(token.end);
+      if (
+        segment.amount &&
+        hasObjects() &&
+        tokens[nextSignificant(i + 1)]?.kind !== "compound"
+      )
+        emit(token.end);
       continue;
     }
     if (token.kind === "single") {
@@ -449,11 +536,12 @@ export function parseText(
         segment.amount = money.amount;
         segment.marker = token.text;
         if (
-          hasObjects() ||
-          (segment.explicitPlay && !segment.context.id) ||
-          (segment.explicitPlay &&
-            active.find((p) => p.id === segment.context.id)?.rule.kind ===
-              "zodiac_count")
+          !(!segment.explicitPlay && postfixPlayAfter(money.last)) &&
+          (hasObjects() ||
+            (segment.explicitPlay && !segment.context.id) ||
+            (segment.explicitPlay &&
+              active.find((p) => p.id === segment.context.id)?.rule.kind ===
+                "zodiac_count"))
         )
           emit(tokens[money.last].end);
         i = money.last;
@@ -518,15 +606,17 @@ export function parseText(
             tokens[i - 1]?.kind === "separator" &&
             tokens[i - 1]?.text === "." &&
             !followedByListAmount(i)) ||
-          (hasObjects() && tokens[i - 1]?.kind === "play"))
+          (hasObjects() &&
+            ["play", "connector"].includes(previousSignificant(i)?.kind ?? "")))
       ) {
         segment.amount = money.amount;
         if (
-          hasObjects() ||
-          (segment.explicitPlay && !segment.context.id) ||
-          (segment.explicitPlay &&
-            active.find((p) => p.id === segment.context.id)?.rule.kind ===
-              "zodiac_count")
+          !(!segment.explicitPlay && postfixPlayAfter(money.last)) &&
+          (hasObjects() ||
+            (segment.explicitPlay && !segment.context.id) ||
+            (segment.explicitPlay &&
+              active.find((p) => p.id === segment.context.id)?.rule.kind ===
+                "zodiac_count"))
         )
           emit(tokens[money.last].end);
         i = money.last;
