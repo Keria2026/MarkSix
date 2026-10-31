@@ -295,30 +295,25 @@ export async function generateCorpus(
       switch (family) {
         case "hk-numbers": {
           const selection = ns.slice(0, 1 + random(5));
-          raw =
-            pick(["香港", "港", "香", "香港六合彩"]) +
-            headerGap +
-            "特码" +
-            ntext(selection) +
-            each +
-            money;
+          const marker = pick(["香港", "港", "香", "香港六合彩"]);
+          const fields = ["特码", ntext(selection), each, money];
+          fields.splice(random(fields.length + 1), 0, marker + headerGap);
+          raw = fields.join("");
           items = [{ ...line("特码", selection), market: "hk" }];
           break;
         }
         case "mixed-market": {
-          raw =
-            "澳门特码" +
-            ntext(ns.slice(0, 2)) +
-            each +
-            money +
-            "；香港二有" +
-            ztext(z.slice(0, 2)) +
-            "各" +
-            money +
-            "；澳门特码" +
-            ntext(ns.slice(2, 4)) +
-            each +
-            money;
+          raw = [
+            ["特码", ntext(ns.slice(0, 2)), each, money, "澳门"],
+            ["二有", ztext(z.slice(0, 2)), "各", money, "香港"],
+            ["特码", ntext(ns.slice(2, 4)), each, money, "澳门"],
+          ]
+            .map((fields) => {
+              const marker = fields.pop()!;
+              fields.splice(random(fields.length + 1), 0, marker);
+              return fields.join("");
+            })
+            .join(pick(["；", "，", "\n"]));
           items = [
             line("特码", ns.slice(0, 2)),
             { ...line("二有", z.slice(0, 2), money, 2), market: "hk" },

@@ -1,7 +1,7 @@
+import { assignMarkets, tokenizeMarkets, type MarketRange } from "./markets";
 import { normalizeLanguage } from "./language";
 import type { Play } from "../types";
 import type { TextPreference, TextRow } from "../text-entry";
-import { tokenize } from "./lexer";
 import { resolvePlay, playCandidates } from "./vocabulary";
 import type { Token } from "./lexer";
 import { monetaryLiteral } from "./amount";
@@ -81,7 +81,7 @@ function parseNormalizedText(
   const habits = learned.filter((h) =>
     active.some((p) => p.id === h.play_id && p.version === h.play_version),
   );
-  let tokens = tokenize(
+  let { tokens, markers: markets } = tokenizeMarkets(
     raw,
     [...active.map((p) => p.rule.name), ...habits.map((h) => h.alias)],
     (label) =>
@@ -123,15 +123,18 @@ function parseNormalizedText(
     !tokens
       .slice(0, nameEnd)
       .some((t) => ["amount", "currency", "drag", "compound"].includes(t.kind))
-  )
+  ) {
+    markets = markets.filter((t) => t.start >= tokens[nameEnd].end);
     tokens.splice(0, nameEnd + 1);
+  }
+  markets = markets.filter(
+    (t) => !headings.some((h) => t.start >= h.start && t.end <= h.end),
+  );
   const rows: TextRow[] = [];
-  let market: "macau" | "hk" =
-    /[港香]/u.test(raw) && !/澳/u.test(raw) ? "hk" : "macau";
+  const ranges: MarketRange[] = [];
   let inherited = empty();
   let inheritedContexts: Context[] = [];
   let previousBody = "";
-  let lastMarket: Token | undefined;
   let start = 0;
   const fresh = (): Segment => ({
     context: { ...inherited },
@@ -231,13 +234,21 @@ function parseNormalizedText(
       const contexts = segment.contexts.length
         ? segment.contexts
         : [segment.context];
+      const first = tokens.find(
+        (t) => t.start >= start && t.end <= end && t.kind !== "separator",
+      );
+      ranges.push({
+        first: rows.length,
+        count: contexts.length,
+        start: first?.start ?? start,
+        end,
+      });
       for (const [index, selected] of contexts.entries())
         rows.push({
           key: `${start}:${end}${contexts.length > 1 ? ":" + index : ""}`,
           source: raw.slice(start, end),
           start,
           end,
-          ...(market === "hk" ? { market } : {}),
           playLabel: implicitSpecial ? "" : selected.label,
           playId: selected.id,
           body,
@@ -320,7 +331,7 @@ function parseNormalizedText(
     let i = index;
     while (
       tokens[i]?.kind === "separator" &&
-      /^[\s:：]+$/u.test(tokens[i].text)
+      /^[\s:：,，;；]+$/u.test(tokens[i].text)
     )
       i++;
     while (tokens[i]?.kind === "amount") {
@@ -331,8 +342,8 @@ function parseNormalizedText(
     if (
       tokens[i + 1]?.text === "." &&
       tokens[i + 2]?.kind === "number" &&
-      tokens[i].end === tokens[i + 1].start &&
-      tokens[i + 1].end === tokens[i + 2].start
+      tokens[i].lexicalEnd === tokens[i + 1].lexicalStart &&
+      tokens[i + 1].lexicalEnd === tokens[i + 2].lexicalStart
     ) {
       amount += "." + tokens[i + 2].text;
       i += 2;
@@ -370,27 +381,6 @@ function parseNormalizedText(
       });
       start = token.end;
       segment = fresh();
-      continue;
-    }
-    if (token.kind === "market") {
-      const nextMarket = /[港香]/u.test(token.text) ? "hk" : "macau";
-      if (
-        market !== nextMarket &&
-        ((lastMarket &&
-          /^[\s,，、:：;；]*$/u.test(raw.slice(lastMarket.end, token.start))) ||
-          (lastMarket &&
-            tokens.slice(i + 1).every((t) => t.kind === "separator")))
-      ) {
-        segment.content.push({
-          ...token,
-          kind: "unknown",
-          text: "市场范围待确认",
-        });
-      }
-      if (segment.amount || (hasObjects() && market !== nextMarket))
-        emit(token.start);
-      market = nextMarket;
-      lastMarket = token;
       continue;
     }
     if (token.kind === "group-open") {
@@ -650,6 +640,7 @@ function parseNormalizedText(
     segment.content.push(token);
   }
   emit(raw.length);
+  assignMarkets(raw, rows, ranges, markets);
   if (rows.length > 100) throw Error("每单最多 100 个原文片段，请核对后缩短");
   return rows;
 }

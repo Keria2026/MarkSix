@@ -30,10 +30,18 @@ export interface Token {
   labels?: string[];
 }
 
+export const marketLabels = [
+  "香港六合彩",
+  "新澳门",
+  "新澳",
+  "澳门",
+  "香港",
+  "澳",
+  "港",
+  "香",
+];
 const operators: [string, TokenKind][] = [
-  ...["新澳门", "新澳", "澳门", "澳", "香港六合彩", "香港", "港", "香"].map(
-    (s): [string, TokenKind] => [s, "market"],
-  ),
+  ...marketLabels.map((s): [string, TokenKind] => [s, "market"]),
   ...[
     "各号",
     "各个数",

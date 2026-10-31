@@ -299,7 +299,7 @@ test("a mixed Macau and Hong Kong slip keeps market choices in the confirmed req
   page,
 }) => {
   const writes = await openText(page);
-  await page.getByLabel("投注原文").fill("香港特码12各100\n澳门特码13各200");
+  await page.getByLabel("投注原文").fill("特码12各100香港\n特码13澳门各200");
   await page.getByRole("button", { name: "校验", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "确认投注单" });
   await expect(dialog.getByLabel("第1项市场", { exact: true })).toHaveValue(
@@ -329,4 +329,25 @@ test("a mixed Macau and Hong Kong slip keeps market choices in the confirmed req
     { market: "hk", amount: "100", selections: [12] },
     { market: "macau", amount: "200", selections: [13] },
   ]);
+});
+
+test("conflicting market markers require an explicit choice before submission", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  await page.getByLabel("投注原文").fill("香港特码12各100澳门");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "确认投注单" });
+  await dialog.getByPlaceholder("填写投注人").fill("synthetic-market-conflict");
+  await expect(
+    dialog.getByRole("button", { name: "确认录入", exact: true }),
+  ).toBeDisabled();
+  await expect(dialog.getByLabel("第1项市场", { exact: true })).toHaveValue("");
+  await dialog.getByLabel("第1项市场", { exact: true }).selectOption("hk");
+  await dialog.getByRole("button", { name: "确认录入", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toHaveLength(1);
+  expect((writes[0] as { items: { market: string }[] }).items[0].market).toBe(
+    "hk",
+  );
 });

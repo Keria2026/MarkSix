@@ -107,6 +107,8 @@ export function compileRow(
 ): CompiledRow {
   if (row.summary) return { items: [], error: "合计须与整单投注一起校验" };
   try {
+    if (row.marketConflict)
+      throw new Error("同一条投注包含香港和澳门标记，请选择市场");
     const play = plays.find((p) => p.id === row.playId && p.enabled);
     if (!play)
       throw new Error(`请确认“${row.playLabel || "未注明玩法"}”对应的玩法`);
