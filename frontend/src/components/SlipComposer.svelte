@@ -54,6 +54,7 @@
       bettor: bettor.trim(),
       items: items.map(
         ({
+          market,
           play_id,
           play_version,
           selections,
@@ -62,6 +63,7 @@
           package_zodiacs,
           drag,
         }) => ({
+          market,
           play_id,
           play_version,
           selections,
@@ -105,7 +107,10 @@
     <ol class="slip-draft-list">
       {#each items as item, index (item.key)}<li>
           <div>
-            <strong>{index + 1}. {item.rule.name}</strong>
+            <strong
+              >{index + 1}. {item.market === "hk" ? "香港" : "新澳门"} · {item
+                .rule.name}</strong
+            >
             <p>
               {item.drag
                 ? dragLabel(item.rule.kind, item.drag)

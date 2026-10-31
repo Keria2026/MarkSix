@@ -39,7 +39,7 @@ test("full synthetic corpus is reproducible and contains 30,000 disjoint texts a
       validation: 4500,
       test: 4500,
     });
-    expect(Object.keys(first.families).length).toBe(41);
+    expect(Object.keys(first.families).length).toBe(43);
     const second = await generateCorpus(directory);
     expect(second.sha256).toEqual(first.sha256);
     expect(() => verifyRecords(records.slice(1), 30000)).toThrow(

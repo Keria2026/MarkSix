@@ -19,6 +19,7 @@ fn reduced_universe_matches_exhaustive_cashflow() {
             .unwrap()
             .rule;
         let input = BetInput {
+            market: Default::default(),
             period: String::new(),
             play_id: 1,
             play_version: 1,

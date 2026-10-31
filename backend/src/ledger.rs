@@ -146,7 +146,7 @@ async fn mutate(
     if fly {
         crate::features::require_layoffs(&mut tx).await?;
     }
-    if !accepts_entries(received, p.business_date) {
+    if !crate::market::accepts(&p, received) {
         return Err(conflict("本期已归档，不能修改金额或飞出"));
     }
     let bet: BetSummary = sqlx::query_as(&format!(
@@ -279,7 +279,7 @@ pub(crate) async fn cancel_layoff(
         return Ok(Json(json!({"ok":true})));
     }
     crate::features::require_layoffs(&mut tx).await?;
-    if !accepts_entries(received, p.business_date) {
+    if !crate::market::accepts(&p, received) {
         return Err(conflict("本期已归档，不能撤销飞出"));
     }
     sqlx::query("UPDATE layoffs SET status='cancelled',cancelled_at=UTC_TIMESTAMP(6) WHERE id=?")

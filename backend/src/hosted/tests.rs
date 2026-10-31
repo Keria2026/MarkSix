@@ -283,6 +283,81 @@ async fn hosted_tenant_and_credential_contract() {
             .join(format!("{}.json", accounts[0].id))
             .is_file()
     );
+    // These erasure cases represent a later operator session; advance only the
+    // test rate-limit window, without weakening production authentication.
+    for (started, _) in c.attempts.lock().await.values_mut() {
+        *started = std::time::Instant::now() - std::time::Duration::from_secs(61);
+    }
+    // A pending HK leg protects its mixed-slip parent and its Macau sibling.
+    let mixed = json!({"period":boot["today"]["id"],"bettor":"synthetic-preserve-hk","request_id":uuid::Uuid::new_v4().to_string(),"items":[{"play_id":p["id"],"play_version":p["version"],"selections":[8],"compound":false,"amount":"20"},{"market":"hk","play_id":p["id"],"play_version":p["version"],"selections":[9],"compound":false,"amount":"30"}]});
+    let mixed_receipt = ok(&app, "POST", "/api/slips", mixed, &ca).await;
+    let mixed_id = mixed_receipt["id"].as_str().unwrap();
+    let old = crate::store::ensure_period(&lease, old_date).await.unwrap();
+    sqlx::query("UPDATE bets SET period_id=? WHERE slip_id=? AND market='macau'")
+        .bind(&old.id)
+        .bind(mixed_id)
+        .execute(&lease.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE bet_slips SET period_id=? WHERE id=?")
+        .bind(&old.id)
+        .bind(mixed_id)
+        .execute(&lease.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE periods SET business_date=? WHERE market='hk'")
+        .bind(old_date)
+        .execute(&lease.pool)
+        .await
+        .unwrap();
+    let mut clear_again = clear.clone();
+    clear_again["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    ok(
+        &admin,
+        "POST",
+        "/api/customer/history/clear",
+        clear_again.clone(),
+        &ca,
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets WHERE slip_id=?")
+            .bind(mixed_id)
+            .fetch_one(&lease.pool)
+            .await
+            .unwrap(),
+        2
+    );
+    // Once the HK period has an archived draw, both sides may be removed together.
+    let archived_draw = crate::domain::Draw {
+        expect: "2026116".into(),
+        open_time: old_date.and_hms_opt(22, 0, 0).unwrap(),
+        numbers: [1, 2, 3, 4, 5, 6, 7],
+        zodiac: [0, 1, 2, 3, 4, 5, 6],
+        waves: [0, 0, 1, 1, 2, 2, 0],
+    };
+    sqlx::query("UPDATE periods SET state='settled',draw=? WHERE market='hk'")
+        .bind(sqlx::types::Json(archived_draw))
+        .execute(&lease.pool)
+        .await
+        .unwrap();
+    clear_again["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    ok(
+        &admin,
+        "POST",
+        "/api/customer/history/clear",
+        clear_again,
+        &ca,
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets WHERE slip_id=?")
+            .bind(mixed_id)
+            .fetch_one(&lease.pool)
+            .await
+            .unwrap(),
+        0
+    );
     drop(lease);
     for route in [
         "/api/accounts",

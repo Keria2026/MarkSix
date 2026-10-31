@@ -75,13 +75,14 @@ pub(crate) async fn periods(
             .collect::<String>()
     );
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM periods WHERE id LIKE ? OR CAST(business_date AS CHAR) LIKE ?",
+        "SELECT COUNT(*) FROM periods WHERE id LIKE ? OR CAST(business_date AS CHAR) LIKE ? OR JSON_UNQUOTE(JSON_EXTRACT(draw,'$.expect')) LIKE ?",
     )
+    .bind(&search)
     .bind(&search)
     .bind(&search)
     .fetch_one(&state.pool)
     .await?;
-    let rows:Vec<Period>=sqlx::query_as("SELECT * FROM periods WHERE id LIKE ? OR CAST(business_date AS CHAR) LIKE ? ORDER BY business_date DESC LIMIT 20 OFFSET ?").bind(&search).bind(&search).bind((page-1)*20).fetch_all(&state.pool).await?;
+    let rows:Vec<Period>=sqlx::query_as("SELECT * FROM periods WHERE id LIKE ? OR CAST(business_date AS CHAR) LIKE ? OR JSON_UNQUOTE(JSON_EXTRACT(draw,'$.expect')) LIKE ? ORDER BY business_date DESC LIMIT 20 OFFSET ?").bind(&search).bind(&search).bind(&search).bind((page-1)*20).fetch_all(&state.pool).await?;
     let mut items = vec![];
     for p in rows {
         items.push(view(&state, p).await?);

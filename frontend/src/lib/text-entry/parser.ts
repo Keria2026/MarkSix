@@ -126,9 +126,12 @@ function parseNormalizedText(
   )
     tokens.splice(0, nameEnd + 1);
   const rows: TextRow[] = [];
+  let market: "macau" | "hk" =
+    /[港香]/u.test(raw) && !/澳/u.test(raw) ? "hk" : "macau";
   let inherited = empty();
   let inheritedContexts: Context[] = [];
   let previousBody = "";
+  let lastMarket: Token | undefined;
   let start = 0;
   const fresh = (): Segment => ({
     context: { ...inherited },
@@ -234,6 +237,7 @@ function parseNormalizedText(
           source: raw.slice(start, end),
           start,
           end,
+          ...(market === "hk" ? { market } : {}),
           playLabel: implicitSpecial ? "" : selected.label,
           playId: selected.id,
           body,
@@ -368,7 +372,27 @@ function parseNormalizedText(
       segment = fresh();
       continue;
     }
-    if (token.kind === "market") continue;
+    if (token.kind === "market") {
+      const nextMarket = /[港香]/u.test(token.text) ? "hk" : "macau";
+      if (
+        market !== nextMarket &&
+        ((lastMarket &&
+          /^[\s,，、:：;；]*$/u.test(raw.slice(lastMarket.end, token.start))) ||
+          (lastMarket &&
+            tokens.slice(i + 1).every((t) => t.kind === "separator")))
+      ) {
+        segment.content.push({
+          ...token,
+          kind: "unknown",
+          text: "市场范围待确认",
+        });
+      }
+      if (segment.amount || (hasObjects() && market !== nextMarket))
+        emit(token.start);
+      market = nextMarket;
+      lastMarket = token;
+      continue;
+    }
     if (token.kind === "group-open") {
       segment.groupDepth++;
       segment.content.push(token);

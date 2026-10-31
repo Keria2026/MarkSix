@@ -1,45 +1,45 @@
 {
   "generated_by": "scripts/train_text_entry.ts",
   "schema": 2,
-  "source_sha256": "99b43591827dfc7f05a37b5934a9b9df8d949f6afb729f5244bef194fdc92a83",
+  "source_sha256": "10a26336d24bbae955a323e7c1a2cb3a9fdb85b869ce3f78e51842b18a498bd9",
   "records": 21000,
   "training_split": "train",
-  "labelled_examples": 5300,
+  "labelled_examples": 5376,
   "candidates": {
     "澳特": [
       {
         "name": "特码",
-        "count": 1353
+        "count": 1294
       }
     ],
     "二中特": [
       {
         "name": "二中二含特",
-        "count": 512
+        "count": 489
       }
     ],
     "平特一肖": [
       {
         "name": "一肖中",
-        "count": 178
+        "count": 168
       }
     ],
     "三友": [
       {
         "name": "三有",
-        "count": 1019
+        "count": 1002
       }
     ],
     "特": [
       {
         "name": "特码",
-        "count": 2062
+        "count": 2258
       }
     ],
     "一宵": [
       {
         "name": "一肖中",
-        "count": 176
+        "count": 165
       }
     ]
   }

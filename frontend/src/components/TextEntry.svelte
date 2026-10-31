@@ -169,7 +169,14 @@
     };
   });
 
-  const compiled = $derived(compileText(draft.rows, boot.plays, today.mapping));
+  const compiled = $derived(
+    compileText(
+      draft.rows,
+      boot.plays,
+      today.mapping,
+      boot.hk?.accepting_entries ? boot.hk.mapping : today.mapping,
+    ),
+  );
   const activeRows = $derived(
     draft.rows.filter((row) => !row.excluded && !row.summary),
   );
@@ -207,6 +214,8 @@
       recognized: draft.recognized,
       rows: draft.rows,
       mapping: today.mapping,
+      hkMapping: boot.hk?.mapping,
+      hkPeriod: boot.hk?.id,
       plays: boot.plays.map((p) => [p.id, p.version, p.enabled]),
     }),
   );
@@ -561,7 +570,15 @@
             aria-invalid={!draft.bettor.trim()}
           /></label
         >
-        <span>第 {today.id} 期 · {activeRows.length} 项投注</span>
+        <span
+          >{[
+            ...new Set(
+              activeRows.map((row) =>
+                row.market === "hk" ? "香港" : "新澳门",
+              ),
+            ),
+          ].join(" / ")} · {activeRows.length} 项投注</span
+        >
       </div>
       {#if rateRows.length}<label class="text-rate-choice"
           >特码费率<select
@@ -647,6 +664,19 @@
                   onclick={() => removeRow(index)}><Trash2 size={16} /></button
                 >
               </div>
+              {#if !row.summary}<label
+                  >市场<select
+                    aria-label={`第${index + 1}项市场`}
+                    value={row.market ?? "macau"}
+                    disabled={busy}
+                    onchange={(event) => {
+                      row.market = event.currentTarget.value as "macau" | "hk";
+                    }}
+                    ><option value="macau">新澳门</option><option value="hk"
+                      >香港</option
+                    ></select
+                  ></label
+                >{/if}
               {#if row.customAlias}<div class="form-two">
                   <label
                     >未识别的玩法简称（可选）<input

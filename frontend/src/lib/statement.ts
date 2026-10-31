@@ -2,6 +2,7 @@ import type { Bet, Atom, AtomResult, Draw, LedgerTotals } from "./types";
 
 export interface BettorStatement {
   period: string;
+  market?: "macau" | "hk";
   settled: boolean;
   draw: Draw | null;
   bet_version: number;

@@ -325,13 +325,22 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 }
 async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let today = ensure_period(&state, business_date(state.now())).await?;
+    let hk: Option<Period> = sqlx::query_as(
+        "SELECT * FROM periods WHERE market='hk' ORDER BY business_date DESC LIMIT 1",
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    let hk = match hk {
+        Some(p) => Some(view(&state, p).await?),
+        None => None,
+    };
     let plays: Vec<Play> = sqlx::query_as(
         "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY sort_order,id",
     )
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(
-        json!({"today":view(&state,today).await?,"plays":plays,"zodiacs":ZODIACS,"features":crate::features::read(&state.pool).await?}),
+        json!({"today":view(&state,today).await?,"hk":hk,"plays":plays,"zodiacs":ZODIACS,"features":crate::features::read(&state.pool).await?}),
     ))
 }
 async fn retry_risk(
@@ -394,8 +403,15 @@ async fn bet_detail(
     ))
 }
 async fn current_plan(state: &AppState, input: &BetInput) -> ApiResult<(Period, Play, BetPlan)> {
-    let p = ensure_period(state, business_date(state.now())).await?;
-    if input.period != p.id {
+    let p = if input.market == crate::market::Market::Hk {
+        crate::market::ensure_hk(state).await?
+    } else {
+        ensure_period(state, business_date(state.now())).await?
+    };
+    if input.period != p.id
+        && !(input.market == crate::market::Market::Hk
+            && input.period == period_id(business_date(state.now())))
+    {
         return Err(conflict("期次已切换，请刷新后重新录入"));
     }
     let play: Play = sqlx::query_as(
@@ -434,7 +450,7 @@ async fn cancel_bet(
         tx.commit().await?;
         return Ok(Json(json!({"ok":true})));
     }
-    if !accepts_entries(received, p.business_date) {
+    if !crate::market::accepts(&p, received) {
         return Err(conflict("本期已归档，不能撤销投注"));
     }
     let outgoing: i64 =

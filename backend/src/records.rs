@@ -127,8 +127,12 @@ pub(crate) async fn search(
             .fetch_all(&mut *tx)
             .await?;
     let encoded = serde_json::to_string(&ids).map_err(anyhow::Error::from)?;
-    let rows: Vec<BetSummary> = sqlx::query_as(&format!("SELECT {BET_COLUMNS} FROM bets WHERE period_id=? AND JSON_CONTAINS(?,JSON_QUOTE(COALESCE(slip_id,id)))"))
-        .bind(&period).bind(encoded).fetch_all(&mut *tx).await?;
+    let rows: Vec<BetSummary> = sqlx::query_as(&format!(
+        "SELECT {BET_COLUMNS} FROM bets WHERE JSON_CONTAINS(?,JSON_QUOTE(COALESCE(slip_id,id)))"
+    ))
+    .bind(encoded)
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     let mut groups = HashMap::<String, Vec<BetSummary>>::new();
     for row in rows {
@@ -195,10 +199,20 @@ pub(crate) async fn cancel(
         .await?
         .ok_or_else(missing)?;
     let mut tx = state.pool.begin().await?;
-    let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
-        .bind(&period)
-        .fetch_one(&mut *tx)
-        .await?;
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT period_id FROM bets WHERE slip_id=? ORDER BY period_id",
+    )
+    .bind(&id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut periods = Vec::new();
+    for period_id in ids {
+        let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
+            .bind(period_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        periods.push(p);
+    }
     let items: Vec<BetSummary> = sqlx::query_as(&format!(
         "SELECT {BET_COLUMNS} FROM bets WHERE slip_id=? ORDER BY id FOR UPDATE"
     ))
@@ -211,7 +225,7 @@ pub(crate) async fn cancel(
     if items.iter().all(|b| b.status == "cancelled") {
         return Ok(Json(json!({"ok":true})));
     }
-    if !accepts_entries(received, p.business_date) {
+    if periods.iter().any(|p| !crate::market::accepts(p, received)) {
         return Err(conflict("本期已归档，不能撤销组合单"));
     }
     let versions: HashMap<_, _> = input.versions.iter().map(|v| (&v.id, v.revision)).collect();
@@ -240,10 +254,14 @@ pub(crate) async fn cancel(
         .await?;
     }
     audit(&mut tx, Some(&period), "slip_cancelled", json!({"id":id})).await?;
-    ledger::invalidate(&mut tx, &period).await?;
-    crate::worker::settle_recorded(&mut tx, &p).await?;
+    for p in &periods {
+        ledger::invalidate(&mut tx, &p.id).await?;
+        crate::worker::settle_recorded(&mut tx, p).await?;
+    }
     tx.commit().await?;
-    ledger::cancel_calculation(&state, &period).await;
+    for p in &periods {
+        ledger::cancel_calculation(&state, &p.id).await;
+    }
     Ok(Json(json!({"ok":true})))
 }
 
@@ -316,6 +334,6 @@ pub(crate) async fn export(
         .map(|(name, (totals, bets))| json!({"name":name,"totals":totals,"bets":bets}))
         .collect();
     Ok(Json(
-        json!({"period":id,"settled":period.state=="settled","draw":period.draw,"bet_version":period.bet_version,"generated_at":state.now().format("%Y-%m-%d %H:%M:%S").to_string(),"bettors":groups}),
+        json!({"period":id,"market":period.market,"settled":period.state=="settled","draw":period.draw,"bet_version":period.bet_version,"generated_at":state.now().format("%Y-%m-%d %H:%M:%S").to_string(),"bettors":groups}),
     ))
 }

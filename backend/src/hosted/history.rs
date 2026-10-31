@@ -88,11 +88,29 @@ async fn erase(
     }
     let cutoff = today();
     // Period locks serialize with settlement, amount correction and cancellations.
-    let ids: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM periods WHERE business_date<? ORDER BY id FOR UPDATE")
+    let mut ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM periods WHERE business_date<? AND NOT (market='hk' AND (draw IS NULL OR JSON_UNQUOTE(JSON_EXTRACT(draw,'$.open_time')) >= ?)) ORDER BY id FOR UPDATE")
+            .bind(cutoff)
             .bind(cutoff)
             .fetch_all(&mut *tx)
             .await?;
+    let links: Vec<(String, String)> = sqlx::query_as(
+        "SELECT s.period_id,b.period_id FROM bet_slips s JOIN bets b ON b.slip_id=s.id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    loop {
+        let before = ids.len();
+        let keep: std::collections::HashSet<_> = links
+            .iter()
+            .filter(|(a, b)| !ids.contains(a) || !ids.contains(b))
+            .flat_map(|(a, b)| [a.clone(), b.clone()])
+            .collect();
+        ids.retain(|id| !keep.contains(id));
+        if ids.len() == before {
+            break;
+        }
+    }
     // Backups contain the original ledgers, so deleting only live rows is insufficient.
     // The durable opaque receipt also rejects old generations restored from a copy.
     let receipt = c.backup_root.join("erasures");
@@ -123,15 +141,16 @@ async fn erase(
     .map_err(anyhow::Error::from)?
     .map_err(anyhow::Error::from)?;
     management::remove_tree(&c.backup_root.join("tenants").join(&a.id)).await?;
-    for id in &ids {
-        for statement in [
-            "DELETE FROM bet_mutations WHERE bet_id IN (SELECT id FROM bets WHERE period_id=?)",
-            "DELETE FROM layoffs WHERE period_id=?",
-            "DELETE FROM bets WHERE period_id=?",
-            "DELETE FROM bet_slips WHERE period_id=?",
-            "DELETE FROM audit_events WHERE period_id=?",
-            "DELETE FROM periods WHERE id=?",
-        ] {
+    // Delete all child ledgers before any mixed-slip headers or period parents.
+    for statement in [
+        "DELETE FROM bet_mutations WHERE bet_id IN (SELECT id FROM bets WHERE period_id=?)",
+        "DELETE FROM layoffs WHERE period_id=?",
+        "DELETE FROM bets WHERE period_id=?",
+        "DELETE FROM bet_slips WHERE period_id=?",
+        "DELETE FROM audit_events WHERE period_id=?",
+        "DELETE FROM periods WHERE id=?",
+    ] {
+        for id in &ids {
             sqlx::query(statement).bind(id).execute(&mut *tx).await?;
         }
     }

@@ -251,3 +251,71 @@ test("returning to foreground offers related clipboard text but not the last rec
   await page.waitForTimeout(250);
   await expect(modal).toBeHidden();
 });
+
+test("mixed markets save once and statistics select the independent Hong Kong period", async ({
+  page,
+}) => {
+  await signIn(page);
+  await textMode(page);
+  const name = `synthetic-markets-${Date.now()}`;
+  const dialog = await check(page, "香港特码12各100\n澳门特码13各200", name);
+  await expect(dialog.getByLabel("第1项市场", { exact: true })).toHaveValue(
+    "hk",
+  );
+  await dialog.getByRole("button", { name: "确认录入", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: "本期概览", exact: true })
+    .click();
+  await page.getByLabel("统计市场").selectOption("hk");
+  await expect(page.getByText("有投注后每 60 秒同步")).toBeVisible();
+  const boot = await (await page.request.get("/api/bootstrap")).json();
+  expect(boot.hk.market).toBe("hk");
+  expect(boot.hk.totals.stake).toBeGreaterThanOrEqual(10000);
+  const response = await page.request.post("/api/records/search", {
+    headers: { "X-Marksix": "1" },
+    data: { period: boot.hk.id, bettors: [name] },
+  });
+  const records = await response.json();
+  expect(records.items).toHaveLength(1);
+  expect(
+    records.items[0].items.map((item: { market: string }) => item.market),
+  ).toEqual(["hk", "macau"]);
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: "本期统计", exact: true })
+    .click();
+  await expect(page.getByLabel("统计市场")).toHaveValue("hk");
+});
+
+test("manual Hong Kong entry retains its market through quote and submission", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.request.put("/api/settings/entry-mode", {
+    headers: { "X-Marksix": "1" },
+    data: { entry_mode: "manual" },
+  });
+  await page.reload();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: "录入投注", exact: true })
+    .click();
+  await page.getByLabel("投注市场").selectOption("hk");
+  await page.getByLabel("搜索玩法名称").fill("特码");
+  await page
+    .locator(".play-picker button")
+    .filter({ has: page.locator("span", { hasText: /^特码$/ }) })
+    .click();
+  await page.getByRole("button", { name: /^07 / }).click();
+  await page.getByPlaceholder("手工填写姓名或代号").fill("synthetic-hk-manual");
+  await page.getByRole("textbox", { name: "每注金额", exact: true }).fill("25");
+  const submitted = page.waitForResponse(
+    (r) => r.request().method() === "POST" && r.url().endsWith("/api/bets"),
+  );
+  await page.getByRole("button", { name: "确认录入投注", exact: true }).click();
+  const response = await submitted;
+  expect(response.ok()).toBe(true);
+  expect(response.request().postDataJSON().market).toBe("hk");
+});

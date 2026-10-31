@@ -1,4 +1,5 @@
 pub mod domain;
+pub mod market;
 
 pub mod api;
 mod betting;

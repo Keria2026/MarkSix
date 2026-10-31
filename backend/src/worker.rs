@@ -59,10 +59,11 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
         start_risk(state).await?;
     }
     let now = state.now();
-    let periods: Vec<Period> =
-        sqlx::query_as("SELECT * FROM periods WHERE state='pending' ORDER BY business_date")
-            .fetch_all(&state.pool)
-            .await?;
+    let periods: Vec<Period> = sqlx::query_as(
+        "SELECT * FROM periods WHERE state='pending' AND market='macau' ORDER BY business_date",
+    )
+    .fetch_all(&state.pool)
+    .await?;
     let mut eligible = vec![];
     for p in periods {
         let start = p.business_date.and_hms_opt(21, 34, 0).unwrap();
@@ -78,6 +79,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
             eligible.push(p);
         }
     }
+    fetch_hk_pending(state).await?;
     if eligible.is_empty() {
         return Ok(());
     }
@@ -135,8 +137,11 @@ async fn fetch_uncached(state: &AppState) -> anyhow::Result<Vec<Value>> {
         }
         bytes.extend_from_slice(&chunk);
     }
-    let values: Vec<Value> = serde_json::from_slice(&bytes)?;
-    Ok(values)
+    let value: Value = serde_json::from_slice(&bytes)?;
+    Ok(match value {
+        Value::Array(values) => values,
+        value => vec![value],
+    })
 }
 pub async fn process_response(
     state: &AppState,
@@ -194,16 +199,37 @@ async fn mark_missing(state: &AppState, id: &str, reason: &str) -> anyhow::Resul
     Ok(())
 }
 pub async fn accept_draw(state: &AppState, draw: &Draw, raw: &Value) -> anyhow::Result<()> {
+    accept_period_draw(state, &draw.expect, draw, raw).await
+}
+async fn accept_period_draw(
+    state: &AppState,
+    period_id: &str,
+    draw: &Draw,
+    raw: &Value,
+) -> anyhow::Result<()> {
     let mut tx = state.pool.begin().await?;
     let Some(p): Option<Period> = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
-        .bind(&draw.expect)
+        .bind(period_id)
         .fetch_optional(&mut *tx)
         .await?
     else {
         return Ok(());
     };
-    if draw.open_time.date() != p.business_date {
+    if p.market == "macau" && draw.open_time.date() != p.business_date {
         anyhow::bail!("目标期次日期不匹配");
+    }
+    if p.market == "hk" && !hk_matches(&p, draw, state.now()) {
+        anyhow::bail!("香港开奖期号或日期不匹配");
+    }
+    if p.market == "hk" {
+        sqlx::query(
+            "UPDATE market_cursors SET expect=?,open_time=? WHERE market='hk' AND open_time<?",
+        )
+        .bind(&draw.expect)
+        .bind(draw.open_time)
+        .bind(draw.open_time)
+        .execute(&mut *tx)
+        .await?;
     }
     if let Some(existing) = p.draw {
         if existing.0 != *draw {
@@ -226,10 +252,10 @@ pub async fn accept_draw(state: &AppState, draw: &Draw, raw: &Value) -> anyhow::
         return Ok(());
     }
     tx.commit().await?;
-    if let Some(flag) = state.cancellations.lock().await.get(&draw.expect) {
+    if let Some(flag) = state.cancellations.lock().await.get(period_id) {
         flag.store(true, Ordering::Relaxed);
     }
-    settle_period(state, &draw.expect).await?;
+    settle_period(state, period_id).await?;
     Ok(())
 }
 pub async fn settle_period(state: &AppState, id: &str) -> anyhow::Result<()> {
@@ -423,3 +449,91 @@ pub async fn start_risk(state: &AppState) -> anyhow::Result<()> {
 #[cfg(test)]
 #[path = "../test_support/worker.rs"]
 mod contract;
+
+fn hk_matches(p: &Period, draw: &Draw, now: chrono::NaiveDateTime) -> bool {
+    use chrono::Datelike;
+    if draw.open_time > now
+        || draw.open_time.date() != now.date()
+        || draw.open_time.date() < p.business_date
+    {
+        return false;
+    }
+    let Some(previous) = p.previous_expect.as_deref() else {
+        return false;
+    };
+    if let Some(expected) = crate::market::next_expect(previous, draw.open_time.year()) {
+        return draw.expect == expected;
+    }
+    // The source owns the first issue number in a new year; never infer it from a day ordinal.
+    previous
+        .get(..4)
+        .and_then(|y| y.parse::<i32>().ok())
+        .is_some_and(|y| draw.open_time.year() > y)
+}
+async fn fetch_hk_pending(state: &AppState) -> anyhow::Result<()> {
+    let periods:Vec<Period>=sqlx::query_as("SELECT * FROM periods WHERE market='hk' AND state='pending' AND (last_fetch_at IS NULL OR last_fetch_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 60 SECOND)) AND EXISTS(SELECT 1 FROM bets WHERE bets.period_id=periods.id AND bets.status<>'cancelled') ORDER BY id").fetch_all(&state.pool).await?;
+    if periods.is_empty() {
+        return Ok(());
+    }
+    for p in &periods {
+        sqlx::query("UPDATE periods SET last_fetch_at=UTC_TIMESTAMP(6) WHERE id=?")
+            .bind(&p.id)
+            .execute(&state.pool)
+            .await?;
+    }
+    let mut source = state.clone();
+    source.draw_url = state.hk_draw_url.clone();
+    source.draw_cache = state.hk_draw_cache.clone();
+    let response = fetch(&source).await;
+    for p in periods {
+        let result = match &response {
+            Ok(values) => process_hk_response(state, &p, values).await,
+            Err(e) => Err(anyhow::anyhow!(e.to_string())),
+        };
+        if let Err(e) = result {
+            sqlx::query("UPDATE periods SET error=? WHERE id=? AND state='pending'")
+                .bind(format!("香港开奖获取失败：{e}；保留投注继续等待"))
+                .bind(&p.id)
+                .execute(&state.pool)
+                .await?;
+        }
+    }
+    Ok(())
+}
+pub async fn process_hk_response(
+    state: &AppState,
+    p: &Period,
+    values: &[Value],
+) -> anyhow::Result<()> {
+    for raw in values {
+        let draw = parse_market_draw(raw, crate::market::Market::Hk).map_err(anyhow::Error::msg)?;
+        if hk_matches(p, &draw, state.now()) {
+            return accept_period_draw(state, &p.id, &draw, raw).await;
+        }
+        // An older result may initialize a stale cursor only before this open period began.
+        // Never advance over a draw belonging to an outstanding bet.
+        if draw.open_time.date() < p.business_date && draw.open_time <= state.now() {
+            let mut tx = state.pool.begin().await?;
+            let locked: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
+                .bind(&p.id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if locked.state == "pending"
+                && locked
+                    .previous_expect
+                    .as_deref()
+                    .is_some_and(|old| draw.expect.as_str() > old)
+            {
+                sqlx::query("UPDATE market_cursors SET expect=?,open_time=? WHERE market='hk' AND open_time<?").bind(&draw.expect).bind(draw.open_time).bind(draw.open_time).execute(&mut *tx).await?;
+                sqlx::query("UPDATE periods SET previous_expect=? WHERE id=?")
+                    .bind(&draw.expect)
+                    .bind(&p.id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
+        }
+    }
+    sqlx::query("UPDATE periods SET error='香港接口尚未返回期号和当天日期均匹配的结果，每 60 秒重试' WHERE id=? AND state='pending'").bind(&p.id).execute(&state.pool).await?;
+    Ok(())
+}

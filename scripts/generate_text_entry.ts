@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export interface OracleItem {
+  market?: "macau" | "hk";
   play: string;
   selections: number[];
   compound: boolean;
@@ -45,6 +46,7 @@ export function semanticKey(
       items: items
         .map((item) => ({
           ...item,
+          market: item.market ?? "macau",
           amount: Number(item.amount).toFixed(2),
           selections: [...item.selections].sort((a, b) => a - b),
           package_zodiacs: item.package_zodiacs
@@ -188,6 +190,8 @@ export async function generateCorpus(
     ["test", size - Math.floor(size * 0.7) - Math.floor(size * 0.15), 6],
   ] as const;
   const families = [
+    "hk-numbers",
+    "mixed-market",
     "numbers",
     "zodiac",
     "groups",
@@ -289,6 +293,39 @@ export async function generateCorpus(
       const zodiacHeader = alias(pick(["三友", "三有"]), "三有");
       // Explicit alias labels are supervision, not automatically installed customer preferences.
       switch (family) {
+        case "hk-numbers": {
+          const selection = ns.slice(0, 1 + random(5));
+          raw =
+            pick(["香港", "港", "香", "香港六合彩"]) +
+            headerGap +
+            "特码" +
+            ntext(selection) +
+            each +
+            money;
+          items = [{ ...line("特码", selection), market: "hk" }];
+          break;
+        }
+        case "mixed-market": {
+          raw =
+            "澳门特码" +
+            ntext(ns.slice(0, 2)) +
+            each +
+            money +
+            "；香港二有" +
+            ztext(z.slice(0, 2)) +
+            "各" +
+            money +
+            "；澳门特码" +
+            ntext(ns.slice(2, 4)) +
+            each +
+            money;
+          items = [
+            line("特码", ns.slice(0, 2)),
+            { ...line("二有", z.slice(0, 2), money, 2), market: "hk" },
+            line("特码", ns.slice(2, 4)),
+          ];
+          break;
+        }
         case "numbers": {
           const selection = ns.slice(0, 1 + random(7));
           raw = numberHeader + headerGap + ntext(selection) + each + money;

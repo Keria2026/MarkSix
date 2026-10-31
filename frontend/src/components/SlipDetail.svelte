@@ -52,7 +52,11 @@
 
 <Modal title="组合单详情" wide dismissible={!busy} {onclose}>
   <p class="modal-description">
-    第 {record.period_id} 期 · 投注人 {record.bettor} · {record.items.length} 个分项
+    {new Set(record.items.map((item) => item.market ?? "macau")).size > 1
+      ? "港澳组合单"
+      : record.items[0]?.market === "hk"
+        ? "香港组合单"
+        : "新澳门组合单"} · 投注人 {record.bettor} · {record.items.length} 个分项
   </p>
   <div class="slip-detail-summary">
     <div><span>未撤销本金</span><strong>{money(record.stake)}</strong></div>
@@ -70,7 +74,10 @@
   <div class="slip-detail-items">
     {#each record.items as item, index (item.id)}<article>
         <div>
-          <strong>{index + 1}. {item.rule.name}</strong>
+          <strong
+            >{index + 1}. {item.market === "hk" ? "香港" : "新澳门"} · {item
+              .rule.name}</strong
+          >
           <p>
             {item.drag
               ? dragLabel(item.rule.kind, item.drag)

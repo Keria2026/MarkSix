@@ -98,6 +98,7 @@ pub(super) struct Registry {
     pub work_gate: Arc<Semaphore>,
     risk_gate: Arc<Semaphore>,
     draw_cache: crate::store::DrawCache,
+    hk_draw_cache: crate::store::DrawCache,
     client: reqwest::Client,
     pub(super) clock: Arc<dyn Fn() -> chrono::NaiveDateTime + Send + Sync>,
 }
@@ -110,6 +111,7 @@ impl Registry {
             work_gate: Arc::new(Semaphore::new(8)),
             risk_gate: Arc::new(Semaphore::new(1)),
             draw_cache: Arc::default(),
+            hk_draw_cache: Arc::default(),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
                 .user_agent(concat!(
@@ -166,6 +168,7 @@ impl Registry {
         state.risk_gate = self.risk_gate.clone();
         state.auth_gate = self.control.gate.clone();
         state.draw_cache = Some(self.draw_cache.clone());
+        state.hk_draw_cache = Some(self.hk_draw_cache.clone());
         state.hosted = Some(super::Policy {
             pool: self.control.pool.clone(),
             account_id: a.id.clone(),

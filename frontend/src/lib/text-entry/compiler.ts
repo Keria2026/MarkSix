@@ -142,6 +142,7 @@ export function compileRow(
           ? "each"
           : row.mode;
     const base = {
+      ...(row.market === "hk" ? { market: row.market } : {}),
       play_id: play.id,
       play_version: play.version,
       amount: row.amount,
@@ -296,11 +297,12 @@ export function compileText(
   rows: TextRow[],
   plays: Play[],
   mapping: Mapping,
+  hkMapping: Mapping = mapping,
 ): CompiledRow[] {
   const compiled = rows.map((row) =>
     row.excluded || row.summary
       ? { items: [] as SlipLine[], error: "" }
-      : compileRow(row, plays, mapping),
+      : compileRow(row, plays, row.market === "hk" ? hkMapping : mapping),
   );
   type Totals = {
     units: number;
@@ -318,7 +320,11 @@ export function compileText(
     if (result.error) totals.valid = false;
     for (const item of result.items) {
       const rule = plays.find((p) => p.id === item.play_id)!.rule;
-      const count = lineUnits(item, rule, mapping);
+      const count = lineUnits(
+        item,
+        rule,
+        item.market === "hk" ? hkMapping : mapping,
+      );
       totals.units += count;
       totals.stake +=
         entryCents(item.amount)! *
