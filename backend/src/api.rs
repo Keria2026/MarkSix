@@ -634,55 +634,5 @@ async fn update_mapping(
 }
 
 #[cfg(test)]
-mod security_tests {
-    use super::*;
-    use axum::{
-        body::{Body, to_bytes},
-        http::Method,
-    };
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn every_response_including_rejected_writes_has_security_headers() {
-        let app = Router::new()
-            .route(
-                "/resource",
-                get(|| async { "read" }).post(|| async { "written" }),
-            )
-            .layer(middleware::from_fn(security_headers));
-        for (method, marker, expected) in [
-            (Method::GET, None, StatusCode::OK),
-            (Method::HEAD, None, StatusCode::OK),
-            (Method::POST, None, StatusCode::FORBIDDEN),
-            (Method::POST, Some("0"), StatusCode::FORBIDDEN),
-            (Method::POST, Some("1"), StatusCode::OK),
-            (Method::OPTIONS, None, StatusCode::METHOD_NOT_ALLOWED),
-        ] {
-            let mut request = Request::builder().uri("/resource").method(method);
-            if let Some(marker) = marker {
-                request = request.header("X-Marksix", marker);
-            }
-            let response = app
-                .clone()
-                .oneshot(request.body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), expected);
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
-            assert_eq!(response.headers()["x-frame-options"], "DENY");
-            assert_eq!(response.headers()["referrer-policy"], "same-origin");
-            assert!(
-                response.headers()["content-security-policy"]
-                    .to_str()
-                    .unwrap()
-                    .contains("frame-ancestors 'none'")
-            );
-            if expected == StatusCode::FORBIDDEN {
-                let body = to_bytes(response.into_body(), 1024).await.unwrap();
-                let json: Value = serde_json::from_slice(&body).unwrap();
-                assert!(json["error"].as_str().unwrap().contains("请求校验失败"));
-            }
-        }
-    }
-}
+#[path = "../test_support/api.rs"]
+mod security_tests;

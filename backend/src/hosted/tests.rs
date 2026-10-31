@@ -212,6 +212,141 @@ async fn hosted_tenant_and_credential_contract() {
         .is_err()
     );
     drop(lease);
+    // Historical erasure is password-confirmed, idempotent and leaves today's ledger intact.
+    let lease = r.lease(&accounts[0]).await.unwrap();
+    let old_date = today().pred_opt().unwrap();
+    let old = crate::store::ensure_period(&lease, old_date).await.unwrap();
+    sqlx::query("UPDATE bets SET period_id=?")
+        .bind(&old.id)
+        .execute(&lease.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE bet_slips SET period_id=?")
+        .bind(&old.id)
+        .execute(&lease.pool)
+        .await
+        .unwrap();
+    let current_body = json!({"period":boot["today"]["id"],"bettor":"preserve-today","request_id":uuid::Uuid::new_v4().to_string(),"items":[{"play_id":p["id"],"play_version":p["version"],"selections":[8],"compound":false,"amount":"20"}]});
+    ok(&app, "POST", "/api/slips", current_body, &ca).await;
+    let backup = root.join("tenants").join(&accounts[0].id);
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::write(backup.join("old.sql.gz"), b"synthetic").unwrap();
+    let clear = json!({"password":password,"confirmation":"永久清空历史记录","request_id":uuid::Uuid::new_v4().to_string()});
+    for (field, value, status) in [
+        ("confirmation", "wrong", StatusCode::UNPROCESSABLE_ENTITY),
+        ("request_id", "bad", StatusCode::UNPROCESSABLE_ENTITY),
+        ("password", "incorrect", StatusCode::FORBIDDEN),
+    ] {
+        let mut invalid = clear.clone();
+        invalid[field] = value.into();
+        assert_eq!(
+            call(&admin, "POST", "/api/customer/history/clear", invalid, &ca)
+                .await
+                .0,
+            status
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets")
+                .fetch_one(&lease.pool)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+    for _ in 0..2 {
+        ok(
+            &admin,
+            "POST",
+            "/api/customer/history/clear",
+            clear.clone(),
+            &ca,
+        )
+        .await;
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets")
+            .fetch_one(&lease.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM history_clear_requests")
+            .fetch_one(&lease.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(!backup.exists());
+    assert!(
+        root.join("erasures")
+            .join(format!("{}.json", accounts[0].id))
+            .is_file()
+    );
+    drop(lease);
+    for route in [
+        "/api/accounts",
+        "/api/codes",
+        "/api/administrators",
+        "/api/audit",
+    ] {
+        let listed = ok(&admin, "GET", route, json!({}), &owner).await;
+        assert!(!listed.to_string().contains("password_hash"));
+        assert!(!listed["items"].as_array().unwrap().is_empty());
+    }
+    ok(
+        &admin,
+        "POST",
+        "/api/administrators",
+        json!({"username":"synthetic-second-owner","password":password}),
+        &owner,
+    )
+    .await;
+    let other_owner = login(&admin, "synthetic-second-owner", &password).await;
+    ok(&admin, "GET", "/api/session", json!({}), &other_owner).await;
+    ok(&admin, "POST", "/api/logout", json!({}), &other_owner).await;
+    assert_eq!(
+        call(&admin, "GET", "/api/session", json!({}), &other_owner)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let account_path = format!("/api/accounts/{}", customers[1]);
+    for change in [
+        json!({"action":"disable"}),
+        json!({"action":"enable"}),
+        json!({"action":"password","password":password}),
+        json!({"action":"rename","username":"contract-renamed"}),
+        json!({"action":"rename","username":"contract-b"}),
+        json!({"action":"revoke"}),
+        json!({"action":"permanent","enabled":false}),
+    ] {
+        ok(&admin, "PUT", &account_path, change, &owner).await;
+    }
+    let issued = ok(
+        &admin,
+        "POST",
+        &format!("{account_path}/codes"),
+        json!({"days":1,"redeem_through":today()}),
+        &owner,
+    )
+    .await;
+    let code_id: String = sqlx::query_scalar("SELECT id FROM hosted_codes WHERE token_hash=?")
+        .bind(crate::api::digest(issued["code"].as_str().unwrap()))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let revoke_path = format!("/api/codes/{code_id}/revoke");
+    ok(&admin, "POST", &revoke_path, json!({}), &owner).await;
+    assert_eq!(
+        call(&admin, "POST", &revoke_path, json!({}), &owner)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    for app in [&admin, &app] {
+        ok(app, "GET", "/api/health", json!({}), "").await;
+    }
     let new_ca = login(&app, "contract-a", &password).await;
     assert_eq!(
         call(&app, "GET", "/api/session", json!({}), &ca).await.0,

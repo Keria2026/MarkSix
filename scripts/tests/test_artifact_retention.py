@@ -22,6 +22,12 @@ class CoverageRetention(unittest.TestCase):
         plan = cleanup.plan_cleanup([self.artifact(1, 1), self.artifact(2, 2)], runs, {}, 2, 3, dt.datetime(2040, 1, 2, tzinfo=dt.timezone.utc))
         self.assertEqual([item['action'] for item in plan], ['delete', 'keep'])
 
+    def test_synthetic_corpus_follows_report_retention(self):
+        runs = {1: self.run_record(1, 1), 2: self.run_record(2, 2)}
+        artifacts = [{**self.artifact(i, i), 'name': 'text-entry-corpus'} for i in (1, 2)]
+        plan = cleanup.plan_cleanup(artifacts, runs, {}, 2, 3, dt.datetime(2040, 1, 2, tzinfo=dt.timezone.utc))
+        self.assertEqual([item['action'] for item in plan], ['delete', 'keep'])
+
     def test_in_progress_reports_are_kept_and_completed_reports_expire(self):
         runs = {1: self.run_record(1, 1, 'in_progress', None), 2: self.run_record(2, 2)}
         plan = cleanup.plan_cleanup([self.artifact(1, 1), self.artifact(2, 2)], runs, {}, 2, 3, dt.datetime(2040, 1, 9, tzinfo=dt.timezone.utc))

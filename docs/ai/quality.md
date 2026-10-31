@@ -45,6 +45,14 @@ python3 scripts/coverage_report.py
 python3 scripts/coverage_report.py --strict
 ```
 
+CI 对 `backend`、`frontend` 和 `python` 分别执行 90% 行覆盖门槛：
+
+```sh
+python3 scripts/coverage_report.py --minimum 90 --scope backend --scope frontend --scope python
+```
+
+每个范围必须具有完整文件测量，且用未四舍五入的命中数判定；不能用总平均值抵消某一层的缺口。TypeScript 工具与 Shell 的未测文件仍在清单中显示，不属于此三层门槛，不宣称整个仓库已达到同一覆盖率。
+
 `--strict` 在存在未测文件、未覆盖行或已测 Python 分支缺口时返回失败。它是目标检查，不能证明其他语言未测的分支已经覆盖。普通报告模式保留缺口事实，不宣称目标达成。每次完整测量应从空的 `test-results/coverage/` 开始，避免混入旧源码或旧浏览器用例的数据；Rust 使用 `cargo llvm-cov clean --workspace` 清除历史测量后重测。
 
 Rust 工具安装、数据库环境变量、语料评估及浏览器服务启动顺序以 `.github/workflows/ci.yml` 为准。浏览器可用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定本机 Chromium，CI 默认使用 Playwright 安装的版本。测试只连接独立的 `marksix_test`。

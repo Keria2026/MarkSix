@@ -62,6 +62,14 @@ class CoverageInventory(unittest.TestCase):
             self.assertFalse(coverage.meets_target(report))
             self.assertEqual(report['groups']['python']['files']['scripts/runtime.py']['branches_total'], 2)
 
+    def test_threshold_checks_each_scope_without_rounding_or_hiding_unknown_files(self):
+        def report(covered, total, complete=True):
+            return {'groups': {'backend': {'covered': covered, 'total': total, 'complete_inventory': complete}}}
+        self.assertEqual(coverage.threshold_failures(report(9, 10), 90, ['backend']), [])
+        self.assertTrue(coverage.threshold_failures(report(89999, 100000), 90, ['backend']))
+        self.assertTrue(coverage.threshold_failures(report(10, 10, False), 90, ['backend']))
+        self.assertTrue(coverage.threshold_failures(report(0, 0), 90, ['backend']))
+
     def test_backend_summary_maps_to_inventory(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

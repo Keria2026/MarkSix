@@ -30,6 +30,83 @@ export interface CorpusRecord {
     stake: number;
   };
 }
+export const normalizeText = (text: string) =>
+  text.normalize("NFKC").replace(/\s+/gu, "").trim();
+
+export function semanticKey(
+  raw: string,
+  accepted: boolean,
+  items: OracleItem[],
+) {
+  // Order, amount spelling, rendering style and irrelevant annual mappings cannot
+  // manufacture a new accepted intention. Blocked texts have no accepted intent.
+  return sha(
+    JSON.stringify({
+      items: items
+        .map((item) => ({
+          ...item,
+          amount: Number(item.amount).toFixed(2),
+          selections: [...item.selections].sort((a, b) => a - b),
+          package_zodiacs: item.package_zodiacs
+            ? [...item.package_zodiacs].sort((a, b) => a - b)
+            : undefined,
+          drag: item.drag
+            ? {
+                ...item.drag,
+                left: [...item.drag.left].sort((a, b) => a - b),
+                right: [...item.drag.right].sort((a, b) => a - b),
+              }
+            : undefined,
+        }))
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+      negative: accepted ? null : normalizeText(raw),
+    }),
+  );
+}
+
+export function verifyRecords(records: CorpusRecord[], expectedSize: number) {
+  if (records.length !== expectedSize)
+    throw Error("Corpus record count mismatch");
+  const ids = new Set<string>(),
+    texts = new Set<string>(),
+    groups = new Set<string>();
+  const templates = new Map<string, string>();
+  for (const record of records) {
+    if (
+      record.schema !== 2 ||
+      record.is_synthetic !== true ||
+      !["train", "validation", "test"].includes(record.split)
+    )
+      throw Error(
+        "Only labelled synthetic records with a known split are permitted",
+      );
+    const text = normalizeText(record.raw_text);
+    const group = semanticKey(
+      record.raw_text,
+      record.expected.status === "accept",
+      record.expected.items,
+    );
+    if (!text || ids.has(record.id) || texts.has(text) || groups.has(group))
+      throw Error(`Duplicate corpus record: ${record.id}`);
+    if (record.semantic_group !== group)
+      throw Error(`Invalid semantic fingerprint: ${record.id}`);
+    if (
+      templates.has(record.template) &&
+      templates.get(record.template) !== record.split
+    )
+      throw Error(`Rendering template leaks across splits: ${record.template}`);
+    ids.add(record.id);
+    texts.add(text);
+    groups.add(group);
+    templates.set(record.template, record.split);
+  }
+  return {
+    unique_ids: ids.size,
+    unique_normalized_texts: texts.size,
+    unique_semantic_groups: groups.size,
+  };
+}
+
 const zs = "鼠牛虎兔龙蛇马羊猴鸡狗猪";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 function choose(n: number, k: number): number {
@@ -78,7 +155,7 @@ export function oracle(items: OracleItem[], mapping: CorpusRecord["mapping"]) {
 export async function generateCorpus(
   output: string,
   source?: string,
-  size = 5000,
+  size = 30000,
 ) {
   if (!Number.isInteger(size) || size < 100)
     throw Error("Corpus size must be an integer >= 100");
@@ -98,7 +175,7 @@ export async function generateCorpus(
     return result;
   };
   const seenTexts = new Set<string>(),
-    seenGroups = new Map<string, string>();
+    seenGroups = new Set<string>();
   const files: Record<string, string[]> = {
     train: [],
     validation: [],
@@ -157,12 +234,15 @@ export async function generateCorpus(
     let attempts = 0;
     while (files[split].length < target) {
       if (++attempts > target * 100)
-        throw Error("Insufficient unique semantic examples");
+        throw Error(
+          `Insufficient unique semantic examples: ${split} ${files[split].length} ${families[files[split].length % families.length]}`,
+        );
       const family = families[files[split].length % families.length];
       const style = baseStyle + random(split === "train" ? 4 : 2);
       const separators = [".", " ", "、", "\n", "，", ".\n", "；", " "];
       const sep = separators[style];
       const money = pick([
+        ...Array.from({ length: 1000 }, (_, i) => String((i + 1) * 5)),
         "10",
         "15",
         "25",
@@ -525,21 +605,11 @@ export async function generateCorpus(
         items[0].selections = mapping.zodiac.flatMap((v, i) =>
           z.slice(0, 2).includes(v) ? [i + 1] : [],
         );
-      const semantic = sha(
-        JSON.stringify({
-          family,
-          items,
-          negative: accept ? null : { z, ns, money },
-          mapping,
-        }),
-      );
-      if (
-        seenTexts.has(raw) ||
-        (seenGroups.has(semantic) && seenGroups.get(semantic) !== split)
-      )
+      const semantic = semanticKey(raw, accept, items);
+      if (seenTexts.has(normalizeText(raw)) || seenGroups.has(semantic))
         continue;
-      seenTexts.add(raw);
-      seenGroups.set(semantic, split);
+      seenTexts.add(normalizeText(raw));
+      seenGroups.add(semantic);
       const expected = {
         status: accept ? ("accept" as const) : ("blocked" as const),
         items,
@@ -567,6 +637,12 @@ export async function generateCorpus(
       counts[family] = (counts[family] ?? 0) + 1;
     }
   }
+  const uniqueness = verifyRecords(
+    Object.values(files)
+      .flat()
+      .map((line) => JSON.parse(line)),
+    size,
+  );
   await mkdir(output, { recursive: true });
   const hashes: Record<string, string> = {};
   for (const [name, records] of Object.entries(files)) {
@@ -580,6 +656,7 @@ export async function generateCorpus(
     generated_by: "scripts/generate_text_entry.ts",
     seed: 20261029,
     records: size,
+    ...uniqueness,
     splits: Object.fromEntries(
       Object.entries(files).map(([k, v]) => [k, v.length]),
     ),

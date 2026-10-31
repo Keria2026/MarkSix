@@ -118,6 +118,17 @@ def meets_target(report):
         for group in report['groups'].values())
 
 
+def threshold_failures(report, minimum, scopes):
+    failures = []
+    for name in scopes:
+        group = report['groups'][name]
+        if not group['complete_inventory'] or not group['total']:
+            failures.append(f"{name}: incomplete instrumentation")
+        elif group['covered'] * 100 < minimum * group['total']:
+            failures.append(f"{name}: {group['covered']}/{group['total']} lines below {minimum}%")
+    return failures
+
+
 def markdown(report):
     rows = ['# Coverage inventory', '', '| Scope | Measured lines | Measured % | Unmeasured files |',
             '| --- | --- | --- | --- |']
@@ -133,12 +144,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--directory', type=Path, default=ROOT / 'test-results/coverage')
     parser.add_argument('--strict', action='store_true', help='Fail on absent sources or any uncovered measured lines/branches; not a proof of unmeasured branch coverage.')
+    parser.add_argument('--minimum', type=float, help='Required line percentage in every explicitly selected scope')
+    parser.add_argument('--scope', action='append', choices=list(inventory(ROOT)), default=[])
     args = parser.parse_args()
+    if args.minimum is not None and (not 0 <= args.minimum <= 100 or not args.scope):
+        parser.error('--minimum must be 0–100 and requires explicit --scope selections')
     report = collect(ROOT, args.directory)
     args.directory.mkdir(parents=True, exist_ok=True)
     (args.directory / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     (args.directory / 'SUMMARY.md').write_text(markdown(report))
     print(markdown(report))
+    if args.minimum is not None:
+        failures = threshold_failures(report, args.minimum, args.scope)
+        if failures:
+            raise SystemExit('Coverage gate failed: ' + '; '.join(failures))
     if args.strict and not meets_target(report):
         raise SystemExit('100% coverage target has not been reached; see summary.json for missing sources and lines.')
 
