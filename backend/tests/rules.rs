@@ -1,5 +1,5 @@
-use marksix::{configuration::bundled, domain::*, risk};
-use std::{collections::HashSet, sync::atomic::AtomicBool, time::Duration};
+use marksix::{configuration::bundled, domain::*};
+use std::collections::HashSet;
 
 fn rule(name: &str) -> Rule {
     bundled()
@@ -203,30 +203,6 @@ fn business_day_and_draw_input_boundaries() {
         assert!(parse_draw(&bad).is_err());
     }
 }
-#[test]
-fn risk_extrema_are_attained_and_cancellation_is_explicit() {
-    let atoms = planned("特码", &[7]).atoms;
-    let m = Mapping::default();
-    let cancel = AtomicBool::new(false);
-    let r = risk::solve(&atoms, &m, Duration::from_secs(5), &cancel).unwrap();
-    assert_eq!(
-        (r.min_payout, r.max_payout, r.min_net, r.max_net),
-        (0, 440_000, -431_000, 9_000)
-    );
-    for (draw, pay) in [(r.best_draw, r.min_payout), (r.worst_draw, r.max_payout)] {
-        assert_eq!(draw.into_iter().collect::<HashSet<_>>().len(), 7);
-        assert_eq!(settle(&atoms, &Draw::predicted(draw, &m))[0].payout, pay);
-    }
-    assert_eq!(
-        risk::solve(&atoms, &m, Duration::ZERO, &cancel).unwrap_err(),
-        risk::RiskError::Timeout
-    );
-    assert_eq!(
-        risk::solve(&atoms, &m, Duration::from_secs(5), &AtomicBool::new(true)).unwrap_err(),
-        risk::RiskError::Cancelled
-    );
-}
-
 #[test]
 fn every_default_settles_against_an_independent_predicate_oracle() {
     let mapping = Mapping::default();

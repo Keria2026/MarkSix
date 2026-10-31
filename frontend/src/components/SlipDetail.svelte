@@ -76,7 +76,9 @@
         <div>
           <strong
             >{index + 1}. {item.market === "hk" ? "香港" : "新澳门"} · {item
-              .rule.name}</strong
+              .rule.name}{item.expect
+              ? ` · 第 ${item.expect} 期`
+              : " · 待开奖"}</strong
           >
           <p>
             {item.drag

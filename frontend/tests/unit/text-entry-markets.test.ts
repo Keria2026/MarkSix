@@ -3,6 +3,28 @@ import { parseText, compileText } from "../../src/lib/text-entry";
 import { annualMapping } from "../../src/lib/types";
 import { plays } from "./support";
 const mapping = annualMapping(2026);
+for (const market of ["港", "香港", "香", "新澳", "澳门", "澳"]) {
+  for (const separator of [".", ". ", " . ", ".\t", "．　"]) {
+    test(`number/amount shorthand tolerates horizontal space: ${market} ${separator}`, () => {
+      expect(items(`${market} 特22${separator}100`)).toEqual([
+        {
+          market: /[港香]/u.test(market) ? "hk" : "macau",
+          selections: [22],
+          amount: "100",
+        },
+      ]);
+    });
+  }
+}
+test("mixed market screenshot syntax keeps both entries and explicit list amounts", () => {
+  expect(items("新澳 三友 狗牛虎100\n港 特22. 100")).toEqual([
+    { market: "macau", selections: [10, 1, 2], amount: "100" },
+    { market: "hk", selections: [22], amount: "100" },
+  ]);
+  expect(items("港 特22. 34各100")).toEqual([
+    { market: "hk", selections: [22, 34], amount: "100" },
+  ]);
+});
 function items(raw: string) {
   const rows = parseText(raw, plays);
   const result = compileText(rows, plays, mapping);

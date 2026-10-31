@@ -178,7 +178,10 @@
                 >{:else}<strong>{group.name}</strong>{/if}</td
             ><td>{money(group.totals.stake)}</td><td
               >{money(group.totals.rebate)}</td
-            ><td>{report.settled ? money(group.totals.payout) : "待结算"}</td
+            ><td
+              >{group.totals.net !== null
+                ? money(group.totals.payout)
+                : "待结算"}</td
             ><td
               >{signed(
                 group.totals.net === null
@@ -265,8 +268,8 @@
           >{#each report.layoffs as row}<tr
               ><td
                 ><strong>{row.receiver}</strong><small
-                  >{time(row.created_at)}</small
-                ></td
+                  >{row.market === "hk" ? "香港" : "新澳门"}</small
+                ><small>{time(row.created_at)}</small></td
               ><td>{money(row.amount)}</td><td>{money(row.stake)}</td><td
                 >{row.status === "cancelled"
                   ? "已作废"

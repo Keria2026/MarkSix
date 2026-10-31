@@ -66,11 +66,6 @@ impl Entry {
     }
     fn evictable(&self) -> bool {
         self.users.load(Ordering::Acquire) == 0
-            && self
-                .state
-                .cancellations
-                .try_lock()
-                .is_ok_and(|flags| flags.is_empty())
     }
 }
 pub(super) struct TenantLease {
@@ -96,7 +91,6 @@ pub(super) struct Registry {
     states: Arc<Mutex<HashMap<String, Entry>>>,
     cold_load: Arc<Mutex<()>>,
     pub work_gate: Arc<Semaphore>,
-    risk_gate: Arc<Semaphore>,
     draw_cache: crate::store::DrawCache,
     hk_draw_cache: crate::store::DrawCache,
     client: reqwest::Client,
@@ -109,7 +103,6 @@ impl Registry {
             states: Arc::default(),
             cold_load: Arc::default(),
             work_gate: Arc::new(Semaphore::new(8)),
-            risk_gate: Arc::new(Semaphore::new(1)),
             draw_cache: Arc::default(),
             hk_draw_cache: Arc::default(),
             client: reqwest::Client::builder()
@@ -138,7 +131,7 @@ impl Registry {
             return Ok(entry.borrow());
         }
         // Bound *all* live pools, not just each customer's pool. In-flight
-        // requests and risk jobs pin their context; idle LRU contexts can close.
+        // requests pin their context; idle LRU contexts can close.
         // 12 pools x 2 connections = at most 24 customer connections per process.
         let evicted = if states.len() >= WARM_TENANTS {
             let oldest = states
@@ -165,7 +158,6 @@ impl Registry {
         let mut state = AppState::with_client(pool, self.client.clone());
         state.clock = self.clock.clone();
         state.secure_cookie = self.control.secure;
-        state.risk_gate = self.risk_gate.clone();
         state.auth_gate = self.control.gate.clone();
         state.draw_cache = Some(self.draw_cache.clone());
         state.hk_draw_cache = Some(self.hk_draw_cache.clone());
@@ -173,7 +165,6 @@ impl Registry {
             pool: self.control.pool.clone(),
             account_id: a.id.clone(),
         });
-        crate::worker::recover(&state).await?;
         let mut entry = Entry {
             router: crate::api::router(state.clone()),
             state,
@@ -222,9 +213,6 @@ impl Registry {
         };
         for entry in removed {
             let state = entry.state;
-            for flag in state.cancellations.lock().await.values() {
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
             state.pool.close().await;
         }
         for account in accounts {

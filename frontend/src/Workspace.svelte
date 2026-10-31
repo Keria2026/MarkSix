@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { periodLabel } from "./lib/types";
   import { dragLabel } from "./lib/drag";
   import { entryModeFor } from "./lib/features";
   import type { ModuleFeatures, EntryMode } from "./lib/types";
@@ -38,7 +37,6 @@
     Trash2,
     CalendarDays,
     ArrowLeft,
-    Info,
     X,
   } from "lucide-svelte";
   import type { LicenseStatus } from "./components/Activation.svelte";
@@ -54,10 +52,11 @@
   import TextEntry from "./components/TextEntry.svelte";
   import { newTextDraft } from "./lib/text-entry";
   import StatisticsPanel from "./components/Statistics.svelte";
-  import Balls from "./components/Balls.svelte";
+  import DrawPanel from "./components/DrawPanel.svelte";
   import Modal from "./components/Modal.svelte";
   import {
     money,
+    marketName,
     signed,
     time,
     label,
@@ -71,7 +70,7 @@
     BetDraft,
     RecordGroup,
     SlipDraftLine,
-    Period,
+    BusinessDay,
     Play,
     Bet,
     Page,
@@ -175,7 +174,7 @@
   let minAmount = $state("");
   let maxAmount = $state("");
   let report = $state<Statistics | null>(null);
-  let historyTabs = $state<Period[]>([]);
+  let historyTabs = $state<BusinessDay[]>([]);
   let submenuExpanded = $state({
     statistics: false,
     history: false,
@@ -214,16 +213,16 @@
   async function closeHistoryTab(id: string) {
     const index = historyTabs.findIndex((p) => p.id === id);
     historyTabs = historyTabs.filter((p) => p.id !== id);
-    const wasActive = tab === "history" && selectedPeriod?.id === id;
+    const wasActive = tab === "history" && selectedDay?.id === id;
     if (wasActive) {
       const next = historyTabs[Math.min(index, historyTabs.length - 1)];
-      if (next) await openPeriod(next);
+      if (next) await openDay(next);
       else await navigate("history");
     }
     if (!wasActive) return;
     await tick();
-    const target = selectedPeriod
-      ? document.getElementById(`history-period-${selectedPeriod.id}`)
+    const target = selectedDay
+      ? document.getElementById(`history-period-${selectedDay.id}`)
       : document.querySelector<HTMLButtonElement>(
           'nav .nav-link[aria-label="历史统计"]',
         );
@@ -252,8 +251,8 @@
   let mutationError = $state("");
   let flyCancel = $state<Layoff | null>(null);
   let pendingMutation: { key: string; id: string } | null = null;
-  let selectedPeriod = $state<Period | null>(null);
-  let history = $state<Page<Period>>({
+  let selectedDay = $state<BusinessDay | null>(null);
+  let history = $state<Page<BusinessDay>>({
       items: [],
       total: 0,
       page: 1,
@@ -303,12 +302,9 @@
   let currentTime = $state(Date.now());
   let serverOffset = 0;
   const today = $derived(boot?.today ?? null);
-  let viewMarket = $state<"macau" | "hk">("macau");
   const editablePeriod = (id: string) =>
     [boot?.today, boot?.hk].some((p) => p?.id === id && p.accepting_entries);
-  const active = $derived(
-    selectedPeriod ?? (viewMarket === "hk" ? (boot?.hk ?? today) : today),
-  );
+  const active = $derived(selectedDay ?? boot?.day ?? null);
   const nav = [
     {
       id: "overview" as Tab,
@@ -331,15 +327,6 @@
       icon: Settings2,
     },
   ];
-  const riskFresh = $derived(
-    !!active &&
-      active.risk_status === "complete" &&
-      active.risk_version === active.bet_version &&
-      !!active.risk_result,
-  );
-  const risk = $derived(riskFresh ? active?.risk_result : null);
-  const profitMax = $derived(risk ? Math.max(0, risk.max_net) : null);
-  const lossMax = $derived(risk ? Math.max(0, -risk.min_net) : null);
   const serverClock = $derived(
     new Intl.DateTimeFormat("zh-CN", {
       timeZone: "Asia/Shanghai",
@@ -402,6 +389,7 @@
     const request = ++recordsRequest;
     const query = {
       period: id,
+      combined: true,
       page,
       order: recordOrder,
       min_amount: minAmount || null,
@@ -414,7 +402,7 @@
       body: JSON.stringify(query),
     });
     const choices = await api<typeof recordChoices>(
-      `/periods/${id}/bet-filters`,
+      `/periods/${id}/bet-filters?combined=true`,
     );
     if (request === recordsRequest && active?.id === id) {
       records = next;
@@ -427,7 +415,7 @@
     try {
       if (!(await onrefreshlicense())) return;
       const data = await api<Bootstrap>("/bootstrap");
-      if (!selectedPeriod && boot && data.today.id !== boot.today.id) {
+      if (!selectedDay && boot && data.today.id !== boot.today.id) {
         selectedBettors = [];
         selectedPlays = [];
         records.page = 1;
@@ -435,16 +423,16 @@
       boot = data;
       if (!entryModeSaving) applyFeatures(data.features);
       serverOffset = new Date(data.today.server_time).getTime() - Date.now();
-      if (selectedPeriod) {
-        const id = selectedPeriod.id;
-        const updated = await api<Period>(`/periods/${id}`);
-        if (selectedPeriod?.id === id) selectedPeriod = updated;
+      if (selectedDay) {
+        const id = selectedDay.id;
+        const updated = await api<BusinessDay>(`/days/${id}`);
+        if (selectedDay?.id === id) selectedDay = updated;
       }
       if (
         tab === "overview" ||
         tab === "bet" ||
         (tab === "statistics" && statisticsCategory === "records") ||
-        (tab === "history" && selectedPeriod)
+        (tab === "history" && selectedDay)
       )
         await loadRecords(records.page);
       if (active)
@@ -468,7 +456,7 @@
     const request = ++statisticsRequest;
     try {
       const next = await api<Statistics>(
-        `/periods/${id}/statistics?page=${page}`,
+        `/periods/${id}/statistics?page=${page}&combined=true`,
       );
       if (active?.id === id && request === statisticsRequest) report = next;
     } catch (e) {
@@ -477,12 +465,12 @@
   }
   async function loadHistory(page = 1) {
     history = await api(
-      `/periods?page=${page}&search=${encodeURIComponent(search)}`,
+      `/days?page=${page}&search=${encodeURIComponent(search)}`,
     );
   }
   async function navigate(next: Tab) {
     tab = next;
-    selectedPeriod = null;
+    selectedDay = null;
     selectedBettors = [];
     selectedPlays = [];
     recordOrder = "newest";
@@ -499,10 +487,10 @@
       globalError = fail(e);
     }
   }
-  async function openPeriod(period: Period) {
+  async function openDay(period: BusinessDay) {
     if (!historyTabs.some((p) => p.id === period.id))
       historyTabs = [...historyTabs, period];
-    selectedPeriod = period;
+    selectedDay = period;
     selectedBettors = [];
     selectedPlays = [];
     recordOrder = "newest";
@@ -594,18 +582,6 @@
       deletePlayTarget = null;
       editor = false;
       notify("玩法已删除，历史投注保留");
-      await refresh();
-    } catch (e) {
-      notify(fail(e));
-    } finally {
-      busy = false;
-    }
-  }
-  async function retryRisk() {
-    if (!active) return;
-    busy = true;
-    try {
-      await api(`/periods/${active.id}/risk`, { method: "POST", body: "{}" });
       await refresh();
     } catch (e) {
       notify(fail(e));
@@ -764,7 +740,7 @@
               if (
                 tab === item.id &&
                 hasSubmenu(item.id) &&
-                !(item.id === "history" && selectedPeriod)
+                !(item.id === "history" && selectedDay)
               )
                 toggleSubmenu(item.id);
               else void navigate(item.id);
@@ -814,25 +790,25 @@
           {#if item.id === "history" && historyTabs.length && submenuExpanded.history}<div
               class="nav-submenu history-tabs"
               id="submenu-history"
-              aria-label="已打开的历史期次"
+              aria-label="已打开的历史日期"
             >
               {#each historyTabs as period (period.id)}
                 <div
                   class="history-tab"
-                  class:active={selectedPeriod?.id === period.id}
+                  class:active={selectedDay?.id === period.id}
                 >
                   <button
-                    class:active={selectedPeriod?.id === period.id}
-                    aria-current={selectedPeriod?.id === period.id
+                    class:active={selectedDay?.id === period.id}
+                    aria-current={selectedDay?.id === period.id
                       ? "location"
                       : undefined}
                     id={`history-period-${period.id}`}
-                    onclick={() => openPeriod(period)}
-                    >第 {periodLabel(period)} 期</button
+                    onclick={() => openDay(period)}
+                    >{period.business_date}</button
                   >
                   <button
                     class="history-tab-close"
-                    aria-label={`关闭第 ${periodLabel(period)} 期标签`}
+                    aria-label={`关闭 ${period.business_date} 标签`}
                     onclick={() => closeHistoryTab(period.id)}
                     ><X size={14} /></button
                   >
@@ -860,7 +836,7 @@
   <main
     class="main-content"
     id="main"
-    use:pageFade={`${tab}:${selectedPeriod?.id ?? ""}:${statisticsCategory}:${historyCategory}`}
+    use:pageFade={`${tab}:${selectedDay?.id ?? ""}:${statisticsCategory}:${historyCategory}`}
   >
     <header class="topbar">
       <div class="breadcrumb">
@@ -899,35 +875,19 @@
         <LoaderCircle class="spin" size={25} />
         <h2>正在加载工作台</h2>
       </div>
-    {:else if (tab === "overview" || (tab === "history" && selectedPeriod)) && active}
-      <label
-        >统计市场<select
-          aria-label="统计市场"
-          bind:value={viewMarket}
-          onchange={() => {
-            selectedPeriod = null;
-            void refresh();
-          }}
-          ><option value="macau">新澳门</option><option
-            value="hk"
-            disabled={!boot?.hk}>香港{boot?.hk ? "" : "（尚无投注）"}</option
-          ></select
-        ></label
-      >
+    {:else if (tab === "overview" || (tab === "history" && selectedDay)) && active}
       <section class="page-heading">
         <div>
-          {#if selectedPeriod}<button
+          {#if selectedDay}<button
               class="text-button back-link"
               onclick={() => navigate("history")}
               ><ArrowLeft size={14} /> 返回历史统计</button
             >{/if}
           <h1>
-            {selectedPeriod ? `历史统计 · ${periodLabel(active)}` : "本期概览"}
+            {selectedDay ? `历史统计 · ${active.business_date}` : "本期概览"}
           </h1>
           <p>
             {active.business_date.replaceAll("-", " / ")}
-            <span class="separator">·</span>
-            第 <strong>{periodLabel(active)}</strong> 期
             <span class="status-badge" data-phase={active.phase}
               ><i></i>{phases[active.phase] ?? active.phase}</span
             >
@@ -957,149 +917,58 @@
         </article>
         <article class="stat glass">
           <div class="stat-label">
-            {active.state === "settled" ? "中奖总返还" : "最大可能净盈利"}<span
-              class="stat-icon green-tone"><ArrowUpRight size={17} /></span
+            中奖总返还<span class="stat-icon green-tone"
+              ><ArrowUpRight size={17} /></span
             >
           </div>
-          <strong class="stat-value" class:positive={active.state !== "settled"}
+          <strong class="stat-value"
             >{active.state === "settled"
               ? money(active.totals.payout)
-              : money(profitMax)}</strong
+              : "待结算"}</strong
           >
         </article>
         <article class="stat glass">
           <div class="stat-label">
-            {active.state === "settled"
-              ? layoffsEnabled
-                ? "自留净盈亏"
-                : "原受注净盈亏"
-              : "最大可能净亏损"}<span class="stat-icon coral-tone"
-              ><ArrowDownLeft size={17} /></span
+            {layoffsEnabled ? "自留净盈亏" : "原受注净盈亏"}<span
+              class="stat-icon coral-tone"><ArrowDownLeft size={17} /></span
             >
           </div>
           <strong
             class="stat-value"
-            class:negative={active.state !== "settled" ||
-              ((layoffsEnabled
-                ? active.totals.retained_net
-                : active.totals.net) ?? 0) < 0}
-            class:positive={active.state === "settled" &&
-              ((layoffsEnabled
-                ? active.totals.retained_net
-                : active.totals.net) ?? 0) >= 0}
-            >{active.state === "settled"
+            class:negative={((layoffsEnabled
+              ? active.totals.retained_net
+              : active.totals.net) ?? 0) < 0}
+            class:positive={((layoffsEnabled
+              ? active.totals.retained_net
+              : active.totals.net) ?? 0) > 0}
+          >
+            {active.state === "settled"
               ? signed(
                   layoffsEnabled
                     ? active.totals.retained_net
                     : active.totals.net,
                 )
-              : money(lossMax)}</strong
-          >
+              : "待结算"}
+          </strong>
         </article>
       </div>
-      <div class="insights-grid">
-        <section class="draw-panel glass">
-          <div class="section-head">
-            <div>
-              <h2>当期开奖</h2>
-            </div>
-            <span class="soft-chip"
-              ><Clock3 size={13} />{active.draw
-                ? active.draw.open_time.slice(11, 16)
-                : active.market === "hk"
-                  ? "有投注后每 60 秒同步"
-                  : "21:34 自动同步"}</span
-            >
-          </div>
-          <Balls
-            numbers={active.draw?.numbers}
-            mapping={active.mapping}
-            zodiac={active.draw?.zodiac}
-            waves={active.draw?.waves}
+      <div class="draw-grid">
+        {#each active.periods as period (period.id)}
+          <DrawPanel
+            {period}
+            market={period.market ?? "macau"}
+            mapping={today.mapping}
           />
-
-          {#if active.error}<div class="inline-error subtle">
-              <AlertCircle size={15} />{active.error}
-            </div>{/if}{#if active.mapping_warning}<div
-              class="inline-error subtle"
-            >
-              <Info size={15} />接口映射与配置存在差异，已按接口实际数据结算。
-            </div>{/if}
-        </section>
-        <section class="risk-panel glass">
-          <div class="section-head">
-            <div>
-              <h2>
-                {active.state === "settled" ? "本期收支" : "盘口风险洞察"}
-              </h2>
-            </div>
-            <span class="stat-icon purple-tone"><Activity size={18} /></span>
-          </div>
-          {#if active.state === "settled"}<div class="ledger-row">
-              <span>原受注毛利</span><strong
-                >{signed(active.totals.gross)}</strong
-              >
-            </div>
-            <div class="ledger-row">
-              <span>赢注 / 输注本金</span><strong
-                >{money(active.totals.winning_stake)} / {money(
-                  active.totals.losing_stake,
-                )}</strong
-              >
-            </div>
-          {:else if riskFresh && risk}<div class="risk-state">
-              <span class="status-badge"><Check size={13} /> 精确计算完成</span
-              ><small>{(risk.elapsed_ms / 1000).toFixed(2)} 秒</small>
-            </div>
-            <div class="risk-scale"><span></span></div>
-            <div class="risk-endpoints">
-              <span
-                >最有利情形<strong class="positive"
-                  >{signed(risk.max_net)}</strong
-                ></span
-              ><span
-                >最不利情形<strong class="negative"
-                  >{signed(risk.min_net)}</strong
-                ></span
-              >
-            </div>
-            <details class="risk-examples">
-              <summary>查看极值示例开奖 <ChevronDown size={14} /></summary>
-              <p>最佳情形</p>
-              <Balls
-                numbers={risk.best_draw}
-                mapping={active.mapping}
-                compact
-              />
-              <p>最坏情形</p>
-              <Balls
-                numbers={risk.worst_draw}
-                mapping={active.mapping}
-                compact
-              />
-            </details>
-          {:else}<div class="risk-pending">
-              {#if ["queued", "computing"].includes(active.risk_status)}<span
-                  class="loading-orbit"><Activity size={27} /></span
-                ><strong>正在精确计算</strong>
-              {:else}<span class="loading-orbit"><AlertCircle size={27} /></span
-                ><strong
-                  >{active.risk_status === "timeout"
-                    ? "计算超时"
-                    : active.risk_status === "failed"
-                      ? "计算未完成"
-                      : "尚无当前风险结果"}</strong
-                >
-                {#if active.risk_error}<p>{active.risk_error}</p>{/if}
-                {#if active.state === "pending"}<button
-                    class="button secondary"
-                    disabled={busy}
-                    onclick={retryRisk}>重新计算</button
-                  >{/if}{/if}
-            </div>{/if}
-        </section>
+        {/each}
+        {#if !active.periods.some((p) => p.market === "hk")}
+          <DrawPanel
+            period={selectedDay ? undefined : (boot?.hk ?? undefined)}
+            market="hk"
+            mapping={today.mapping}
+          />
+        {/if}
       </div>
-      {#if selectedPeriod}<div
+      {#if selectedDay}<div
           class="segmented history-categories"
           aria-label="历史统计分类"
         >
@@ -1122,15 +991,15 @@
           {layoffsEnabled}
           {report}
           {api}
-          compact={!selectedPeriod}
-          category={selectedPeriod ? historyCategory : "bettors"}
+          compact={!selectedDay}
+          category={selectedDay ? historyCategory : "bettors"}
           onbettor={filterBettor}
           onpage={loadStatistics}
         />{/if}
       <RecordsTable
         {records}
         {recordChoices}
-        historical={!!selectedPeriod}
+        historical={!!selectedDay}
         bind:selectedBettors
         bind:selectedPlays
         bind:minAmount
@@ -1151,7 +1020,7 @@
       <section class="page-heading">
         <div>
           <h1>录入投注</h1>
-          <p>新澳门 / 香港 · 按分项市场归属期次并结算</p>
+          <p>港澳投注统一录入</p>
         </div>
         <button class="button secondary" onclick={() => navigate("overview")}
           ><LayoutDashboard size={16} /> 本期概览</button
@@ -1205,7 +1074,7 @@
       </section>
       <section class="glass history-panel">
         <div class="section-head">
-          <h2>历史期次 <span class="count-badge">{history.total}</span></h2>
+          <h2>历史日期 <span class="count-badge">{history.total}</span></h2>
           <form
             class="search-box"
             onsubmit={(e) => {
@@ -1230,15 +1099,13 @@
           <table>
             <thead
               ><tr
-                ><th>期号 / 日期</th><th>状态</th><th>有效本金</th><th
+                ><th>录入业务日期</th><th>状态</th><th>有效本金</th><th
                   >中奖返还</th
                 ><th>反水</th><th>盘口净盈利</th><th>操作</th></tr
               ></thead
             ><tbody
               >{#each history.items as p}<tr
-                  ><td
-                    ><strong>{p.id}</strong><small>{p.business_date}</small></td
-                  ><td
+                  ><td><strong>{p.business_date}</strong></td><td
                     ><span class="status-badge" data-phase={p.phase}
                       >{phases[p.phase]}</span
                     ></td
@@ -1249,9 +1116,13 @@
                   ><td>{money(p.totals.rebate)}</td><td
                     class:positive={(p.totals.net ?? 0) > 0}
                     class:negative={(p.totals.net ?? 0) < 0}
-                    ><strong>{signed(p.totals.net)}</strong></td
+                    ><strong
+                      >{p.state === "settled"
+                        ? signed(p.totals.net)
+                        : "待结算"}</strong
+                    ></td
                   ><td
-                    ><button class="text-button" onclick={() => openPeriod(p)}
+                    ><button class="text-button" onclick={() => openDay(p)}
                       >查看 <ArrowRight size={14} /></button
                     ></td
                   ></tr
@@ -1260,12 +1131,12 @@
           </table>
           {#if !history.items.length}<div class="empty-state">
               <CalendarDays size={30} />
-              <h3>还没有匹配的期次</h3>
+              <h3>还没有匹配的日期</h3>
               <p>试试其他期号或业务日期。</p>
             </div>{/if}
         </div>
         <div class="table-footer">
-          <span>共 {history.total} 期</span>
+          <span>共 {history.total} 天</span>
           <div class="pagination">
             <button
               class="icon-button"
@@ -1286,25 +1157,11 @@
         </div>
       </section>
     {:else if tab === "statistics"}
-      <label
-        >统计市场<select
-          aria-label="统计市场"
-          bind:value={viewMarket}
-          onchange={() => {
-            selectedPeriod = null;
-            void refresh();
-          }}
-          ><option value="macau">新澳门</option><option
-            value="hk"
-            disabled={!boot?.hk}>香港{boot?.hk ? "" : "（尚无投注）"}</option
-          ></select
-        ></label
-      >
       <section class="page-heading">
         <div>
           <h1>本期统计</h1>
           <p>
-            第 <strong>{active ? periodLabel(active) : today.id}</strong> 期 · {statisticsCategory ===
+            <strong>{active?.business_date ?? today.business_date}</strong> · {statisticsCategory ===
             "receivers"
               ? "飞出受注统计"
               : statisticsCategory === "bettors"
@@ -1319,7 +1176,7 @@
         <RecordsTable
           {records}
           {recordChoices}
-          historical={!!selectedPeriod}
+          historical={!!selectedDay}
           bind:selectedBettors
           bind:selectedPlays
           bind:minAmount
@@ -1495,7 +1352,7 @@
           {api}
           {notify}
           oncleared={async () => {
-            selectedPeriod = null;
+            selectedDay = null;
             historyTabs = [];
             detail = null;
             report = null;
@@ -1551,11 +1408,9 @@
       ><div class="detail-heading">
         <div>
           <span class="eyebrow"
-            >{detail.record.market === "hk"
-              ? "香港投注"
-              : `新澳门 ${detail.record.period_id} 期`} · {time(
-              detail.record.created_at,
-            )}</span
+            >{marketName(detail.record.market)} · {detail.record.expect
+              ? `第 ${detail.record.expect} 期`
+              : "待开奖"} · {time(detail.record.created_at)}</span
           >
           <h3>
             {detail.record.rule.name}<span class="soft-chip"

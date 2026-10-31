@@ -252,14 +252,14 @@ test("returning to foreground offers related clipboard text but not the last rec
   await expect(modal).toBeHidden();
 });
 
-test("mixed markets save once and statistics select the independent Hong Kong period", async ({
+test("mixed markets share daily overview, statistics and export with per-entry labels", async ({
   page,
 }) => {
   await signIn(page);
   await textMode(page);
   const name = `synthetic-markets-${Date.now()}`;
-  const dialog = await check(page, "香港特码12各100\n澳门特码13各200", name);
-  await expect(dialog.getByLabel("第1项市场", { exact: true })).toHaveValue(
+  const dialog = await check(page, "新澳 三友 狗牛虎100\n港 特22. 100", name);
+  await expect(dialog.getByLabel("第2项市场", { exact: true })).toHaveValue(
     "hk",
   );
   await dialog.getByRole("button", { name: "确认录入", exact: true }).click();
@@ -268,30 +268,138 @@ test("mixed markets save once and statistics select the independent Hong Kong pe
     .getByRole("navigation")
     .getByRole("button", { name: "本期概览", exact: true })
     .click();
-  await page.getByLabel("统计市场").selectOption("hk");
-  await expect(page.getByText("有投注后每 60 秒同步")).toBeVisible();
+  await expect(page.getByLabel("统计市场")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "新澳门开奖", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "香港开奖", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("盘口风险洞察")).toHaveCount(0);
+  await expect(page.getByText("最大可能净盈利")).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .include("main")
+        .withTags(["wcag2a", "wcag2aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  await page.screenshot({
+    path: test.info().outputPath("combined-overview.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
   const boot = await (await page.request.get("/api/bootstrap")).json();
   expect(boot.hk.market).toBe("hk");
   expect(boot.hk.totals.stake).toBeGreaterThanOrEqual(10000);
   const response = await page.request.post("/api/records/search", {
     headers: { "X-Marksix": "1" },
-    data: { period: boot.hk.id, bettors: [name] },
+    data: { period: boot.today.id, combined: true, bettors: [name] },
   });
   const records = await response.json();
   expect(records.items).toHaveLength(1);
   expect(
     records.items[0].items.map((item: { market: string }) => item.market),
-  ).toEqual(["hk", "macau"]);
+  ).toEqual(["macau", "hk"]);
   await page
     .getByRole("navigation")
     .getByRole("button", { name: "本期统计", exact: true })
     .click();
-  await expect(page.getByLabel("统计市场")).toHaveValue("hk");
+  await expect(page.getByLabel("统计市场")).toHaveCount(0);
+  const stats = await (
+    await page.request.get(
+      `/api/periods/${boot.today.id}/statistics?combined=true`,
+    )
+  ).json();
+  expect(
+    stats.bettors.find((b: { name: string }) => b.name === name).totals.stake,
+  ).toBe(20000);
+  const exported = await (
+    await page.request.get(
+      `/api/periods/${boot.today.id}/bettor-export?combined=true`,
+    )
+  ).json();
+  const bettor = exported.bettors.find(
+    (b: { name: string }) => b.name === name,
+  );
+  expect(bettor.totals.stake).toBe(20000);
+  expect(
+    bettor.bets.map((b: { record: { market: string } }) => b.record.market),
+  ).toEqual(["macau", "hk"]);
+  expect(boot.day.totals.stake).toBe(
+    boot.today.totals.stake + boot.hk.totals.stake,
+  );
+  await page.getByRole("button", { name: "展开本期统计二级菜单" }).click();
+  await page
+    .getByRole("button", { name: "投注人分类统计", exact: true })
+    .click();
+  let releaseFont!: () => void;
+  const fontGate = new Promise<void>((resolve) => {
+    releaseFont = resolve;
+  });
+  await page.route("**/NotoSansSC-Regular.ttf", async (route) => {
+    await fontGate;
+    await route.continue();
+  });
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出全部投注人账单" }).click();
+  await expect(page.getByText("正在准备中文对账单…")).toBeVisible();
+  const refreshed = page.waitForResponse((r) =>
+    r.url().includes("/statistics?page="),
+  );
+  await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+  await refreshed;
+  releaseFont();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe(
+    `${boot.day.business_date}-投注人对账单-pdf.zip`,
+  );
+  const stream = await file.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+  const { unzipSync } = await import("fflate");
+  const files = unzipSync(Buffer.concat(chunks));
+  const { PDFDocument } = await import("pdf-lib");
+  expect((await PDFDocument.load(files[`${name}.pdf`])).getTitle()).toContain(
+    boot.day.business_date,
+  );
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: "历史统计", exact: true })
+    .click();
+  await page.getByLabel("搜索期号或日期").fill(boot.day.business_date);
+  await page.getByRole("button", { name: "查询", exact: true }).click();
+  const dayRow = page
+    .getByRole("row")
+    .filter({ hasText: boot.day.business_date });
+  await expect(dayRow).toHaveCount(1);
+  await dayRow.getByRole("button", { name: "查看", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: `历史统计 · ${boot.day.business_date}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "香港开奖", exact: true }),
+  ).toBeVisible();
 });
 
-test("manual Hong Kong entry retains its market through quote and submission", async ({
+test("manual Hong Kong entry retains its market without requesting risk predictions", async ({
   page,
 }) => {
+  const predictionRequests: string[] = [];
+  page.on("request", (request) => {
+    if (/\/(quote|risk)(?:\?|$)/u.test(request.url()))
+      predictionRequests.push(request.url());
+  });
   await signIn(page);
   await page.request.put("/api/settings/entry-mode", {
     headers: { "X-Marksix": "1" },
@@ -318,4 +426,6 @@ test("manual Hong Kong entry retains its market through quote and submission", a
   const response = await submitted;
   expect(response.ok()).toBe(true);
   expect(response.request().postDataJSON().market).toBe("hk");
+  expect(predictionRequests).toEqual([]);
+  await expect(page.getByText("投注者收益预览")).toHaveCount(0);
 });

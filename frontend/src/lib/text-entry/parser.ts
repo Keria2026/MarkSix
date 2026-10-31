@@ -310,6 +310,15 @@ function parseNormalizedText(
     }
     return tokens[i]?.kind === "amount" && readAmount(i + 1) !== null;
   }
+  function followsAmountDot(index: number) {
+    let i = index - 1;
+    while (
+      tokens[i]?.kind === "separator" &&
+      /^[^\S\r\n]+$/u.test(tokens[i].text)
+    )
+      i--;
+    return tokens[i]?.text === ".";
+  }
   function postfixPlayAfter(index: number) {
     let i = index + 1;
     while (
@@ -617,8 +626,7 @@ function parseNormalizedText(
               "zodiac_count") ||
           (Number(token.text) > 49 &&
             hasObjects() &&
-            tokens[i - 1]?.kind === "separator" &&
-            tokens[i - 1]?.text === "." &&
+            followsAmountDot(i) &&
             !followedByListAmount(i)) ||
           (hasObjects() &&
             ["play", "connector"].includes(previousSignificant(i)?.kind ?? "")))

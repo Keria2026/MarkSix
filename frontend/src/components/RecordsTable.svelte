@@ -47,11 +47,6 @@
       <span class="count-badge">{records.total}</span>
     </div>
   </div>
-  {#if records.items.some((record) => new Set(record.items.map((item) => item.market ?? "macau")).size > 1)}<p
-      class="modal-description"
-    >
-      港澳组合单显示整单金额；本期统计与金额筛选仅计所选市场。
-    </p>{/if}
   <form
     class="record-filters"
     onsubmit={(e) => {
@@ -157,7 +152,7 @@
               ><strong
                 >{bet.grouped
                   ? `组合单 · ${bet.items.length} 项`
-                  : `${bet.items[0].market === "hk" ? "香港" : "新澳门"} · ${bet.items[0].rule.name}`}
+                  : `${bet.items[0].market === "hk" ? "香港" : "新澳门"} · ${bet.items[0].rule.name}${bet.items[0].expect ? ` · ${bet.items[0].expect}期` : ""}`}
                 {#if !bet.grouped && bet.items[0].compound}<span
                     class="table-tag">复式</span
                   >{:else if !bet.grouped && bet.unit_count > 1}<span
@@ -171,7 +166,7 @@
                   .slice(0, 3)
                   .map(
                     (item) =>
-                      `${bet.grouped ? `${item.market === "hk" ? "香港" : "新澳门"} · ${item.rule.name}：` : ""}${item.drag ? dragLabel(item.rule.kind, item.drag) : item.package_zodiacs?.length ? `包肖 ${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}` : item.selections.map((v) => label(item.rule.kind, v)).join(" · ")}`,
+                      `${bet.grouped ? `${item.market === "hk" ? "香港" : "新澳门"} · ${item.rule.name}${item.expect ? ` · ${item.expect}期` : ""}：` : ""}${item.drag ? dragLabel(item.rule.kind, item.drag) : item.package_zodiacs?.length ? `包肖 ${item.package_zodiacs.map((v) => label("zodiac", v)).join(" · ")}` : item.selections.map((v) => label(item.rule.kind, v)).join(" · ")}`,
                   )
                   .join("；")}{bet.items.length > 3 ? "…" : ""}</small
               >

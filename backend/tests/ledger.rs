@@ -743,17 +743,12 @@ async fn query_export_preferences_cancellation_and_mapping_contract() {
     quote["period"] = period.into();
     quote["bettor"] = "synthetic-query".into();
     quote["request_id"] = uuid::Uuid::new_v4().to_string().into();
-    let priced = ok(&app, "POST", "/api/quote", quote.clone(), &cookie).await;
-    assert_eq!(priced["stake"], 2000);
-    assert_eq!(priced["max_return"], 44000);
-    let permit = state.risk_gate.clone().acquire_owned().await.unwrap();
     assert_eq!(
         call(&app, "POST", "/api/quote", quote.clone(), &cookie)
             .await
             .0,
-        StatusCode::TOO_MANY_REQUESTS
+        StatusCode::NOT_FOUND
     );
-    drop(permit);
     ok(
         &app,
         "PUT",
@@ -868,10 +863,6 @@ async fn query_export_preferences_cancellation_and_mapping_contract() {
         .await
         .unwrap();
     assert_eq!(
-        ok(&app, "POST", "/api/quote", quote, &cookie).await["settled"],
-        true
-    );
-    assert_eq!(
         call(
             &app,
             "POST",
@@ -881,7 +872,7 @@ async fn query_export_preferences_cancellation_and_mapping_contract() {
         )
         .await
         .0,
-        StatusCode::CONFLICT
+        StatusCode::NOT_FOUND
     );
     ok(&app, "POST", "/api/logout", json!({}), &cookie).await;
     assert_eq!(
@@ -1057,25 +1048,6 @@ async fn package_rounding_mutations_and_preview_failure_contract() {
         &cookie,
     )
     .await;
-    sqlx::query("UPDATE periods SET risk_status='failed' WHERE id=?")
-        .bind(period)
-        .execute(&pool)
-        .await
-        .unwrap();
-    ok(
-        &app,
-        "POST",
-        &format!("/api/periods/{period}/risk"),
-        json!({}),
-        &cookie,
-    )
-    .await;
-    let status: String = sqlx::query_scalar("SELECT risk_status FROM periods WHERE id=?")
-        .bind(period)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(status, "queued");
     pool.close().await;
 }
 
@@ -1098,7 +1070,6 @@ async fn mixed_market_slip_keeps_independent_draws_and_hk_waits_across_dates() {
     let clock = time.clone();
     let mut state = store::AppState::new(pool.clone()).unwrap();
     state.clock = Arc::new(move || *clock.read().unwrap());
-    state.risk_gate = Arc::new(tokio::sync::Semaphore::new(0));
     state.client = reqwest::Client::builder().no_proxy().build().unwrap();
     let source = Arc::new(RwLock::new(
         json!({"expect":"2026115","openTime":"2026-10-27 21:32:32","openCode":"47,21,04,02,24,18,31","zodiac":"猴,狗,兔,蛇,羊,牛,鼠","wave":"blue,green,blue,red,red,red,blue","verify":false}),

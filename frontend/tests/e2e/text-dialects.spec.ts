@@ -49,6 +49,14 @@ async function openText(page: Page) {
         features,
         plays,
         zodiacs: [],
+        day: {
+          id: "2040001",
+          business_date: "2040-01-01",
+          phase: "open",
+          state: "pending",
+          totals,
+          periods: [],
+        },
         today: {
           id: "2040001",
           business_date: "2040-01-01",
@@ -58,7 +66,6 @@ async function openText(page: Page) {
           mapping: annualMapping(2026),
           bet_version: 0,
           draw: null,
-          risk_status: "stale",
           totals,
           server_time: new Date().toISOString(),
         },

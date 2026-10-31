@@ -2,16 +2,16 @@
 
 ## 分层
 
-| 层级           | 位置                                   | 验证边界                                 |
-| -------------- | -------------------------------------- | ---------------------------------------- |
-| Rust 纯规则    | `backend/tests/rules.rs`               | 金额、规则、展开、结算、时间和默认配置   |
-| Rust 内部契约  | 模块内 `cfg(test)`                     | 私有认证、风险求解与任务恢复             |
-| MySQL 事务     | `backend/tests/ledger.rs`、hosted 测试 | 原子性、重试、快照、隔离与生命周期       |
-| 生产入口       | `backend/tests/process.rs`             | 双服务启动、内部转发、健康检查与优雅退出 |
-| 浏览器无关逻辑 | `frontend/tests/unit/`                 | 解析、编译、请求作用域与提交恢复         |
-| 浏览器系统流程 | `frontend/tests/e2e/`                  | 登录、录入确认、模块、刷新与可访问性     |
-| 运维           | `scripts/tests/`                       | 配置、备份、发布顺序、工件验证及失败边界 |
-| 容器系统检查   | `scripts/verify_hosted.py`             | 两端路由、TLS 和真实运行镜像             |
+| 层级           | 位置                                                   | 验证边界                                     |
+| -------------- | ------------------------------------------------------ | -------------------------------------------- |
+| Rust 纯规则    | `backend/tests/rules.rs`                               | 金额、规则、展开、结算、时间和默认配置       |
+| Rust 内部契约  | 模块内 `cfg(test)`                                     | 私有认证、开奖任务与结算恢复                 |
+| MySQL 事务     | `backend/tests/ledger.rs`、`reporting.rs`、hosted 测试 | 原子性、重试、快照、跨日汇总、隔离与生命周期 |
+| 生产入口       | `backend/tests/process.rs`                             | 双服务启动、内部转发、健康检查与优雅退出     |
+| 浏览器无关逻辑 | `frontend/tests/unit/`                                 | 解析、编译、请求作用域与提交恢复             |
+| 浏览器系统流程 | `frontend/tests/e2e/`                                  | 登录、录入确认、模块、刷新与可访问性         |
+| 运维           | `scripts/tests/`                                       | 配置、备份、发布顺序、工件验证及失败边界     |
+| 容器系统检查   | `scripts/verify_hosted.py`                             | 两端路由、TLS 和真实运行镜像                 |
 
 测试层级参考微软 [Unit vs Integration vs System vs E2E Testing](https://microsoft.github.io/code-with-engineering-playbook/automated-testing/e2e-testing/testing-comparison/)。纯规则尽量脱离浏览器；需要 SQL 事务的断言使用真实 MySQL；浏览器只承担页面和系统连接行为。
 

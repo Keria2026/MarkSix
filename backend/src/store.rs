@@ -1,4 +1,4 @@
-use crate::{domain::*, risk::RiskResult};
+use crate::domain::*;
 use anyhow::Context;
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, Utc};
@@ -8,11 +8,7 @@ use sqlx::{
     mysql::{MySqlConnectOptions, MySqlPoolOptions},
     types::Json,
 };
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, atomic::AtomicBool},
-    time::Instant,
-};
+use std::{collections::VecDeque, sync::Arc, time::Instant};
 use tokio::sync::{Mutex, Semaphore};
 
 pub(crate) type DrawCache = Arc<Mutex<Option<(Instant, Result<Vec<serde_json::Value>, String>)>>>;
@@ -44,9 +40,7 @@ pub struct AppState {
     pub draw_url: String,
     pub hk_draw_url: String,
     pub secure_cookie: bool,
-    pub risk_gate: Arc<Semaphore>,
     pub auth_gate: Arc<Semaphore>,
-    pub cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub login_attempts: Arc<Mutex<VecDeque<Instant>>>,
     pub(crate) hosted: Option<crate::hosted::Policy>,
     pub(crate) draw_cache: Option<DrawCache>,
@@ -76,9 +70,7 @@ impl AppState {
             draw_url: "https://macaumarksix.com/api/macaujc2.com".into(),
             hk_draw_url: "https://api3.marksix6.net/lottery_api.php?type=hk".into(),
             secure_cookie: false,
-            risk_gate: Arc::new(Semaphore::new(1)),
             auth_gate: Arc::new(Semaphore::new(1)),
-            cancellations: Arc::default(),
             login_attempts: Arc::default(),
             hosted: None,
             draw_cache: None,
@@ -209,14 +201,6 @@ pub struct Period {
     pub error: Option<String>,
     pub mapping_warning: bool,
     pub settled_at: Option<NaiveDateTime>,
-    pub risk_status: String,
-    pub risk_task_id: Option<String>,
-    pub risk_version: Option<i64>,
-    pub risk_result: Option<Json<RiskResult>>,
-    pub risk_error: Option<String>,
-    pub risk_started_at: Option<NaiveDateTime>,
-    pub risk_requested_at: NaiveDateTime,
-    pub risk_finished_at: Option<NaiveDateTime>,
 }
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Totals {
@@ -246,6 +230,8 @@ pub struct PeriodView {
 }
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct BetSummary {
+    pub entry_date: NaiveDate,
+    pub expect: Option<String>,
     pub market: String,
     pub slip_id: Option<String>,
     pub slip_position: Option<i32>,
@@ -273,7 +259,7 @@ pub struct BetSummary {
     pub cancelled_at: Option<NaiveDateTime>,
     pub natal: i8,
 }
-pub const BET_COLUMNS: &str = "market,slip_id,slip_position,bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,COALESCE(package_zodiacs,JSON_ARRAY()) AS package_zodiacs,drag,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
+pub const BET_COLUMNS: &str = "entry_date,(SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(p.draw,'$.expect')) AS CHAR CHARACTER SET utf8mb4) FROM periods p WHERE p.id=bets.period_id) AS expect,market,slip_id,slip_position,bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,COALESCE(package_zodiacs,JSON_ARRAY()) AS package_zodiacs,drag,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FutureMapping {
     pub effective_date: NaiveDate,
@@ -309,7 +295,16 @@ pub async fn totals(
     id: &str,
     settled: bool,
 ) -> anyhow::Result<Totals> {
-    let row=sqlx::query("SELECT CAST(COALESCE(SUM(IF(unit_count>void_units,1,0)),0) AS SIGNED) records, CAST(COALESCE(SUM(unit_count-void_units),0) AS SIGNED) units, CAST(COALESCE(SUM(stake-void_stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(rebate),0) AS SIGNED) rebate, CAST(COALESCE(SUM(exposure),0) AS SIGNED) exposure, CAST(COALESCE(SUM(payout-void_stake),0) AS SIGNED) payout, CAST(COALESCE(SUM(winning_stake),0) AS SIGNED) winning, CAST(COALESCE(SUM(void_stake),0) AS SIGNED) refunded FROM bets WHERE period_id=? AND status<>'cancelled'").bind(id).fetch_one(&mut **tx).await?;
+    totals_where(tx, "period_id=?", "period_id=?", id, settled).await
+}
+pub(crate) async fn totals_where(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    bets: &str,
+    layoffs: &str,
+    key: &str,
+    settled: bool,
+) -> anyhow::Result<Totals> {
+    let row=sqlx::query(&format!("SELECT CAST(COALESCE(SUM(IF(unit_count>void_units,1,0)),0) AS SIGNED) records, CAST(COALESCE(SUM(unit_count-void_units),0) AS SIGNED) units, CAST(COALESCE(SUM(stake-void_stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(rebate),0) AS SIGNED) rebate, CAST(COALESCE(SUM(exposure),0) AS SIGNED) exposure, CAST(COALESCE(SUM(payout-void_stake),0) AS SIGNED) payout, CAST(COALESCE(SUM(winning_stake),0) AS SIGNED) winning, CAST(COALESCE(SUM(void_stake),0) AS SIGNED) refunded FROM bets WHERE {bets} AND status<>'cancelled'")).bind(key).fetch_one(&mut **tx).await?;
     let mut t = Totals {
         records: row.try_get("records")?,
         units: row.try_get("units")?,
@@ -321,16 +316,28 @@ pub async fn totals(
         refunded: row.try_get("refunded")?,
         ..Default::default()
     };
+    // A combined date may contain several individually bounded market periods.
+    // Reject an unsafe aggregate before serializing money to JavaScript numbers.
+    for amount in [
+        t.stake,
+        t.rebate,
+        t.exposure,
+        t.payout,
+        t.winning_stake,
+        t.refunded,
+    ] {
+        checked_sum([amount]).map_err(anyhow::Error::msg)?;
+    }
     if settled {
         t.losing_stake = t.stake - t.winning_stake;
         t.gross = Some(t.stake - t.payout);
-        t.net = Some(t.stake - t.payout - t.rebate);
+        t.net = Some(checked_sum([t.stake, -t.payout, -t.rebate]).map_err(anyhow::Error::msg)?);
     }
-    let fly = sqlx::query("SELECT CAST(COALESCE(SUM(stake-void_stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(payout+rebate-stake),0) AS SIGNED) net FROM layoffs WHERE period_id=? AND status<>'cancelled'")
-        .bind(id).fetch_one(&mut **tx).await?;
-    t.flyout_stake = fly.try_get("stake")?;
+    let fly = sqlx::query(&format!("SELECT CAST(COALESCE(SUM(stake-void_stake),0) AS SIGNED) stake, CAST(COALESCE(SUM(payout+rebate-stake),0) AS SIGNED) net FROM layoffs WHERE {layoffs} AND status<>'cancelled'"))
+        .bind(key).fetch_one(&mut **tx).await?;
+    t.flyout_stake = checked_sum([fly.try_get("stake")?]).map_err(anyhow::Error::msg)?;
     if settled {
-        t.flyout_net = Some(fly.try_get("net")?);
+        t.flyout_net = Some(checked_sum([fly.try_get("net")?]).map_err(anyhow::Error::msg)?);
         t.retained_net =
             Some(checked_sum([t.net.unwrap(), t.flyout_net.unwrap()]).map_err(anyhow::Error::msg)?);
     }

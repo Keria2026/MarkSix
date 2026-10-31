@@ -2,6 +2,8 @@ import type { Bet, Atom, AtomResult, Draw, LedgerTotals } from "./types";
 
 export interface BettorStatement {
   period: string;
+  business_date?: string;
+  combined?: boolean;
   market?: "macau" | "hk";
   settled: boolean;
   draw: Draw | null;
@@ -44,6 +46,9 @@ export interface RebateBand {
   amount: bigint;
 }
 export interface StatementRow {
+  market: "macau" | "hk";
+  expect: string | null;
+  periodId: string;
   id: string;
   createdAt: string;
   stake: bigint;
@@ -82,6 +87,10 @@ function addBand(
   } else bands.push({ rate, base, amount });
 }
 export function statementTotals(rows: StatementRow[], settled: boolean) {
+  const complete =
+    settled ||
+    (rows.length > 0 &&
+      rows.every((row) => row.net !== null && row.payout !== null));
   const bands: RebateBand[] = [];
   for (const row of rows)
     for (const band of row.bands)
@@ -89,9 +98,9 @@ export function statementTotals(rows: StatementRow[], settled: boolean) {
   bands.sort((a, b) => Number(a.rate) - Number(b.rate));
   return {
     stake: sum(rows.map((r) => r.stake)),
-    payout: settled ? sum(rows.map((r) => r.payout!)) : null,
+    payout: complete ? sum(rows.map((r) => r.payout!)) : null,
     rebate: sum(rows.map((r) => r.rebate)),
-    net: settled ? sum(rows.map((r) => r.net!)) : null,
+    net: complete ? sum(rows.map((r) => r.net!)) : null,
     bands,
   };
 }
@@ -102,30 +111,33 @@ export function statementRows(
   const groups = new Map<string, StatementRow>(),
     created = new Map<string, string>();
   for (const { record: r } of bettor.bets) {
-    const key = r.slip_id ?? r.id;
+    const key = `${r.slip_id ?? r.id}:${r.market ?? "macau"}`;
     if (!created.has(key) || r.created_at < created.get(key)!)
       created.set(key, r.created_at);
   }
   for (const { record: r, atoms, results } of bettor.bets) {
     if (r.status === "cancelled") continue;
+    const recordSettled = r.status === "settled";
     if (
+      (settled && !recordSettled) ||
       !atoms.length ||
       atoms.length !== r.unit_count ||
-      (settled &&
-        (r.status !== "settled" ||
-          r.payout === null ||
-          !results ||
-          results.length !== atoms.length))
+      (recordSettled &&
+        (r.payout === null || !results || results.length !== atoms.length))
     )
       throw new Error("结算记录不完整，已停止导出");
     const id = r.slip_id ?? r.id;
-    const row = groups.get(id) ?? {
+    const key = `${id}:${r.market ?? "macau"}`;
+    const row = groups.get(key) ?? {
       id,
-      createdAt: created.get(id)!,
+      market: r.market ?? "macau",
+      expect: r.expect ?? null,
+      periodId: r.period_id,
+      createdAt: created.get(key)!,
       stake: 0n,
-      payout: settled ? 0n : null,
+      payout: recordSettled ? 0n : null,
       rebate: 0n,
-      net: settled ? 0n : null,
+      net: recordSettled ? 0n : null,
       bands: [],
     };
     let stake = 0n,
@@ -134,7 +146,7 @@ export function statementRows(
       refunded = 0n;
     for (let i = 0; i < atoms.length; i++) {
       const atom = atoms[i],
-        result = settled ? results![i] : null;
+        result = recordSettled ? results![i] : null;
       const base = cents(atom.stake),
         amount = cents(result?.rebate ?? atom.rebate);
       stake += base;
@@ -155,15 +167,19 @@ export function statementRows(
     if (
       stake !== cents(r.stake) ||
       rebate !== cents(r.rebate) ||
-      (settled &&
+      (recordSettled &&
         (paid !== cents(r.payout!) || refunded !== cents(r.void_stake)))
     )
       throw new Error("基础注与投注单金额不一致，已停止导出");
+    if (!recordSettled) {
+      row.payout = null;
+      row.net = null;
+    }
     row.stake += stake;
     row.rebate += rebate;
     if (row.payout !== null) row.payout += paid;
     if (row.net !== null) row.net += paid + rebate - stake;
-    groups.set(id, row);
+    groups.set(key, row);
   }
   const rows = [...groups.values()].sort((a, b) =>
     a.createdAt < b.createdAt
@@ -183,7 +199,7 @@ export function statementRows(
   if (
     total.stake !== cents(t.stake) + cents(t.refunded) ||
     total.rebate !== cents(t.rebate) ||
-    (settled &&
+    (total.net !== null &&
       (t.net === null ||
         total.net !== -cents(t.net) ||
         total.payout !== cents(t.payout) + cents(t.refunded)))

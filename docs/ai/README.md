@@ -26,7 +26,9 @@ MarkSix 是盘口方使用的多客户投注账本。运营管理员开通客户
 
 业务写入：`frontend/src/Workspace.svelte` → 录入组件 → `backend/src/api.rs` / `hosted/portal.rs` → `betting.rs` → `domain.rs` / `store.rs`。
 
-结算与风险：`worker.rs` → `domain.rs` / `risk.rs` → 期次及账本事务。
+开奖与结算：`worker.rs` → `domain.rs` → 期次及账本事务。
+
+合并日报：`reporting.rs` → `records.rs` / `ledger.rs` → 按录入业务日期汇总港澳投注。
 
 客户生命周期：`Management.svelte` → `hosted/management.rs` → `accounts.rs` / `tenancy.rs` / `history.rs`。
 

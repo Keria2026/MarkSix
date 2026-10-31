@@ -155,7 +155,7 @@
         <div class="login-tags">
           <span><ShieldCheck size={15} /> 独立账本</span><span
             ><Layers3 size={15} /> 精确结算</span
-          ><span><Activity size={15} /> 风险洞察</span>
+          ><span><Activity size={15} /> 合并对账</span>
         </div>
       </div>
       <div class="login-art" aria-hidden="true">

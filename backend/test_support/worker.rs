@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::{Arc, atomic::Ordering};
 #[tokio::test]
 async fn concurrent_draw_failures_share_one_cached_fetch() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -28,60 +29,6 @@ async fn concurrent_draw_failures_share_one_cached_fetch() {
     assert_eq!(count.load(Ordering::SeqCst), 1);
     server.abort();
 }
-#[tokio::test]
-#[ignore = "requires isolated marksix_test database"]
-async fn orphaned_risk_recovery_and_stale_result_fencing() {
-    let url = std::env::var("TEST_DATABASE_URL").unwrap();
-    assert!(url.ends_with("/marksix_test"));
-    let pool = connect(&url).await.unwrap();
-    initialize(
-        &pool,
-        "test-admin",
-        Some(&std::env::var("TEST_ADMIN_PASSWORD").unwrap()),
-    )
-    .await
-    .unwrap();
-    let state = AppState::new(pool.clone()).unwrap();
-    let p = ensure_period(&state, chrono::NaiveDate::from_ymd_opt(2042, 1, 1).unwrap())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE periods SET risk_status='computing',risk_task_id='orphan',risk_version=0 WHERE id=?").bind(&p.id).execute(&pool).await.unwrap();
-    recover_risk_tasks(&state).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, String>("SELECT risk_status FROM periods WHERE id=?")
-            .bind(&p.id)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-        "failed"
-    );
-    sqlx::query("UPDATE periods SET risk_status='computing',risk_task_id='new-owner',bet_version=2 WHERE id=?").bind(&p.id).execute(&pool).await.unwrap();
-    assert!(
-        !persist_risk(
-            &state,
-            RiskWrite {
-                period: &p.id,
-                version: 1,
-                task_id: "orphan",
-                status: "complete",
-                data: None,
-                error: None
-            }
-        )
-        .await
-    );
-    recover(&state).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, String>("SELECT risk_status FROM periods WHERE id=?")
-            .bind(&p.id)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-        "queued"
-    );
-    pool.close().await;
-}
-
 #[tokio::test]
 async fn fetch_validates_json_and_response_size_with_and_without_cache() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -127,7 +74,7 @@ async fn fetch_validates_json_and_response_size_with_and_without_cache() {
 
 #[tokio::test]
 #[ignore = "requires isolated marksix_test database"]
-async fn worker_tick_settles_stops_old_fetches_and_finishes_risk() {
+async fn worker_tick_settles_and_stops_old_fetches() {
     let url = std::env::var("TEST_DATABASE_URL").unwrap();
     assert!(url.ends_with("/marksix_test"));
     let pool = connect(&url).await.unwrap();
@@ -189,19 +136,6 @@ async fn worker_tick_settles_stops_old_fetches_and_finishes_risk() {
         .await
         .unwrap();
     assert_eq!(status, "missing");
-    for _ in 0..100 {
-        if state.cancellations.lock().await.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(state.cancellations.lock().await.is_empty());
-    let risk: String = sqlx::query_scalar("SELECT risk_status FROM periods WHERE id=?")
-        .bind(&old.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_ne!(risk, "computing");
     let raw = json!({"expect":"2040002","openTime":"2040-01-02 21:34:00","openCode":"1,2,3,4,5,6,7","zodiac":"鼠,牛,虎,兔,龙,蛇,马","wave":"red,red,blue,blue,green,green,red"});
     *response.lock().unwrap() = vec![raw.clone()];
     sqlx::query("UPDATE periods SET last_fetch_at=NULL WHERE id=?")
@@ -232,11 +166,5 @@ async fn worker_tick_settles_stops_old_fetches_and_finishes_risk() {
     settle_period(&state, "unknown").await.unwrap();
     settle_period(&state, &old.id).await.unwrap();
     server.abort();
-    for _ in 0..100 {
-        if state.cancellations.lock().await.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
     pool.close().await;
 }

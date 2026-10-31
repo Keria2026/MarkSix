@@ -6,7 +6,7 @@ mod betting;
 mod features;
 mod queries;
 mod records;
-pub mod risk;
+mod reporting;
 pub mod store;
 mod text_entry;
 pub mod worker;
