@@ -504,6 +504,11 @@
             {selectionError}
           </p>{/if}
         <div class="selection-meta">
+          {#if currentPlay.rule.zero_tail_rebate_percent != null}<span
+              >含 0 尾基础注反水 <strong
+                >{currentPlay.rule.zero_tail_rebate_percent}</strong
+              >%</span
+            >{/if}
           {#if currentPlay.rule.zero_tail_odds != null}<span
               >含 0 尾基础注赔率 <strong
                 >{currentPlay.rule.zero_tail_odds}</strong

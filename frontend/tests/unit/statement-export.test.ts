@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { PDFDocument } from "pdf-lib";
 import { unzipSync } from "fflate";
+import type { Bet, Atom } from "../../src/lib/types";
 import {
   createBettorArchive,
   type BettorStatement,
@@ -28,6 +29,50 @@ function emptyStatement(): BettorStatement {
     })),
   };
 }
+
+test("long PDF statements retain pagination", async () => {
+  const data = emptyStatement();
+  data.bettors = [data.bettors[0]];
+  Object.assign(data.bettors[0].totals, {
+    records: 30,
+    units: 30,
+    stake: 300000,
+    rebate: 6000,
+  });
+  data.bettors[0].bets = Array.from({ length: 30 }, (_, i) => ({
+    record: {
+      id: `r${i}`,
+      slip_id: `s${i}`,
+      period_id: data.period,
+      created_at: data.generated_at,
+      status: "pending",
+      unit_count: 1,
+      stake: 10000,
+      rebate: 200,
+      payout: null,
+      void_stake: 0,
+      rule: { rebate_percent: "2" },
+    } as Bet,
+    atoms: [{ stake: 10000, rebate: 200, rebate_percent: "2" } as Atom],
+    results: null,
+  }));
+  const font = new Uint8Array(
+    await Bun.file(
+      new URL("../../src/assets/NotoSansSC-Regular.ttf", import.meta.url),
+    ).arrayBuffer(),
+  );
+  const files = unzipSync(
+    await createBettorArchive(
+      data,
+      font,
+      new AbortController().signal,
+      () => {},
+      "pdf",
+    ),
+  );
+  const pdf = await PDFDocument.load(files["样本.pdf"]);
+  expect(pdf.getPageCount()).toBeGreaterThan(1);
+});
 
 test("PDF archive embeds the real Chinese font, preserves separate bettors and yields readable PDFs", async () => {
   const bytes = new Uint8Array(

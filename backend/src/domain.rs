@@ -100,6 +100,8 @@ pub struct Rule {
     #[serde(default)]
     pub zero_tail_odds: Option<String>,
     #[serde(default)]
+    pub zero_tail_rebate_percent: Option<String>,
+    #[serde(default)]
     pub special_rebate_percent: Option<String>,
     #[serde(default)]
     pub zodiac_count: Option<u8>,
@@ -200,6 +202,11 @@ impl Rule {
         }
         if scaled(&self.rebate_percent, 2)? > 10_000 {
             return Err("反水比例须在 0%–100% 之间".into());
+        }
+        if let Some(value) = &self.zero_tail_rebate_percent
+            && (self.kind != Kind::Tail || scaled(value, 2)? > 10_000)
+        {
+            return Err("0 尾特殊反水仅适用于尾数玩法，比例须为 0%–100%".into());
         }
         if let Some(ref value) = self.special_odds {
             if self.kind == Kind::Wave {
@@ -591,7 +598,12 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
         } else {
             &rule.odds
         };
-        let rebate_percent = if natal {
+        let rebate_percent = if rule.kind == Kind::Tail
+            && mask & 1 != 0
+            && rule.zero_tail_rebate_percent.is_some()
+        {
+            rule.zero_tail_rebate_percent.as_ref().unwrap()
+        } else if natal {
             rule.special_rebate_percent
                 .as_ref()
                 .unwrap_or(&rule.rebate_percent)

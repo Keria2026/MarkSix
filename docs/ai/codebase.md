@@ -33,25 +33,26 @@
 
 `main.ts` 查询站点模式，选择 `App.svelte` 或 `Management.svelte`。`App` 管理客户登录与授权边界，`Workspace` 组合业务页面、请求作用域、导航及草稿。
 
-| 目录或模块                                                               | 职责                                   |
-| ------------------------------------------------------------------------ | -------------------------------------- |
-| `components/BetEntry.svelte`、`SlipComposer.svelte`                      | 手工选项和组合单草稿                   |
-| `components/TextEntry.svelte`                                            | 文本校验、确认弹窗与提交               |
-| `components/RecordsTable.svelte`、`SlipDetail.svelte`                    | 单据展示和操作入口                     |
-| `components/Statistics.svelte`、`BettorExport.svelte`                    | 合并统计与导出                         |
-| `components/DrawPanel.svelte`                                            | 港澳开奖统一呈现                       |
-| `components/PlayEditor.svelte`、`BatchEditor.svelte`、`PlayOrder.svelte` | 玩法设置                               |
-| `components/SystemSettings.svelte`                                       | 模块、映射与账号相关设置               |
-| `components/Modal.svelte`、`lib/modal.ts`                                | 模态状态、焦点及页面锁定               |
-| `lib/types.ts`                                                           | 当前前端契约、金额与选项工具           |
-| `lib/requests.ts`                                                        | 账号范围请求取消和认证失效处理         |
-| `lib/features.ts`                                                        | 功能与录注方式派生                     |
-| `lib/drag.ts`、`selection.ts`                                            | 拖投注与选项预检                       |
-| `lib/statement.ts`                                                       | 对账单金额核对、分组和文件名纯逻辑     |
-| `lib/business-date.ts`                                                   | 与后端一致的北京时间 06:00 业务日期    |
-| `lib/bettor-statement.ts`                                                | PDF/PNG 排版与文档渲染                 |
-| `lib/text-entry/`                                                        | 领域解析、候选、编译、剪切板与回执恢复 |
-| `lib/generated/`                                                         | 离线训练生成的候选词典                 |
+| 目录或模块                                                               | 职责                                    |
+| ------------------------------------------------------------------------ | --------------------------------------- |
+| `components/BetEntry.svelte`、`SlipComposer.svelte`                      | 手工选项和组合单草稿                    |
+| `components/TextEntry.svelte`                                            | 文本校验、确认弹窗与提交                |
+| `components/RecordsTable.svelte`、`SlipDetail.svelte`                    | 单据展示和操作入口                      |
+| `components/Statistics.svelte`、`BettorExport.svelte`                    | 合并统计与导出                          |
+| `components/DrawPanel.svelte`                                            | 港澳开奖统一呈现                        |
+| `components/PlayEditor.svelte`、`BatchEditor.svelte`、`PlayOrder.svelte` | 玩法设置                                |
+| `components/SystemSettings.svelte`                                       | 模块、映射与账号相关设置                |
+| `components/Modal.svelte`、`lib/modal.ts`                                | 模态状态、焦点及页面锁定                |
+| `lib/types.ts`                                                           | 当前前端契约、金额与选项工具            |
+| `lib/requests.ts`                                                        | 账号范围请求取消和认证失效处理          |
+| `lib/features.ts`                                                        | 功能与录注方式派生                      |
+| `lib/drag.ts`、`selection.ts`                                            | 拖投注与选项预检                        |
+| `lib/statement.ts`                                                       | 对账单金额核对、分组和文件名纯逻辑      |
+| `lib/business-date.ts`                                                   | 与后端一致的北京时间 06:00 业务日期     |
+| `lib/bettor-statement.ts`                                                | PDF/PNG 排版与文档渲染                  |
+| `lib/png.ts`                                                             | RGBA 分段编码为单张 PNG，避免整张长画布 |
+| `lib/text-entry/`                                                        | 领域解析、候选、编译、剪切板与回执恢复  |
+| `lib/generated/`                                                         | 离线训练生成的候选词典                  |
 
 API 使用 `/api` 前缀、JSON 和当前源码中的 snake_case 字段。失败主体通常为 `{ "error": "..." }`。当前契约由 Rust/TypeScript 类型共同维护，仓库没有 OpenAPI 类型生成链。
 

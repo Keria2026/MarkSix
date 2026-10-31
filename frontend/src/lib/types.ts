@@ -32,6 +32,7 @@ export interface Rule {
   rebate_percent: string;
   special_odds: string | null;
   zero_tail_odds?: string | null;
+  zero_tail_rebate_percent?: string | null;
   special_rebate_percent: string | null;
 }
 export interface Play {

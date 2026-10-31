@@ -183,6 +183,107 @@ fn special_rates_zero_tail_and_49_refund() {
     assert_eq!((s.payout, s.rebate, s.net), (10_000, 0, 0));
 }
 #[test]
+fn zero_tail_rebate_overrides_natal_only_for_matching_basic_bets() {
+    let mut r = rule("尾中");
+    r.rebate_percent = "3".into();
+    r.special_rebate_percent = Some("5".into());
+    r.zero_tail_rebate_percent = Some("7.25".into());
+    let mut mapping = Mapping {
+        zodiac: vec![0; 49],
+        natal: 1,
+    };
+    mapping.zodiac[9] = 1; // 10 makes 0 a natal tail.
+    mapping.zodiac[11] = 1; // 12 makes 2 a natal tail; 4 remains ordinary.
+    let p = plan(&r, &input(&[0, 2, 4]), &mapping).unwrap();
+    assert_eq!(p.rebate, 1_525);
+    assert_eq!(
+        p.atoms
+            .iter()
+            .map(|a| a.rebate_percent.as_str())
+            .collect::<Vec<_>>(),
+        ["7.25", "5", "3"]
+    );
+    assert_eq!(
+        p.atoms.iter().map(|a| a.rebate).collect::<Vec<_>>(),
+        [725, 500, 300]
+    );
+    for (numbers, won) in [
+        ([10, 12, 14, 3, 5, 6, 7], true),
+        ([1, 3, 5, 6, 7, 8, 9], false),
+    ] {
+        let results = settle(&p.atoms, &Draw::predicted(numbers, &mapping));
+        assert!(results.iter().all(|result| result.won == won));
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.rebate)
+                .collect::<Vec<_>>(),
+            [725, 500, 300]
+        );
+    }
+    r.zero_tail_rebate_percent = Some("0".into());
+    assert_eq!(plan(&r, &input(&[0]), &mapping).unwrap().rebate, 0);
+    r.zero_tail_rebate_percent = None;
+    assert_eq!(plan(&r, &input(&[0]), &mapping).unwrap().rebate, 500);
+    r.special_rebate_percent = None;
+    assert_eq!(plan(&r, &input(&[0]), &mapping).unwrap().rebate, 300);
+}
+#[test]
+fn zero_tail_rebate_is_independent_of_odds_and_survives_repricing() {
+    let mut r = rule("二尾连");
+    r.zero_tail_odds = None;
+    r.rebate_percent = "3".into();
+    r.zero_tail_rebate_percent = Some("7.25".into());
+    let mut i = input(&[0, 2, 4]);
+    i.compound = true;
+    let mut p = plan(&r, &i, &Mapping::default()).unwrap();
+    assert_eq!(p.rebate, 1_750);
+    assert_eq!(
+        p.atoms.iter().map(|a| a.rebate).collect::<Vec<_>>(),
+        [725, 725, 300]
+    );
+    for a in &mut p.atoms {
+        price_atom(a, 2_000).unwrap();
+    }
+    assert_eq!(
+        p.atoms.iter().map(|a| a.rebate).collect::<Vec<_>>(),
+        [145, 145, 60]
+    );
+    let mut i = input(&[0]);
+    i.amount = "0.1".into();
+    let mut r = rule("尾中");
+    r.zero_tail_rebate_percent = Some("5".into());
+    assert_eq!(plan(&r, &i, &Mapping::default()).unwrap().rebate, 1);
+}
+#[test]
+fn zero_tail_rebate_validates_precision_range_type_and_legacy_defaults() {
+    let mut r = rule("尾中");
+    for rate in ["0", "100", "7.25"] {
+        r.zero_tail_rebate_percent = Some(rate.into());
+        r.validate().unwrap();
+    }
+    for rate in ["", "-1", "100.01", "1.001", "NaN"] {
+        r.zero_tail_rebate_percent = Some(rate.into());
+        assert!(r.validate().is_err(), "{rate}");
+    }
+    let mut r = rule("特码");
+    r.zero_tail_rebate_percent = Some("0".into());
+    assert!(r.validate().unwrap_err().contains("0 尾特殊反水"));
+    let mut legacy = serde_json::to_value(rule("尾中")).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("zero_tail_rebate_percent");
+    let restored: Rule = serde_json::from_value(legacy).unwrap();
+    assert!(restored.zero_tail_rebate_percent.is_none());
+    assert_eq!(
+        plan(&restored, &input(&[0, 2]), &Mapping::default())
+            .unwrap()
+            .rebate,
+        600
+    );
+}
+#[test]
 fn business_day_and_draw_input_boundaries() {
     let date = chrono::NaiveDate::from_ymd_opt(2040, 1, 1).unwrap();
     assert_eq!(

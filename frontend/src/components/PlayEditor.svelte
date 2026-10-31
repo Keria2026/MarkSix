@@ -47,13 +47,16 @@
       rebate_percent: "2",
       special_odds: null,
       zero_tail_odds: null,
+      zero_tail_rebate_percent: null,
       special_rebate_percent: null,
     };
   }
   function changeCondition(value: Rule["condition"]) {
     rule.condition = value;
-    if (value === "hard_pair" || value === "soft_pair")
+    if (value === "hard_pair" || value === "soft_pair") {
       rule.zero_tail_odds = null;
+      rule.zero_tail_rebate_percent = null;
+    }
     if (rule.condition === "hard_pair" || rule.condition === "soft_pair") {
       rule.kind = "number";
       rule.scope = "all";
@@ -65,7 +68,10 @@
   }
   function changeKind(value: Kind) {
     rule.kind = value;
-    if (value !== "tail") rule.zero_tail_odds = null;
+    if (value !== "tail") {
+      rule.zero_tail_odds = null;
+      rule.zero_tail_rebate_percent = null;
+    }
     rule.zodiac_count = null;
     rule.special_hit_odds = null;
     rule.selection_limit = null;
@@ -279,6 +285,25 @@
             bind:value={rule.zero_tail_odds}
             required
             placeholder="最多四位小数"
+          /></label
+        >
+      {/if}
+      <label class="checkbox-label"
+        ><input
+          type="checkbox"
+          checked={rule.zero_tail_rebate_percent != null}
+          onchange={(e) =>
+            (rule.zero_tail_rebate_percent = e.currentTarget.checked
+              ? rule.rebate_percent
+              : null)}
+        />启用 0 尾特殊反水</label
+      >
+      {#if rule.zero_tail_rebate_percent != null}<label
+          >0 尾反水（%）<input
+            inputmode="decimal"
+            bind:value={rule.zero_tail_rebate_percent}
+            required
+            placeholder="0–100，最多两位小数"
           /></label
         >
       {/if}
