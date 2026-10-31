@@ -165,18 +165,20 @@ async fn receive_time(State(state): State<AppState>, mut req: Request, next: Nex
     next.run(req).await
 }
 pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
-    if !matches!(
+    let mut response = if !matches!(
         *req.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    ) && req.headers().get("x-marksix").and_then(|v| v.to_str().ok()) != Some("1")
+    ) && req.headers().get("x-marksix").and_then(|v| v.to_str().ok())
+        != Some("1")
     {
-        return ApiError(
+        ApiError(
             StatusCode::FORBIDDEN,
             "请求校验失败，请从本系统页面操作".into(),
         )
-        .into_response();
-    }
-    let mut response = next.run(req).await;
+        .into_response()
+    } else {
+        next.run(req).await
+    };
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -629,4 +631,58 @@ async fn update_mapping(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"effective_date":input.effective_date})))
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::Method,
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn every_response_including_rejected_writes_has_security_headers() {
+        let app = Router::new()
+            .route(
+                "/resource",
+                get(|| async { "read" }).post(|| async { "written" }),
+            )
+            .layer(middleware::from_fn(security_headers));
+        for (method, marker, expected) in [
+            (Method::GET, None, StatusCode::OK),
+            (Method::HEAD, None, StatusCode::OK),
+            (Method::POST, None, StatusCode::FORBIDDEN),
+            (Method::POST, Some("0"), StatusCode::FORBIDDEN),
+            (Method::POST, Some("1"), StatusCode::OK),
+            (Method::OPTIONS, None, StatusCode::METHOD_NOT_ALLOWED),
+        ] {
+            let mut request = Request::builder().uri("/resource").method(method);
+            if let Some(marker) = marker {
+                request = request.header("X-Marksix", marker);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_eq!(response.headers()["x-frame-options"], "DENY");
+            assert_eq!(response.headers()["referrer-policy"], "same-origin");
+            assert!(
+                response.headers()["content-security-policy"]
+                    .to_str()
+                    .unwrap()
+                    .contains("frame-ancestors 'none'")
+            );
+            if expected == StatusCode::FORBIDDEN {
+                let body = to_bytes(response.into_body(), 1024).await.unwrap();
+                let json: Value = serde_json::from_slice(&body).unwrap();
+                assert!(json["error"].as_str().unwrap().contains("请求校验失败"));
+            }
+        }
+    }
 }

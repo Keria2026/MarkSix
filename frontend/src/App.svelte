@@ -198,7 +198,7 @@
           >{#if busy}<LoaderCircle
               size={17}
               class="spin"
-            />{:else}进入工作台<ArrowRight size={17} />{/if}</button
+            />正在登录{:else}进入工作台<ArrowRight size={17} />{/if}</button
         >
       </form>
     </section>

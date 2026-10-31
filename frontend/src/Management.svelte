@@ -1,5 +1,6 @@
 <script lang="ts">
   import { site } from "./lib/site";
+  import { businessDate } from "./lib/business-date";
   import { onMount, onDestroy } from "svelte";
   import { pageFade } from "./lib/navigation";
   import {
@@ -500,13 +501,7 @@
                         ? "已作废"
                         : c.redeemed_at
                           ? "已使用"
-                          : c.redeem_through <
-                              new Intl.DateTimeFormat("en-CA", {
-                                timeZone: "Asia/Shanghai",
-                                year: "numeric",
-                                month: "2-digit",
-                                day: "2-digit",
-                              }).format(new Date())
+                          : c.redeem_through < businessDate()
                             ? "已过期"
                             : "待使用"}</td
                     ><td>{c.granted_through ?? "—"}</td><td

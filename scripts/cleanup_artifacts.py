@@ -14,7 +14,7 @@ import urllib.request
 UTC = dt.timezone.utc
 PACKAGE = "MarkSix-Ubuntu-x64"
 ACCEPTANCE = {"runtime-acceptance", "hosted-acceptance"}
-REPORTS = ACCEPTANCE | {"browser-report"}
+REPORTS = ACCEPTANCE | {"browser-report", "coverage-report"}
 RETIRED = {"MarkSix-Windows-Native-x64", "marksix-images"}
 DEPLOY_STEP = "Transfer and deploy the tested artifact"
 

@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "./fixtures";
+import type { Page } from "@playwright/test";
 import { plays } from "../unit/support";
 import { annualMapping } from "../../src/lib/types";
 
@@ -261,4 +262,35 @@ test("cancellation headings preserve the whole source and block submission", asy
     modal.getByRole("button", { name: "确认录入", exact: true }),
   ).toBeDisabled();
   expect(writes).toHaveLength(0);
+});
+
+test("confirmation traps keyboard focus and Escape restores the initiating control", async ({
+  page,
+}) => {
+  await openText(page);
+  await page.getByLabel("投注原文").fill("三有龙蛇兔各35");
+  const trigger = page.getByRole("button", { name: "校验", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "确认投注单" });
+  await expect(dialog).toBeVisible();
+  for (let index = 0; index < 18; index++) {
+    await page.keyboard.press("Tab");
+    expect(
+      await dialog.evaluate((node) => node.contains(document.activeElement)),
+    ).toBe(true);
+  }
+  for (let index = 0; index < 3; index++) {
+    await page.keyboard.press("Shift+Tab");
+    expect(
+      await dialog.evaluate((node) => node.contains(document.activeElement)),
+    ).toBe(true);
+  }
+  await page.screenshot({ path: test.info().outputPath("confirmation.png") });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => document.body.style.position)).not.toBe(
+    "fixed",
+  );
+  await expect(page.getByLabel("投注原文")).toHaveValue("三有龙蛇兔各35");
 });

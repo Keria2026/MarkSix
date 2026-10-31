@@ -161,3 +161,69 @@ test("entry modes and integer money helpers", () => {
     ),
   ).toBe(4);
 });
+
+for (const value of [
+  "null",
+  "42",
+  '"text"',
+  "[]",
+  "{",
+  "{}",
+  JSON.stringify({ id: "-".repeat(36), fingerprint: "a".repeat(64) }),
+  JSON.stringify({ id: crypto.randomUUID(), fingerprint: "bad" }),
+])
+  test(`corrupt receipt blocks every financial request: ${value}`, async () => {
+    const entries = storage();
+    entries.set("marksix:pending-text:a", value);
+    let calls = 0;
+    const transport = (async () => {
+      calls++;
+      return {};
+    }) as typeof api;
+    await expect(
+      textSubmission("a", transport, () => {}).submit({}, "sample"),
+    ).rejects.toThrow("待处理提交标识损坏");
+    expect(calls).toBe(0);
+    expect(entries.get("marksix:pending-text:a")).toBe(value);
+  });
+
+test("unreadable receipt storage fails closed", async () => {
+  storage();
+  localStorage.getItem = () => {
+    throw Error("denied");
+  };
+  let calls = 0;
+  await expect(
+    textSubmission(
+      "a",
+      (async () => {
+        calls++;
+      }) as typeof api,
+      () => {},
+    ).recover(),
+  ).rejects.toThrow("请允许本站存储");
+  expect(calls).toBe(0);
+});
+
+test("post-commit cleanup failure retains the receipt and cannot duplicate a write", async () => {
+  storage();
+  let posts = 0;
+  const transport = (async (_path, options) => {
+    if (options?.method === "POST") {
+      posts++;
+      return { id: "saved" };
+    }
+    return { id: "saved" };
+  }) as typeof api;
+  let blocked = true;
+  const remember = () => {
+    if (blocked) throw Error("storage changed");
+  };
+  const submission = textSubmission("a", transport, remember);
+  await expect(submission.submit({}, "sample")).rejects.toThrow(
+    "storage changed",
+  );
+  blocked = false;
+  expect(await submission.submit({}, "sample")).toEqual({ replayed: true });
+  expect(posts).toBe(1);
+});

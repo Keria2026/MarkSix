@@ -78,7 +78,11 @@ test("mixed drag expands zodiac and tail selectors against the supplied mapping"
     expect(rows).toHaveLength(1);
     const result = compileRow(rows[0], plays, mapping);
     expect(result.error).toBe("");
-    expect(result.items[0].drag).toEqual({ left: [18], right, zodiac: false });
+    expect(result.items[0].drag).toEqual({
+      left: [18],
+      right: [...right],
+      zodiac: false,
+    });
   }
 });
 

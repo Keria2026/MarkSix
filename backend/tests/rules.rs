@@ -298,3 +298,20 @@ fn every_default_settles_against_an_independent_predicate_oracle() {
         }
     }
 }
+
+#[test]
+fn fixed_precision_rejects_overflow_and_negative_rounding_inputs() {
+    for digits in [19, 20, 100, u32::MAX] {
+        assert!(scaled("1", digits).is_err());
+    }
+    assert_eq!(scaled("12", 0).unwrap(), 12);
+    assert_eq!(scaled("0.000000000000000001", 18).unwrap(), 1);
+    assert!(scaled("9223372036854775808", 0).is_err());
+    assert!(scaled("9223372036854775807", 1).is_err());
+    for (cents, rate) in [(-1, 1), (1, -1), (-1, -1), (i64::MIN, 0)] {
+        assert!(rounded_product(cents, rate).is_err());
+    }
+    assert_eq!(rounded_product(0, 10000).unwrap(), 0);
+    assert_eq!(rounded_product(1, 4999).unwrap(), 0);
+    assert_eq!(rounded_product(1, 5000).unwrap(), 1);
+}
