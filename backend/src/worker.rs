@@ -66,7 +66,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     .await?;
     let mut eligible = vec![];
     for p in periods {
-        let start = p.business_date.and_hms_opt(21, 34, 0).unwrap();
+        let start = draw_fetch_start(p.business_date);
         let end = start + ChronoDuration::days(1);
         if now >= end {
             mark_missing(state, &p.id, "抓取窗口结束，未取得本期有效开奖").await?;
@@ -472,6 +472,11 @@ fn hk_matches(p: &Period, draw: &Draw, now: chrono::NaiveDateTime) -> bool {
 }
 async fn fetch_hk_pending(state: &AppState) -> anyhow::Result<()> {
     let periods:Vec<Period>=sqlx::query_as("SELECT * FROM periods WHERE market='hk' AND state='pending' AND (last_fetch_at IS NULL OR last_fetch_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 60 SECOND)) AND EXISTS(SELECT 1 FROM bets WHERE bets.period_id=periods.id AND bets.status<>'cancelled') ORDER BY id").fetch_all(&state.pool).await?;
+    let now = state.now();
+    let periods: Vec<_> = periods
+        .into_iter()
+        .filter(|p| now >= draw_fetch_start(p.business_date))
+        .collect();
     if periods.is_empty() {
         return Ok(());
     }

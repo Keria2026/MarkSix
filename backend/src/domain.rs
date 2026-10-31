@@ -864,6 +864,10 @@ pub fn business_date(now: NaiveDateTime) -> NaiveDate {
 pub fn accepts_entries(now: NaiveDateTime, date: NaiveDate) -> bool {
     business_date(now) == date
 }
+/// Both markets start draw polling at 21:34 Beijing time on the period's date.
+pub fn draw_fetch_start(date: NaiveDate) -> NaiveDateTime {
+    date.and_hms_opt(21, 34, 0).unwrap()
+}
 pub fn normalize_zodiac(s: &str) -> Option<u8> {
     let s = match s {
         "龍" => "龙",

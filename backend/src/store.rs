@@ -346,7 +346,7 @@ pub async fn view(state: &AppState, period: Period) -> anyhow::Result<PeriodView
     let phase = if period.state != "pending" {
         period.state.clone()
     } else if (period.market == "hk" && period.last_fetch_at.is_some())
-        || (period.market == "macau" && now >= period.business_date.and_hms_opt(21, 34, 0).unwrap())
+        || (period.market == "macau" && now >= draw_fetch_start(period.business_date))
     {
         "fetching".into()
     } else if crate::market::accepts(&period, now) {
