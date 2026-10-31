@@ -122,16 +122,34 @@ async fn mutate(
         return Err(conflict("金额纠正不能同时指定飞出受注方"));
     }
     let hash = digest(&json!({"bet":id,"fly":fly,"input":input}).to_string());
-    let period: String = sqlx::query_scalar("SELECT period_id FROM bets WHERE id=?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(missing)?;
+    let (period, slip_id): (String, Option<String>) =
+        sqlx::query_as("SELECT period_id,slip_id FROM bets WHERE id=?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(missing)?;
     let mut tx = state.pool.begin().await?;
-    let p: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
-        .bind(&period)
-        .fetch_one(&mut *tx)
-        .await?;
+    // Price edits share the full slip budget, so serialize both markets in the
+    // same period-id order as submission and whole-slip cancellation.
+    let ids: Vec<String> = if let Some(slip) = &slip_id {
+        sqlx::query_scalar("SELECT DISTINCT period_id FROM bets WHERE slip_id=? ORDER BY period_id")
+            .bind(slip)
+            .fetch_all(&mut *tx)
+            .await?
+    } else {
+        vec![period.clone()]
+    };
+    let mut selected = None;
+    for period_id in ids {
+        let locked: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR UPDATE")
+            .bind(&period_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if period_id == period {
+            selected = Some(locked);
+        }
+    }
+    let p = selected.ok_or_else(missing)?;
     if let Some(row) =
         sqlx::query("SELECT request_hash,response FROM bet_mutations WHERE request_id=?")
             .bind(&input.request_id)
@@ -146,7 +164,7 @@ async fn mutate(
     if fly {
         crate::features::require_layoffs(&mut tx).await?;
     }
-    if !accepts_entries(received, p.business_date) {
+    if !crate::market::accepts(&p, received) {
         return Err(conflict("本期已归档，不能修改金额或飞出"));
     }
     let bet: BetSummary = sqlx::query_as(&format!(
@@ -218,6 +236,11 @@ async fn mutate(
         plan.stake,
         plan.exposure,
     ])?;
+    if !fly && let Some(slip) = &slip_id {
+        let other: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(stake+exposure),0) AS SIGNED) FROM bets WHERE slip_id=? AND id<>? AND status<>'cancelled'")
+            .bind(slip).bind(&id).fetch_one(&mut *tx).await?;
+        checked_sum([other, plan.stake, plan.exposure])?;
+    }
     let response = if fly {
         let fly_id = uuid::Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO layoffs(id,bet_id,period_id,receiver,amount,unit_count,stake,rebate,exposure,atoms) VALUES(?,?,?,?,?,?,?,?,?,?)")
@@ -279,7 +302,7 @@ pub(crate) async fn cancel_layoff(
         return Ok(Json(json!({"ok":true})));
     }
     crate::features::require_layoffs(&mut tx).await?;
-    if !accepts_entries(received, p.business_date) {
+    if !crate::market::accepts(&p, received) {
         return Err(conflict("本期已归档，不能撤销飞出"));
     }
     sqlx::query("UPDATE layoffs SET status='cancelled',cancelled_at=UTC_TIMESTAMP(6) WHERE id=?")

@@ -9,6 +9,7 @@ export interface TextPreference {
   amount_mode: AmountMode;
 }
 export interface TextRow {
+  market?: import("./types").Market;
   summary?: boolean;
   key: string;
   source: string;

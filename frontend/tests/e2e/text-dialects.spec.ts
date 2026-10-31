@@ -294,3 +294,39 @@ test("confirmation traps keyboard focus and Escape restores the initiating contr
   );
   await expect(page.getByLabel("投注原文")).toHaveValue("三有龙蛇兔各35");
 });
+
+test("a mixed Macau and Hong Kong slip keeps market choices in the confirmed request", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  await page.getByLabel("投注原文").fill("香港特码12各100\n澳门特码13各200");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "确认投注单" });
+  await expect(dialog.getByLabel("第1项市场", { exact: true })).toHaveValue(
+    "hk",
+  );
+  await expect(dialog.getByLabel("第2项市场", { exact: true })).toHaveValue(
+    "macau",
+  );
+  await dialog.getByPlaceholder("填写投注人").fill("synthetic-mixed-market");
+  await dialog.getByLabel("第2项市场", { exact: true }).selectOption("hk");
+  await dialog.getByLabel("第2项市场", { exact: true }).selectOption("macau");
+  await dialog.getByRole("button", { name: "确认录入", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const items = (
+    writes[0] as {
+      items: { market?: string; amount: string; selections: number[] }[];
+    }
+  ).items;
+  expect(
+    items.map((i) => ({
+      market: i.market ?? "macau",
+      amount: i.amount,
+      selections: i.selections,
+    })),
+  ).toEqual([
+    { market: "hk", amount: "100", selections: [12] },
+    { market: "macau", amount: "200", selections: [13] },
+  ]);
+});

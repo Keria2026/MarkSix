@@ -78,7 +78,12 @@ export interface Totals {
   retained_net: number | null;
   net: number | null;
 }
+export type Market = "macau" | "hk";
+export const marketName = (market?: string) =>
+  market === "hk" ? "香港" : "新澳门";
 export interface Period {
+  market?: Market;
+  previous_expect?: string | null;
   id: string;
   business_date: string;
   close_time: string;
@@ -109,6 +114,7 @@ export interface ModuleFeatures {
   entry_mode: EntryMode;
 }
 export interface Bootstrap {
+  hk?: Period | null;
   features: ModuleFeatures;
   today: Period;
   plays: Play[];
@@ -120,6 +126,7 @@ export interface DragInput {
   zodiac: boolean;
 }
 export interface Bet {
+  market?: Market;
   slip_id: string | null;
   slip_position: number | null;
   bettor: string;
@@ -454,6 +461,7 @@ export function selectionBoundary(
 }
 
 export interface BetDraft {
+  market?: Market;
   drag: import("./drag").DragDraft | null;
   packageMode: boolean;
   playId: number;
@@ -486,6 +494,7 @@ export function entryCents(value: string): bigint | null {
 }
 
 export interface SlipLine {
+  market?: Market;
   play_id: number;
   play_version: number;
   selections: number[];
@@ -498,4 +507,14 @@ export interface SlipDraftLine extends SlipLine {
   key: string;
   rule: Rule;
   units: number;
+}
+
+export function periodLabel(period: Period): string {
+  if (period.market !== "hk") return `新澳门 ${period.id}`;
+  const previous = period.previous_expect;
+  const next =
+    previous && previous.slice(0, 4) === period.server_time.slice(0, 4)
+      ? String(Number(previous) + 1)
+      : "待确认期号";
+  return `香港 ${period.draw?.expect ?? next}`;
 }

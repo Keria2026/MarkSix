@@ -32,6 +32,7 @@ function canonical(item: SlipLine | OracleItem) {
       : item.play;
   return {
     play,
+    market: item.market ?? "macau",
     selections: item.selections,
     compound: item.compound,
     amount_cents: String(cents(item.amount)),
@@ -148,7 +149,7 @@ const report = {
   families,
   failures: failures.slice(0, 40),
   failure_count: failures.length,
-  note: "Exact comparisons include play, selections, compound/drag/package, per-unit amount, units and integer-cent stake. Synthetic held-out results do not establish real-world accuracy.",
+  note: "Exact comparisons include market, play, selections, compound/drag/package, per-unit amount, units and integer-cent stake. Synthetic held-out results do not establish real-world accuracy.",
 };
 if (process.argv[3])
   await Bun.write(process.argv[3], JSON.stringify(report, null, 2) + "\n");

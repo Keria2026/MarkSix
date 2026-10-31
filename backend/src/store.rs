@@ -42,6 +42,7 @@ pub struct AppState {
     pub clock: Arc<dyn Fn() -> NaiveDateTime + Send + Sync>,
     pub client: reqwest::Client,
     pub draw_url: String,
+    pub hk_draw_url: String,
     pub secure_cookie: bool,
     pub risk_gate: Arc<Semaphore>,
     pub auth_gate: Arc<Semaphore>,
@@ -49,6 +50,7 @@ pub struct AppState {
     pub login_attempts: Arc<Mutex<VecDeque<Instant>>>,
     pub(crate) hosted: Option<crate::hosted::Policy>,
     pub(crate) draw_cache: Option<DrawCache>,
+    pub(crate) hk_draw_cache: Option<DrawCache>,
 }
 impl AppState {
     pub fn new(pool: MySqlPool) -> anyhow::Result<Self> {
@@ -72,6 +74,7 @@ impl AppState {
             }),
             client,
             draw_url: "https://macaumarksix.com/api/macaujc2.com".into(),
+            hk_draw_url: "https://api3.marksix6.net/lottery_api.php?type=hk".into(),
             secure_cookie: false,
             risk_gate: Arc::new(Semaphore::new(1)),
             auth_gate: Arc::new(Semaphore::new(1)),
@@ -79,6 +82,7 @@ impl AppState {
             login_attempts: Arc::default(),
             hosted: None,
             draw_cache: None,
+            hk_draw_cache: None,
         }
     }
     pub fn now(&self) -> NaiveDateTime {
@@ -192,6 +196,8 @@ pub struct Play {
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Period {
     pub id: String,
+    pub market: String,
+    pub previous_expect: Option<String>,
     pub business_date: NaiveDate,
     pub close_time: String,
     pub open_time: String,
@@ -240,6 +246,7 @@ pub struct PeriodView {
 }
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct BetSummary {
+    pub market: String,
     pub slip_id: Option<String>,
     pub slip_position: Option<i32>,
     pub bettor: String,
@@ -266,7 +273,7 @@ pub struct BetSummary {
     pub cancelled_at: Option<NaiveDateTime>,
     pub natal: i8,
 }
-pub const BET_COLUMNS: &str = "slip_id,slip_position,bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,COALESCE(package_zodiacs,JSON_ARRAY()) AS package_zodiacs,drag,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
+pub const BET_COLUMNS: &str = "market,slip_id,slip_position,bettor,revision,void_stake,void_units,id,period_id,play_id,play_version,rule,selections,COALESCE(package_zodiacs,JSON_ARRAY()) AS package_zodiacs,drag,compound,amount,unit_count,stake,rebate,status,payout,winning_stake,created_at,cancelled_at,natal";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FutureMapping {
     pub effective_date: NaiveDate,
@@ -338,14 +345,16 @@ pub async fn view(state: &AppState, period: Period) -> anyhow::Result<PeriodView
     let now = state.now();
     let phase = if period.state != "pending" {
         period.state.clone()
-    } else if now >= period.business_date.and_hms_opt(21, 34, 0).unwrap() {
+    } else if (period.market == "hk" && period.last_fetch_at.is_some())
+        || (period.market == "macau" && now >= period.business_date.and_hms_opt(21, 34, 0).unwrap())
+    {
         "fetching".into()
-    } else if accepts_entries(now, period.business_date) {
+    } else if crate::market::accepts(&period, now) {
         "open".into()
     } else {
         "closed".into()
     };
-    let accepting_entries = accepts_entries(now, period.business_date);
+    let accepting_entries = crate::market::accepts(&period, now);
     let totals = totals(&mut tx, &period.id, period.state == "settled").await?;
     tx.commit().await?;
     Ok(PeriodView {

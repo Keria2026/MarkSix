@@ -106,7 +106,7 @@ pub(crate) async fn preview(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| conflict("期次不存在，请刷新后重新预览"))?;
-    if !accepts_entries(received, period.business_date) {
+    if !crate::market::accepts(&period, received) {
         return Err(conflict("期次已切换，请重新识别和预览"));
     }
     let mut plays = HashMap::new();
@@ -124,12 +124,24 @@ pub(crate) async fn preview(
         .await?;
         plays.insert(id, play);
     }
+    let hk: Option<Period> = sqlx::query_as(
+        "SELECT * FROM periods WHERE market='hk' ORDER BY business_date DESC LIMIT 1 FOR SHARE",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
     let mut results = Vec::new();
     let mut units = 0;
     let mut stake = 0_i64;
     let mut exposure = 0_i64;
     let mut valid = true;
     for line in &input.items {
+        let period = if line.market == crate::market::Market::Hk {
+            hk.as_ref()
+                .filter(|p| crate::market::accepts(p, received))
+                .unwrap_or(&period)
+        } else {
+            &period
+        };
         let result = match plays.get(&line.play_id).and_then(Option::as_ref) {
             Some(play) if play.enabled && play.version == line.play_version => plan(
                 &play.rule,

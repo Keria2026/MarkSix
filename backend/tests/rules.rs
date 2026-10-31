@@ -12,6 +12,7 @@ fn rule(name: &str) -> Rule {
 }
 fn input(selections: &[u8]) -> BetInput {
     BetInput {
+        market: Default::default(),
         period: "2040001".into(),
         play_id: 1,
         play_version: 1,
@@ -386,4 +387,37 @@ fn invalid_draw_fields_and_mapping_are_rejected_before_settlement() {
     assert_eq!(choose(2, 3), 0);
     assert!(combinations(&[1, 2], 0).is_empty());
     assert!(combinations(&[1, 2], 3).is_empty());
+}
+
+#[test]
+fn hk_source_issue_is_not_a_day_ordinal_and_year_reset_uses_source() {
+    use marksix::market::{Market, next_expect};
+    let raw = serde_json::json!({"expect":"2026115","openTime":"2026-10-27 21:32:32","openCode":"47,21,04,02,24,18,31","zodiac":"猴,狗,兔,蛇,羊,牛,鼠","wave":"blue,green,blue,red,red,red,blue","verify":false});
+    assert!(parse_draw(&raw).is_err());
+    let draw = parse_market_draw(&raw, Market::Hk).unwrap();
+    assert_eq!(draw.expect, "2026115");
+    assert_eq!(draw.numbers, [47, 21, 4, 2, 24, 18, 31]);
+    for (field, value) in [
+        ("type", serde_json::json!("1")),
+        (
+            "numbers",
+            serde_json::json!(["1", "2", "3", "4", "5", "6", "7"]),
+        ),
+    ] {
+        let mut invalid = raw.clone();
+        invalid[field] = value;
+        assert!(parse_market_draw(&invalid, Market::Hk).is_err());
+    }
+    let mut matching = raw.clone();
+    matching["type"] = serde_json::json!("9");
+    matching["numbers"] = serde_json::json!(["47", "21", "04", "02", "24", "18", "31"]);
+    assert!(parse_market_draw(&matching, Market::Hk).is_ok());
+
+    assert_eq!(next_expect("2026115", 2026), Some("2026116".into()));
+    assert_eq!(next_expect("2026115", 2027), None);
+    for expect in ["2026000", "2027115", "20261150", "bad"] {
+        let mut value = raw.clone();
+        value["expect"] = serde_json::json!(expect);
+        assert!(parse_market_draw(&value, Market::Hk).is_err());
+    }
 }

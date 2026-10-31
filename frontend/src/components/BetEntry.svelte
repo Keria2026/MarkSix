@@ -63,6 +63,21 @@
     () => {},
     (path, options) => accountApi(path, options),
   );
+  const entryPeriod = $derived(
+    draft.market === "hk"
+      ? boot.hk?.accepting_entries
+        ? boot.hk
+        : undefined
+      : today,
+  );
+  const entryUnits = $derived(entryPeriod?.totals.units ?? 0);
+  const entryMapping = $derived(
+    draft.market === "hk"
+      ? boot.hk?.accepting_entries
+        ? boot.hk.mapping
+        : today.mapping
+      : today.mapping,
+  );
   const api = requests.api;
   onDestroy(requests.dispose);
   let busy = $state(false),
@@ -72,7 +87,7 @@
   function boundary(values: number[]) {
     if (!currentPlay) return null;
     const selected = draft.packageMode
-      ? today.mapping.zodiac.flatMap((z, i) =>
+      ? entryMapping.zodiac.flatMap((z, i) =>
           values.includes(z) ? [i + 1] : [],
         )
       : values;
@@ -138,7 +153,7 @@
     currentPlay?.rule.kind === "number" && currentPlay.rule.quantity === 1,
   );
   const packageNumbers = $derived(
-    today.mapping.zodiac.flatMap((z, i) =>
+    entryMapping.zodiac.flatMap((z, i) =>
       draft.selections.includes(z) ? [i + 1] : [],
     ),
   );
@@ -162,7 +177,7 @@
   });
   const dragging = $derived(
     currentPlay && draft.drag
-      ? dragPreview(currentPlay.rule, draft.drag, today.mapping)
+      ? dragPreview(currentPlay.rule, draft.drag, entryMapping)
       : null,
   );
   const selectedCount = $derived(
@@ -192,6 +207,7 @@
     inputValid && today && currentPlay
       ? JSON.stringify({
           period: today.id,
+          ...(draft.market === "hk" ? { market: draft.market } : {}),
           play_id: currentPlay.id,
           play_version: currentPlay.version,
           ...(draft.packageMode
@@ -295,7 +311,7 @@
       draft.pendingSubmission = null;
       clearSelection();
       notify(
-        today.draw
+        entryPeriod?.draw
           ? "投注已记录并按本期开奖结果结算"
           : "投注已记录，正在更新本期风险",
       );
@@ -306,7 +322,7 @@
       busy = false;
     }
   }
-  const quoteDraw = $derived(JSON.stringify(today.draw));
+  const quoteDraw = $derived(JSON.stringify(entryPeriod?.draw));
   $effect(() => {
     const key = quoteKey;
     const isBetting = today.accepting_entries;
@@ -347,6 +363,20 @@
   });
   const validAmount = $derived(entryCents(draft.amount) !== null);
 </script>
+
+<label
+  >投注市场<select
+    aria-label="投注市场"
+    value={draft.market ?? "macau"}
+    disabled={busy}
+    onchange={(event) => {
+      draft.market = event.currentTarget.value as "macau" | "hk";
+      draft.pendingSubmission = null;
+    }}
+    ><option value="macau">新澳门</option><option value="hk">香港</option
+    ></select
+  ></label
+>
 
 <div class="bet-layout">
   <section class="bet-form glass">
@@ -452,7 +482,7 @@
 
       {#if draft.drag}<DragPicker
           rule={currentPlay.rule}
-          mapping={today.mapping}
+          mapping={entryMapping}
           bind:draft={draft.drag}
         />{:else}
         <div class="selection-description">
@@ -498,14 +528,14 @@
               class="option"
               class:selected={draft.selections.includes(value)}
               aria-pressed={draft.selections.includes(value)}
-              aria-label={`${label(selectionKind, value)}${selectionKind === "number" ? ` ${zodiacs[today.mapping.zodiac[value - 1]]}` : ""}`}
+              aria-label={`${label(selectionKind, value)}${selectionKind === "number" ? ` ${zodiacs[entryMapping.zodiac[value - 1]]}` : ""}`}
               onclick={() => toggleOption(value)}
               >{#if selectionKind === "number"}<span
                   class="number-option"
                   data-wave={wave(value)}>{label(selectionKind, value)}</span
-                ><small>{zodiacs[today.mapping.zodiac[value - 1]]}</small
+                ><small>{zodiacs[entryMapping.zodiac[value - 1]]}</small
                 >{:else}<span>{label(selectionKind, value)}</span
-                >{#if selectionKind === "zodiac" && value === today.mapping.natal}<small
+                >{#if selectionKind === "zodiac" && value === entryMapping.natal}<small
                     >本命</small
                   >{/if}{/if}{#if draft.selections.includes(value)}<span
                   class="selection-check"><Check size={10} /></span
@@ -672,6 +702,7 @@
         const added = onadd({
           key: crypto.randomUUID(),
           rule: structuredClone($state.snapshot(currentPlay.rule)),
+          ...(draft.market === "hk" ? { market: draft.market } : {}),
           play_id: currentPlay.id,
           play_version: currentPlay.version,
           selections:
@@ -692,9 +723,9 @@
     >
     <div class="quota">
       <span>本期容量</span><small
-        >{today.totals.units.toLocaleString()} / 10,000 基础注</small
+        >{entryUnits.toLocaleString()} / 10,000 基础注</small
       >
-      <div><i style={`width:${today.totals.units / 100}%`}></i></div>
+      <div><i style={`width:${entryUnits / 100}%`}></i></div>
     </div>
   </aside>
 </div>

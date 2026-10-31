@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { periodLabel } from "./lib/types";
   import { dragLabel } from "./lib/drag";
   import { entryModeFor } from "./lib/features";
   import type { ModuleFeatures, EntryMode } from "./lib/types";
@@ -302,7 +303,12 @@
   let currentTime = $state(Date.now());
   let serverOffset = 0;
   const today = $derived(boot?.today ?? null);
-  const active = $derived(selectedPeriod ?? today);
+  let viewMarket = $state<"macau" | "hk">("macau");
+  const editablePeriod = (id: string) =>
+    [boot?.today, boot?.hk].some((p) => p?.id === id && p.accepting_entries);
+  const active = $derived(
+    selectedPeriod ?? (viewMarket === "hk" ? (boot?.hk ?? today) : today),
+  );
   const nav = [
     {
       id: "overview" as Tab,
@@ -821,11 +827,12 @@
                       ? "location"
                       : undefined}
                     id={`history-period-${period.id}`}
-                    onclick={() => openPeriod(period)}>第 {period.id} 期</button
+                    onclick={() => openPeriod(period)}
+                    >第 {periodLabel(period)} 期</button
                   >
                   <button
                     class="history-tab-close"
-                    aria-label={`关闭第 ${period.id} 期标签`}
+                    aria-label={`关闭第 ${periodLabel(period)} 期标签`}
                     onclick={() => closeHistoryTab(period.id)}
                     ><X size={14} /></button
                   >
@@ -893,6 +900,20 @@
         <h2>正在加载工作台</h2>
       </div>
     {:else if (tab === "overview" || (tab === "history" && selectedPeriod)) && active}
+      <label
+        >统计市场<select
+          aria-label="统计市场"
+          bind:value={viewMarket}
+          onchange={() => {
+            selectedPeriod = null;
+            void refresh();
+          }}
+          ><option value="macau">新澳门</option><option
+            value="hk"
+            disabled={!boot?.hk}>香港{boot?.hk ? "" : "（尚无投注）"}</option
+          ></select
+        ></label
+      >
       <section class="page-heading">
         <div>
           {#if selectedPeriod}<button
@@ -901,12 +922,12 @@
               ><ArrowLeft size={14} /> 返回历史统计</button
             >{/if}
           <h1>
-            {selectedPeriod ? `历史统计 · 第 ${active.id} 期` : "本期概览"}
+            {selectedPeriod ? `历史统计 · ${periodLabel(active)}` : "本期概览"}
           </h1>
           <p>
             {active.business_date.replaceAll("-", " / ")}
             <span class="separator">·</span>
-            第 <strong>{active.id}</strong> 期
+            第 <strong>{periodLabel(active)}</strong> 期
             <span class="status-badge" data-phase={active.phase}
               ><i></i>{phases[active.phase] ?? active.phase}</span
             >
@@ -985,7 +1006,9 @@
             <span class="soft-chip"
               ><Clock3 size={13} />{active.draw
                 ? active.draw.open_time.slice(11, 16)
-                : "21:34 自动同步"}</span
+                : active.market === "hk"
+                  ? "有投注后每 60 秒同步"
+                  : "21:34 自动同步"}</span
             >
           </div>
           <Balls
@@ -1128,12 +1151,7 @@
       <section class="page-heading">
         <div>
           <h1>录入投注</h1>
-          <p>
-            第 <strong>{today.id}</strong> 期
-            <span class="status-badge" data-phase={today.phase}
-              ><i></i>{phases[today.phase]}</span
-            >
-          </p>
+          <p>新澳门 / 香港 · 按分项市场归属期次并结算</p>
         </div>
         <button class="button secondary" onclick={() => navigate("overview")}
           ><LayoutDashboard size={16} /> 本期概览</button
@@ -1268,11 +1286,25 @@
         </div>
       </section>
     {:else if tab === "statistics"}
+      <label
+        >统计市场<select
+          aria-label="统计市场"
+          bind:value={viewMarket}
+          onchange={() => {
+            selectedPeriod = null;
+            void refresh();
+          }}
+          ><option value="macau">新澳门</option><option
+            value="hk"
+            disabled={!boot?.hk}>香港{boot?.hk ? "" : "（尚无投注）"}</option
+          ></select
+        ></label
+      >
       <section class="page-heading">
         <div>
           <h1>本期统计</h1>
           <p>
-            第 <strong>{today.id}</strong> 期 · {statisticsCategory ===
+            第 <strong>{active ? periodLabel(active) : today.id}</strong> 期 · {statisticsCategory ===
             "receivers"
               ? "飞出受注统计"
               : statisticsCategory === "bettors"
@@ -1304,7 +1336,7 @@
           {canEnter}
           onbet={() => navigate("bet")}
         />
-      {:else if report && report.period === today.id}<StatisticsPanel
+      {:else if report && report.period === active?.id}<StatisticsPanel
           {layoffsEnabled}
           {report}
           {api}
@@ -1497,8 +1529,9 @@
   {#if slipDetail}<SlipDetail
       {layoffsEnabled}
       record={slipDetail}
-      canCancel={!!today?.accepting_entries &&
-        today?.id === slipDetail.period_id}
+      canCancel={slipDetail.items.every((item) =>
+        editablePeriod(item.period_id),
+      )}
       {api}
       onclose={() => (slipDetail = null)}
       onshow={showDetail}
@@ -1518,7 +1551,11 @@
       ><div class="detail-heading">
         <div>
           <span class="eyebrow"
-            >{detail.record.period_id} · {time(detail.record.created_at)}</span
+            >{detail.record.market === "hk"
+              ? "香港投注"
+              : `新澳门 ${detail.record.period_id} 期`} · {time(
+              detail.record.created_at,
+            )}</span
           >
           <h3>
             {detail.record.rule.name}<span class="soft-chip"
@@ -1653,7 +1690,7 @@
                           ? signed((row.payout ?? 0) + row.rebate - row.stake)
                           : "待开奖"}</td
                     ><td
-                      >{#if row.status !== "cancelled" && today?.accepting_entries && row.period_id === today.id}<button
+                      >{#if row.status !== "cancelled" && editablePeriod(row.period_id)}<button
                           class="text-button"
                           onclick={() => {
                             flyCancel = row;
@@ -1686,7 +1723,7 @@
                 )}{/if}
             </p>{/each}
         </details>{/if}
-      {#if detail.record.status !== "cancelled" && detail.record.period_id === today?.id && today.accepting_entries}<div
+      {#if detail.record.status !== "cancelled" && editablePeriod(detail.record.period_id)}<div
           class="modal-actions"
         >
           <button

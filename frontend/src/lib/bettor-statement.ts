@@ -134,10 +134,20 @@ function layout(
   const total = statementTotals(rows, data.settled);
   function continuation() {
     start();
-    text(`投注人：${name}  ｜  第 ${data.period} 期`, LEFT, 688, 11);
+    text(
+      `投注人：${name}  ｜  ${data.market === "hk" ? "香港" : "新澳门"} 第 ${data.draw?.expect ?? data.period} 期`,
+      LEFT,
+      688,
+      11,
+    );
     return 652;
   }
-  text(`投注人：${name}  ｜  第 ${data.period} 期`, LEFT, 688, 11);
+  text(
+    `投注人：${name}  ｜  ${data.market === "hk" ? "香港" : "新澳门"} 第 ${data.draw?.expect ?? data.period} 期`,
+    LEFT,
+    688,
+    11,
+  );
   let y = header(652);
   if (!rows.length) {
     text("暂无有效投注单", LEFT, y, 10, muted);
@@ -218,7 +228,13 @@ function layout(
   pages.forEach((page, i) => {
     ops = page;
     rule(57);
-    text(`第 ${data.period} 期`, LEFT, 37, 8, muted);
+    text(
+      `${data.market === "hk" ? "香港" : "新澳门"} 第 ${data.draw?.expect ?? data.period} 期`,
+      LEFT,
+      37,
+      8,
+      muted,
+    );
     end(`${i + 1} / ${pages.length}`, RIGHT, 37, 8, muted);
   });
   return pages;
@@ -349,7 +365,9 @@ export async function createBettorArchive(
       const pages = layout(data, bettor, rows, font);
       const name = statementFilename(bettor.name, used, format);
       if (format === "pdf") {
-        doc.setTitle(`第${data.period}期 · ${bettor.name} · 投注对账单`);
+        doc.setTitle(
+          `${data.market === "hk" ? "香港" : "新澳门"} 第${data.draw?.expect ?? data.period}期 · ${bettor.name} · 投注对账单`,
+        );
         doc.setProducer("MarkSix");
         await paintPdf(doc, font, pages, signal);
         add(name, await doc.save());

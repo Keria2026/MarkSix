@@ -31,10 +31,9 @@ export interface Token {
 }
 
 const operators: [string, TokenKind][] = [
-  ...["新澳门", "新澳", "澳门", "澳"].map((s): [string, TokenKind] => [
-    s,
-    "market",
-  ]),
+  ...["新澳门", "新澳", "澳门", "澳", "香港六合彩", "香港", "港", "香"].map(
+    (s): [string, TokenKind] => [s, "market"],
+  ),
   ...[
     "各号",
     "各个数",

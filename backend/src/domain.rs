@@ -414,6 +414,8 @@ impl DragInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BetInput {
+    #[serde(default, skip_serializing_if = "crate::market::Market::is_macau")]
+    pub market: crate::market::Market,
     pub period: String,
     pub play_id: i64,
     pub play_version: i64,
@@ -873,6 +875,12 @@ pub fn normalize_zodiac(s: &str) -> Option<u8> {
     ZODIACS.iter().position(|z| *z == s).map(|i| i as u8)
 }
 pub fn parse_draw(value: &serde_json::Value) -> RuleResult<Draw> {
+    parse_market_draw(value, crate::market::Market::Macau)
+}
+pub fn parse_market_draw(
+    value: &serde_json::Value,
+    market: crate::market::Market,
+) -> RuleResult<Draw> {
     let field = |name: &str| {
         value
             .get(name)
@@ -882,13 +890,36 @@ pub fn parse_draw(value: &serde_json::Value) -> RuleResult<Draw> {
     let expect = field("expect")?.to_string();
     let open_time = NaiveDateTime::parse_from_str(field("openTime")?, "%Y-%m-%d %H:%M:%S")
         .map_err(|_| "开奖时间格式不合法")?;
-    if expect != period_id(open_time.date()) {
+    if market.is_macau() && expect != period_id(open_time.date()) {
         return Err("接口期号与开奖业务日期不一致".into());
+    }
+    if expect.len() != 7
+        || !expect.bytes().all(|b| b.is_ascii_digit())
+        || expect[..4].parse::<i32>().ok() != Some(open_time.year())
+        || expect[4..].parse::<u16>().unwrap_or(0) == 0
+    {
+        return Err("接口期号格式或年份不合法".into());
     }
     let numbers: Vec<u8> = field("openCode")?
         .split(',')
         .map(|v| v.trim().parse::<u8>().map_err(|_| "开奖号码不合法"))
         .collect::<Result<_, _>>()?;
+    if market == crate::market::Market::Hk {
+        if value.get("type").is_some_and(|v| v.as_str() != Some("9")) {
+            return Err("香港开奖来源类型不匹配".into());
+        }
+        if let Some(raw) = value.get("numbers") {
+            let parsed: Option<Vec<u8>> = raw.as_array().and_then(|items| {
+                items
+                    .iter()
+                    .map(|v| v.as_str()?.trim().parse().ok())
+                    .collect()
+            });
+            if parsed.as_ref() != Some(&numbers) {
+                return Err("香港开奖号码字段不一致".into());
+            }
+        }
+    }
     let zodiac: Vec<u8> = field("zodiac")?
         .split(',')
         .map(|v| normalize_zodiac(v.trim()).ok_or("开奖生肖不合法"))
