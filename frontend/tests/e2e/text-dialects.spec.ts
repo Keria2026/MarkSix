@@ -233,6 +233,68 @@ test("pinyin and reordered fields submit their normalized selections", async ({
   ]);
 });
 
+test("each-number homophones and linked tails retain their meanings through confirmation", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  await page
+    .getByLabel("投注原文")
+    .fill("牛个数70 马牛个数90 羊兔马牛个数90\n268三连尾80 359三连尾60");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await modal.getByPlaceholder("填写投注人").fill("synthetic-tail-entry");
+  await expect(modal.locator(".text-entry-rows > li")).toHaveCount(5);
+  const special = String(plays.find((p) => p.rule.name === "特码")!.id);
+  const tail = String(plays.find((p) => p.rule.name === "三尾连")!.id);
+  for (const [index, id] of [special, special, special].entries()) {
+    await expect(
+      modal.getByLabel(`第${index + 1}项对应玩法`, { exact: true }),
+    ).toHaveValue(id);
+  }
+  await expect(
+    modal.getByRole("combobox", { name: "“三连尾”对应玩法", exact: true }),
+  ).toHaveValue(tail);
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const { items } = writes[0] as {
+    items: {
+      play_id: number;
+      selections: number[];
+      amount: string;
+      package_zodiacs?: number[];
+      compound: boolean;
+    }[];
+  };
+  expect(
+    items.map((i) => ({
+      play: plays.find((p) => p.id === i.play_id)!.rule.name,
+      selections: i.selections,
+      amount: i.amount,
+    })),
+  ).toEqual([
+    { play: "特码", selections: [6, 18, 30, 42], amount: "70" },
+    {
+      play: "特码",
+      selections: [1, 6, 13, 18, 25, 30, 37, 42, 49],
+      amount: "90",
+    },
+    {
+      play: "特码",
+      selections: [
+        1, 4, 6, 12, 13, 16, 18, 24, 25, 28, 30, 36, 37, 40, 42, 48, 49,
+      ],
+      amount: "90",
+    },
+    { play: "三尾连", selections: [2, 6, 8], amount: "80" },
+    { play: "三尾连", selections: [3, 5, 9], amount: "60" },
+  ]);
+  expect(items.every((i) => !i.compound && !i.package_zodiacs)).toBe(true);
+});
+
 test("leading totals validate future rows and track edits", async ({
   page,
 }) => {
