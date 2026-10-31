@@ -53,9 +53,45 @@ export function lockPage(dialog: HTMLDialogElement) {
     };
   }
   dialogs.push(dialog);
+  const keepFocus = (event: KeyboardEvent) => {
+    if (
+      event.key !== "Tab" ||
+      event.defaultPrevented ||
+      dialogs.at(-1) !== dialog
+    )
+      return;
+    const controls = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        "a[href], button, input, select, textarea, [tabindex], [contenteditable=true]",
+      ),
+    )
+      .filter(
+        (node) =>
+          node.tabIndex >= 0 &&
+          !node.matches(":disabled") &&
+          !node.closest("[inert]") &&
+          node.getClientRects().length > 0 &&
+          getComputedStyle(node).visibility !== "hidden",
+      )
+      .sort((a, b) => (a.tabIndex || Infinity) - (b.tabIndex || Infinity));
+    const first = controls[0],
+      last = controls.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      dialog.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  dialog.addEventListener("keydown", keepFocus);
   return () => {
     const index = dialogs.indexOf(dialog);
     if (index < 0) return;
+    dialog.removeEventListener("keydown", keepFocus);
     dialogs.splice(index, 1);
     if (!dialogs.length) {
       restore?.();

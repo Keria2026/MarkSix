@@ -57,7 +57,9 @@ def main():
     if archive.is_symlink() or archive.stat().st_size != args.archive_bytes:
         raise RuntimeError("Upload archive size mismatch")
     destination = root / args.sha
-    if destination.exists() or destination.is_symlink():
+    if destination.is_symlink():
+        raise RuntimeError("Release directory must not be a symlink")
+    if destination.exists():
         # Re-runs can reuse only byte-identical, already verified packages.
         old = json.loads((destination / "manifest.json").read_text())
     else:

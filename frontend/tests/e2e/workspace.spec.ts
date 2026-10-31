@@ -1,5 +1,11 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "./fixtures";
+import type { Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+declare global {
+  interface Window {
+    clip?: string;
+  }
+}
 async function signIn(page: Page) {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
@@ -208,7 +214,7 @@ test("returning to foreground offers related clipboard text but not the last rec
   page,
 }) => {
   await page.addInitScript(() => {
-    const state = window as Window & { clip: string };
+    const state = window;
     state.clip = "";
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -233,7 +239,7 @@ test("returning to foreground offers related clipboard text but not the last rec
   await expect(page.getByRole("navigation")).toBeVisible();
   const raw = "尾中8尾各125";
   await page.evaluate((raw) => {
-    (window as Window & { clip: string }).clip = raw;
+    window.clip = raw;
     window.dispatchEvent(new Event("focus"));
   }, raw);
   const modal = page.getByRole("dialog", { name: "确认投注单" });

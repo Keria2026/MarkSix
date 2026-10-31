@@ -127,6 +127,7 @@ pub(crate) async fn preview(
     let mut results = Vec::new();
     let mut units = 0;
     let mut stake = 0_i64;
+    let mut exposure = 0_i64;
     let mut valid = true;
     for line in &input.items {
         let result = match plays.get(&line.play_id).and_then(Option::as_ref) {
@@ -140,9 +141,9 @@ pub(crate) async fn preview(
         match result {
             Ok(plan) => {
                 units += plan.atoms.len();
-                stake = stake
-                    .checked_add(plan.stake)
-                    .ok_or_else(|| conflict("整单金额超出范围"))?;
+                stake = checked_sum([stake, plan.stake])?;
+                exposure = checked_sum([exposure, plan.exposure])?;
+                checked_sum([stake, exposure])?;
                 results.push(json!({"units":plan.atoms.len(),"stake":plan.stake,"error":null}));
             }
             Err(error) => {

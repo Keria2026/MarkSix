@@ -26,7 +26,9 @@ export function textSubmission(
       throw Error("待处理提交标识损坏，请先核对投注记录");
     }
     if (
-      !/^[a-f0-9-]{36}$/i.test(value.id) ||
+      value === null ||
+      typeof value !== "object" ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value.id) ||
       !/^[a-f0-9]{64}$/.test(value.fingerprint)
     )
       throw Error("待处理提交标识损坏，请先核对投注记录");

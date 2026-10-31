@@ -221,6 +221,7 @@ impl Rule {
 }
 
 pub fn scaled(input: &str, digits: u32) -> RuleResult<i64> {
+    let scale = 10_i64.checked_pow(digits).ok_or("数值过大")?;
     let (whole, fraction) = input.split_once('.').unwrap_or((input, ""));
     if whole.is_empty()
         || !whole.bytes().all(|b| b.is_ascii_digit())
@@ -230,6 +231,7 @@ pub fn scaled(input: &str, digits: u32) -> RuleResult<i64> {
     {
         return Err(format!("请输入非负十进制数，最多 {digits} 位小数"));
     }
+    let fraction_digits = fraction.len() as u32;
     let whole = whole.parse::<i64>().map_err(|_| "数值过大")?;
     let fraction = if fraction.is_empty() {
         0
@@ -237,19 +239,15 @@ pub fn scaled(input: &str, digits: u32) -> RuleResult<i64> {
         fraction.parse::<i64>().map_err(|_| "数值过大")?
     };
     whole
-        .checked_mul(10_i64.pow(digits))
-        .and_then(|w| {
-            w.checked_add(
-                fraction
-                    * 10_i64.pow(
-                        digits - (input.split_once('.').map(|(_, s)| s.len()).unwrap_or(0) as u32),
-                    ),
-            )
-        })
+        .checked_mul(scale)
+        .and_then(|w| w.checked_add(fraction * 10_i64.pow(digits - fraction_digits)))
         .filter(|n| *n <= MONEY_LIMIT)
         .ok_or("数值过大".into())
 }
 pub fn rounded_product(cents: i64, rate: i64) -> RuleResult<i64> {
+    if cents < 0 || rate < 0 {
+        return Err("金额与倍率不能为负数".into());
+    }
     let v = (i128::from(cents) * i128::from(rate) + 5_000) / 10_000;
     if !(0..=i128::from(MONEY_LIMIT)).contains(&v) {
         return Err("金额超出安全计算范围".into());

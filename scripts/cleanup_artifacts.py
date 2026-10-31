@@ -14,7 +14,7 @@ import urllib.request
 UTC = dt.timezone.utc
 PACKAGE = "MarkSix-Ubuntu-x64"
 ACCEPTANCE = {"runtime-acceptance", "hosted-acceptance"}
-REPORTS = ACCEPTANCE | {"browser-report"}
+REPORTS = ACCEPTANCE | {"browser-report", "coverage-report", "text-entry-corpus"}
 RETIRED = {"MarkSix-Windows-Native-x64", "marksix-images"}
 DEPLOY_STEP = "Transfer and deploy the tested artifact"
 
@@ -113,7 +113,8 @@ def plan_cleanup(artifacts, runs, jobs, repository_id, workflow_id, now):
 
 class GitHub:
     def __init__(self, repository, token=None):
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                or any(part in {".", ".."} for part in repository.split("/"))):
             raise ValueError("Invalid repository name")
         self.base = "https://api.github.com/repos/" + repository
         self.headers = {"Accept": "application/vnd.github+json",

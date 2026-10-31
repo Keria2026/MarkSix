@@ -298,3 +298,92 @@ fn every_default_settles_against_an_independent_predicate_oracle() {
         }
     }
 }
+
+#[test]
+fn fixed_precision_rejects_overflow_and_negative_rounding_inputs() {
+    for digits in [19, 20, 100, u32::MAX] {
+        assert!(scaled("1", digits).is_err());
+    }
+    assert_eq!(scaled("12", 0).unwrap(), 12);
+    assert_eq!(scaled("0.000000000000000001", 18).unwrap(), 1);
+    assert!(scaled("9223372036854775808", 0).is_err());
+    assert!(scaled("9223372036854775807", 1).is_err());
+    for (cents, rate) in [(-1, 1), (1, -1), (-1, -1), (i64::MIN, 0)] {
+        assert!(rounded_product(cents, rate).is_err());
+    }
+    assert_eq!(rounded_product(0, 10000).unwrap(), 0);
+    assert_eq!(rounded_product(1, 4999).unwrap(), 0);
+    assert_eq!(rounded_product(1, 5000).unwrap(), 1);
+}
+
+#[test]
+fn rule_validation_rejects_incoherent_combinations_and_financial_bounds() {
+    use serde_json::json;
+    for (name, patch, message) in [
+        ("特码", json!({"name":"\n"}), "名称"),
+        ("特码", json!({"name":"x".repeat(41)}), "名称"),
+        ("特码", json!({"zodiac_count":4}), "目标种数"),
+        ("特码", json!({"special_hit_odds":"1"}), "含特码赔率"),
+        ("特码", json!({"quantity":0}), "数量关系"),
+        ("特码", json!({"combination_size":0}), "拆分数量"),
+        ("特码", json!({"selection_limit":0}), "可选数量"),
+        ("特码", json!({"odds":"0"}), "赔率"),
+        ("特码", json!({"odds":"10000001"}), "赔率"),
+        ("特码", json!({"rebate_percent":"100.01"}), "反水"),
+        (
+            "特码",
+            json!({"special_rebate_percent":"100.01"}),
+            "特殊反水",
+        ),
+        ("特码", json!({"special_odds":"0"}), "特殊赔率"),
+        ("特码", json!({"zero_tail_odds":"2"}), "尾特殊赔率"),
+        ("波色", json!({"special_odds":"2"}), "本命肖"),
+        ("波色", json!({"special_rebate_percent":"1"}), "特殊反水"),
+        ("三中二", json!({"minimum_hits":0}), "最少命中数"),
+        ("特碰", json!({"compound_enabled":true}), "特碰"),
+        ("六肖量", json!({"zodiac_count":8}), "生肖种数"),
+    ] {
+        let mut value = serde_json::to_value(rule(name)).unwrap();
+        for (key, item) in patch.as_object().unwrap() {
+            value[key] = item.clone();
+        }
+        let invalid: Rule = serde_json::from_value(value).unwrap();
+        assert!(
+            invalid.validate().unwrap_err().contains(message),
+            "{name}: {message}"
+        );
+    }
+}
+
+#[test]
+fn invalid_draw_fields_and_mapping_are_rejected_before_settlement() {
+    use serde_json::json;
+    let raw = json!({"expect":"2040001","openTime":"2040-01-01 21:34:00","openCode":"1,2,3,4,5,6,7","zodiac":"鼠,牛,虎,兔,龍,蛇,馬","wave":"red,red,blue,blue,green,green,red"});
+    assert!(parse_draw(&raw).is_ok());
+    for (field, value) in [
+        ("expect", json!(2040001)),
+        ("openTime", json!("invalid")),
+        ("expect", json!("2039001")),
+        ("openCode", json!("bad,2,3,4,5,6,7")),
+        ("openCode", json!("0,2,3,4,5,6,7")),
+        ("openCode", json!("1,1,3,4,5,6,7")),
+        ("zodiac", json!("猫,牛,虎,兔,龙,蛇,马")),
+        ("wave", json!("pink,red,blue,blue,green,green,red")),
+        ("wave", json!("red")),
+    ] {
+        let mut invalid = raw.clone();
+        invalid[field] = value;
+        assert!(parse_draw(&invalid).is_err(), "{field}");
+    }
+    let mut mapping = Mapping {
+        natal: 12,
+        ..Default::default()
+    };
+    assert!(mapping.validate().is_err());
+    mapping.natal = 0;
+    mapping.zodiac[0] = 12;
+    assert!(mapping.validate().is_err());
+    assert_eq!(choose(2, 3), 0);
+    assert!(combinations(&[1, 2], 0).is_empty());
+    assert!(combinations(&[1, 2], 3).is_empty());
+}

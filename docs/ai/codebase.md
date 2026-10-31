@@ -45,7 +45,9 @@
 | `lib/requests.ts`                                                        | 账号范围请求取消和认证失效处理         |
 | `lib/features.ts`                                                        | 功能与录注方式派生                     |
 | `lib/drag.ts`、`selection.ts`                                            | 拖投注与选项预检                       |
-| `lib/bettor-statement.ts`                                                | 对账文档数据整理、PDF/PNG              |
+| `lib/statement.ts`                                                       | 对账单金额核对、分组和文件名纯逻辑     |
+| `lib/business-date.ts`                                                   | 与后端一致的北京时间 06:00 业务日期    |
+| `lib/bettor-statement.ts`                                                | PDF/PNG 排版与文档渲染                 |
 | `lib/text-entry/`                                                        | 领域解析、候选、编译、剪切板与回执恢复 |
 | `lib/generated/`                                                         | 离线训练生成的候选词典                 |
 

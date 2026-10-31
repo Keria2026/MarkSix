@@ -1,0 +1,2 @@
+# Branch measurement for Python 3.10+; isolated from production containers.
+coverage==7.10.7

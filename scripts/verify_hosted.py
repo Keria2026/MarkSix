@@ -28,6 +28,11 @@ def main():
         root = Path(folder)
         hosted = root / 'hosted'
         shutil.copytree(ROOT / 'deploy/vps', hosted)
+        # Match package_ubuntu's public runtime permissions. Some managed
+        # checkouts use 0600 files, which MySQL's unprivileged init cannot read.
+        # Private shared configuration and TLS keys are created separately below.
+        for path in [hosted, *hosted.rglob('*')]:
+            path.chmod(0o755 if path.is_dir() else 0o644)
         shared = root / 'shared'
         subprocess.run(['python3', str(hosted / 'configure.py'), '--shared', str(shared), '--domain', 'app.example.test', '--admin-domain', 'admin.example.test'], check=True, stdout=subprocess.DEVNULL)
         certificate = shared / 'letsencrypt/live/marksix'

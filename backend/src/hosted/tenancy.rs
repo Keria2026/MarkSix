@@ -239,3 +239,7 @@ impl Registry {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../test_support/tenancy.rs"]
+mod contract;

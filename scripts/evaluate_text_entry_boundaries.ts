@@ -44,11 +44,18 @@ function asOracle(items: SlipLine[]): OracleItem[] {
     const play = plays.find((p) => p.id === item.play_id)!;
     return {
       ...item,
+      drag: item.drag ?? undefined,
       play: play.rule.name,
       quantity: play.rule.combination_size,
     };
   });
 }
+type Outcome =
+  | "exact_accept"
+  | "expected_block"
+  | "unexpected_block"
+  | "semantic_mismatch"
+  | "unexpected_accept";
 const results = records.map((record) => {
   if (
     record.schema !== "text-entry-boundaries-v1" ||
@@ -75,7 +82,7 @@ const results = records.map((record) => {
       JSON.stringify(canonical(record.expected.items)) &&
     actual.units === record.expected.units &&
     actual.stake === record.expected.stake;
-  const outcome =
+  const outcome: Outcome =
     record.expected.status === "blocked"
       ? accepted
         ? "unexpected_accept"
@@ -131,16 +138,17 @@ const results = records.map((record) => {
     },
   };
 });
-const counts = (data: typeof results) =>
-  Object.fromEntries(
-    [
-      "exact_accept",
-      "expected_block",
-      "unexpected_block",
-      "semantic_mismatch",
-      "unexpected_accept",
-    ].map((name) => [name, data.filter((r) => r.outcome === name).length]),
-  );
+const counts = (data: typeof results) => {
+  const totals = {
+    exact_accept: 0,
+    expected_block: 0,
+    unexpected_block: 0,
+    semantic_mismatch: 0,
+    unexpected_accept: 0,
+  };
+  for (const result of data) totals[result.outcome]++;
+  return totals;
+};
 const failed = results.filter(
   (r) =>
     !["exact_accept", "expected_block"].includes(r.outcome) ||
@@ -242,3 +250,4 @@ console.log(
     2,
   ),
 );
+if (failed.length || !records.length) process.exitCode = 1;

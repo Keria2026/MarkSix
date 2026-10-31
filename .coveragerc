@@ -1,0 +1,11 @@
+[run]
+branch = True
+source = scripts, deploy/vps
+omit = scripts/tests/*
+data_file = test-results/coverage/.coverage
+
+[report]
+show_missing = True
+
+[json]
+output = test-results/coverage/python.json

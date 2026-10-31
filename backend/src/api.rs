@@ -165,18 +165,20 @@ async fn receive_time(State(state): State<AppState>, mut req: Request, next: Nex
     next.run(req).await
 }
 pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
-    if !matches!(
+    let mut response = if !matches!(
         *req.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    ) && req.headers().get("x-marksix").and_then(|v| v.to_str().ok()) != Some("1")
+    ) && req.headers().get("x-marksix").and_then(|v| v.to_str().ok())
+        != Some("1")
     {
-        return ApiError(
+        ApiError(
             StatusCode::FORBIDDEN,
             "请求校验失败，请从本系统页面操作".into(),
         )
-        .into_response();
-    }
-    let mut response = next.run(req).await;
+        .into_response()
+    } else {
+        next.run(req).await
+    };
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -630,3 +632,7 @@ async fn update_mapping(
     tx.commit().await?;
     Ok(Json(json!({"effective_date":input.effective_date})))
 }
+
+#[cfg(test)]
+#[path = "../test_support/api.rs"]
+mod security_tests;

@@ -208,14 +208,14 @@ export async function api<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (!headers.has("Content-Type"))
+    headers.set("Content-Type", "application/json");
+  if (!headers.has("X-Marksix")) headers.set("X-Marksix", "1");
   const response = await fetch(`/api${path}`, {
     ...options,
     credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Marksix": "1",
-      ...options.headers,
-    },
+    headers,
   });
   const text = await response.text();
   let data;
