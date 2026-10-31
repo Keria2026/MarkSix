@@ -142,7 +142,7 @@ test("multiple plays and summary can be edited before a single financial request
   const writes = await openText(page);
   await page
     .getByLabel("投注原文")
-    .fill("鼠牛虎兔龙复试345有每组40\n16组共640");
+    .fill("鼠牛虎兔龙复试345有每组40\n　十六组共640");
   await page.getByRole("button", { name: "校验", exact: true }).click();
   const modal = page.getByRole("dialog", { name: "确认投注单" });
   await modal.getByPlaceholder("填写投注人").fill("合成投注人");

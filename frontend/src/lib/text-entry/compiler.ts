@@ -1,3 +1,4 @@
+import { readSummary } from "./summary";
 import { basicCount, entryCents, zodiacs } from "../types";
 import type { Mapping, Play, Rule, SlipLine } from "../types";
 import { dragPreview } from "../drag";
@@ -19,6 +20,7 @@ function values(body: string, kind: Play["rule"]["kind"]): number[] {
       .filter(Boolean);
     const split = tokens.flatMap((token) => {
       if (!/^\d+$/u.test(token)) return [token];
+      if (kind === "tail" && token !== "10") return [...token];
       if (token.length > 2 && Number(token) >= 1 && Number(token) <= 49)
         return [String(Number(token))];
       if (token.length > 2 && token.length % 2 === 0)
@@ -158,7 +160,7 @@ export function compileRow(
         // Mixed number / zodiac / tail drag is normalized using this period's
         // mapping. The persisted request then contains explicit number pools.
         const expanded = part.replace(
-          /[鼠牛虎兔龙蛇马羊猴鸡狗猪]|(?<!\d)[0-9]尾/gu,
+          /[鼠牛虎兔龙蛇马羊猴鸡狗猪]|(?<!\d)[0-9]\s*尾/gu,
           (selection) => {
             const selected = selection.endsWith("尾")
               ? Array.from({ length: 49 }, (_, i) => i + 1).filter(
@@ -202,7 +204,9 @@ export function compileRow(
       if (mode === "package")
         throw new Error("包肖只适用于单号码玩法与生肖选项");
       // Comma-separated full zodiac sets are separate lines of the same slip.
-      const parts = body.split(/[,，;；]+/u).filter((s) => s.trim());
+      const parts = body
+        .split(rule.kind === "zodiac" ? /[,，;；、/]+/u : /[;；]+/u)
+        .filter((s) => s.trim());
       // Newlines can delimit complete groups even when the play and amount
       // follow the entire selection block. Never regroup an incomplete line.
       const lines = body.split(/\r?\n/u).filter((s) => s.trim());
@@ -226,11 +230,15 @@ export function compileRow(
         ? grouping.groups
         : completeLines
           ? lines
-          : rule.kind === "zodiac" &&
-              rule.quantity > 1 &&
+          : rule.quantity > 1 &&
               parts.length > 1 &&
               parts.every((s) => {
-                const n = s.replace(/\s/gu, "").length;
+                let n: number;
+                try {
+                  n = values(s, rule.kind).length;
+                } catch {
+                  return false;
+                }
                 return compound
                   ? n >= rule.combination_size
                   : n === rule.quantity;
@@ -294,17 +302,14 @@ export function compileText(
   return rows.map((row) => {
     if (row.excluded) return { items: [], error: "" };
     if (row.summary) {
-      const match =
-        /^(\d+)组\s*(?:共|合计)\s*(\d+(?:\.\d+)?)(?:元|米|块)?$/u.exec(
-          row.body.trim(),
-        );
-      const expected = match ? entryCents(match[2]) : null;
+      const match = readSummary(row.body);
+      const expected = match ? entryCents(match.amount) : null;
       const error =
         !match || expected === null
           ? "合计格式或金额精度不正确，请修改或移除此项"
           : !valid
             ? "请先处理前面投注项，再核对合计"
-            : BigInt(match[1]) !== BigInt(units) || expected !== stake
+            : BigInt(match!.count) !== BigInt(units) || expected !== stake
               ? `原文合计与投注不符：当前 ${units} 组，共 ${stake / 100n}.${String(stake % 100n).padStart(2, "0")} 元`
               : "";
       return { items: [], error };
