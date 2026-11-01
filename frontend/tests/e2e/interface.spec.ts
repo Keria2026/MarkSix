@@ -1,6 +1,9 @@
 import { test, expect } from "./fixtures";
 import AxeBuilder from "@axe-core/playwright";
-import type { Page } from "@playwright/test";
+import type { Download, Page } from "@playwright/test";
+import { PDFDocument } from "pdf-lib";
+import { unzipSync } from "fflate";
+import type { BettorStatement } from "../../src/lib/statement";
 import { plays } from "../unit/support";
 import { annualMapping, zodiacs } from "../../src/lib/types";
 import type {
@@ -8,10 +11,12 @@ import type {
   Period,
   Statistics,
   Totals,
+  Bet,
+  Atom,
 } from "../../src/lib/types";
 
 // Synthetic API responses exercise the UI independently of a live account/database.
-async function workspace(page: Page) {
+async function workspace(page: Page, statement?: BettorStatement) {
   const queries: Record<string, unknown>[] = [];
   const totals: Totals = {
     records: 0,
@@ -29,6 +34,10 @@ async function workspace(page: Page) {
     retained_net: null,
     net: null,
   };
+  for (const bettor of statement?.bettors ?? []) {
+    for (const key of ["records", "units", "stake", "rebate"] as const)
+      totals[key] += bettor.totals[key];
+  }
   const today: Period = {
     id: "sample-period",
     market: "macau",
@@ -74,7 +83,7 @@ async function workspace(page: Page) {
     incoming: totals,
     outgoing: totals,
     retained: totals,
-    bettors: [],
+    bettors: statement?.bettors ?? [],
     receivers: [],
     layoffs: [],
     layoffs_total: 0,
@@ -154,7 +163,7 @@ async function accessible(page: Page) {
     ),
   ).toBe(true);
 }
-for (const width of [320, 390, 768, 1440]) {
+for (const width of [320, 390, 768, 1440, 1920, 2560, 3440]) {
   test(`workspace controls and layouts remain accessible at ${width}px`, async ({
     page,
   }) => {
@@ -163,6 +172,14 @@ for (const width of [320, 390, 768, 1440]) {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await workspace(page);
+    if (width >= 1440) {
+      for (const selector of [".topbar", ".stats-grid", ".records-panel"]) {
+        const box = await page.locator(selector).first().boundingBox();
+        expect(box).not.toBeNull();
+        expect(width - box!.x - box!.width).toBeLessThanOrEqual(48);
+        expect(box!.x).toBe(264);
+      }
+    }
     await accessible(page);
     await records(page);
     await accessible(page);
@@ -210,6 +227,202 @@ for (const width of [320, 390, 768, 1440]) {
     expect(errors).toEqual([]);
   });
 }
+
+function exportSnapshot(): BettorStatement {
+  return {
+    period: "sample-period",
+    business_date: "2026-11-01",
+    combined: true,
+    settled: false,
+    draw: null,
+    bet_version: 1,
+    generated_at: "2026-11-01T15:18:00",
+    bettors: [
+      { name: "张三", amounts: [10000, 2500], rebates: [200, 50] },
+      { name: "张三丰", amounts: [98765], rebates: [1975] },
+    ].map(({ name, amounts, rebates }) => ({
+      name,
+      totals: {
+        records: amounts.length,
+        units: amounts.length,
+        stake: amounts.reduce((a, b) => a + b, 0),
+        rebate: rebates.reduce((a, b) => a + b, 0),
+        payout: 0,
+        refunded: 0,
+        net: null,
+      },
+      bets: amounts.map((stake, index) => ({
+        record: {
+          id: `${name}-${index}`,
+          slip_id: `${name}-mixed-market`,
+          market: index === 0 ? "macau" : "hk",
+          period_id: index === 0 ? "sample-period" : "sample-hk",
+          created_at: "2026-11-01T15:18:00",
+          status: "pending",
+          unit_count: 1,
+          stake,
+          rebate: rebates[index],
+          payout: null,
+          void_stake: 0,
+          rule: { rebate_percent: "2" },
+        } as Bet,
+        atoms: [{ stake, rebate: rebates[index], rebate_percent: "2" } as Atom],
+        results: null,
+      })),
+    })),
+  };
+}
+
+async function downloadBytes(file: Download) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of (await file.createReadStream())!)
+    chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+async function exportGeometry(page: Page) {
+  return page
+    .locator(".records-panel")
+    .first()
+    .evaluate((panel) =>
+      [".section-head", ".bettor-export", ".ledger-table", "tbody tr"].map(
+        (selector) => {
+          const { x, y, width, height } = panel
+            .querySelector(selector)!
+            .getBoundingClientRect();
+          return { x, y, width, height };
+        },
+      ),
+    );
+}
+
+for (const width of [390, 2560]) {
+  test(`exports keep geometry stable and single files contain only the chosen bettor at ${width}px`, async ({
+    page,
+  }) => {
+    const data = exportSnapshot();
+    await page.setViewportSize({ width, height: 1080 });
+    await workspace(page, data);
+    await navigate(page, "本期统计");
+    await navigate(page, "投注人分类统计");
+    await page.route("**/bettor-export?combined=true", (route) =>
+      route.fulfill({ json: data }),
+    );
+    const all = page.getByRole("button", { name: "导出账单（全部投注人）" });
+    const individual = page.getByRole("button", {
+      name: "导出账单（张三）",
+      exact: true,
+    });
+    // On mobile, scroll only the table to its operation column before measuring.
+    await individual.scrollIntoViewIfNeeded();
+    const before = await exportGeometry(page);
+    const pdfEvent = page.waitForEvent("download");
+    await individual.click();
+    const pdfFile = await pdfEvent;
+    expect(pdfFile.suggestedFilename()).toBe("张三.pdf");
+    const pdf = await PDFDocument.load(await downloadBytes(pdfFile));
+    expect(pdf.getTitle()).toBe("录入日期 2026-11-01 · 张三 · 投注对账单");
+    await expect(page.getByRole("status")).toContainText(
+      "已导出「张三」 PDF 账单",
+    );
+    expect(await exportGeometry(page)).toEqual(before);
+
+    await page.evaluate(() => {
+      const target = window as unknown as { statementPaint: string[] };
+      target.statementPaint = [];
+      const paint = CanvasRenderingContext2D.prototype.fillText;
+      CanvasRenderingContext2D.prototype.fillText = function (
+        text,
+        x,
+        y,
+        maxWidth,
+      ) {
+        target.statementPaint.push(text);
+        if (maxWidth === undefined) paint.call(this, text, x, y);
+        else paint.call(this, text, x, y, maxWidth);
+      };
+    });
+    await page.getByLabel("账单导出格式").selectOption("png");
+    const pngEvent = page.waitForEvent("download");
+    await individual.click();
+    const pngFile = await pngEvent;
+    expect(pngFile.suggestedFilename()).toBe("张三.png");
+    expect([...(await downloadBytes(pngFile)).subarray(0, 8)]).toEqual([
+      137, 80, 78, 71, 13, 10, 26, 10,
+    ]);
+    const painted = await page.evaluate(() =>
+      (window as unknown as { statementPaint: string[] }).statementPaint.join(
+        "\n",
+      ),
+    );
+    expect(painted).toContain("投注人：张三");
+    expect(painted).not.toContain("张三丰");
+    expect(painted).toContain("新澳门");
+    expect(painted).toContain("香港");
+    expect(painted).toContain("125.00");
+    expect(painted).not.toContain("987.65");
+    await expect(page.getByRole("status")).toContainText(
+      "已导出「张三」 PNG 账单",
+    );
+    expect(await exportGeometry(page)).toEqual(before);
+    await accessible(page);
+    await page.screenshot({
+      path: test.info().outputPath(`export-${width}.png`),
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "关闭导出提示" }).click();
+    await expect(page.locator(".export-notice")).toBeHidden();
+
+    const archiveEvent = page.waitForEvent("download");
+    await all.click();
+    const archive = await archiveEvent;
+    expect(archive.suggestedFilename()).toBe("2026-11-01-投注人对账单-png.zip");
+    expect(Object.keys(unzipSync(await downloadBytes(archive))).sort()).toEqual(
+      ["张三.png", "张三丰.png"],
+    );
+    expect(await exportGeometry(page)).toEqual(before);
+  });
+}
+
+test("export loading, cancellation and errors leave the table in place and allow retry", async ({
+  page,
+}) => {
+  await workspace(page, exportSnapshot());
+  await navigate(page, "本期统计");
+  await navigate(page, "投注人分类统计");
+  const before = await exportGeometry(page);
+  const individual = page.getByRole("button", {
+    name: "导出账单（张三）",
+    exact: true,
+  });
+  const all = page.getByRole("button", { name: "导出账单（全部投注人）" });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/bettor-export?combined=true", async (route) => {
+    await pending;
+    await route
+      .fulfill({ status: 503, json: { error: "导出暂不可用，请重试" } })
+      .catch(() => {});
+  });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  await individual.click();
+  await expect(page.getByRole("status")).toHaveText("正在读取账单…");
+  await expect(individual).toBeDisabled();
+  await expect(all).toBeDisabled();
+  expect(await exportGeometry(page)).toEqual(before);
+  await page.getByRole("button", { name: "取消导出" }).click();
+  release();
+  await expect(page.getByRole("status")).toHaveText("已取消导出");
+  await expect(individual).toBeEnabled();
+  expect(await exportGeometry(page)).toEqual(before);
+  await individual.click();
+  await expect(page.getByRole("alert")).toHaveText("导出暂不可用，请重试");
+  expect(await exportGeometry(page)).toEqual(before);
+  await expect(individual).toBeEnabled();
+  await accessible(page);
+  expect(downloads).toBe(0);
+});
 
 test("filters apply together, survive background refresh, validate ranges and reset", async ({
   page,

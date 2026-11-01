@@ -365,6 +365,41 @@ export async function createBettorArchive(
   progress: (done: number, total: number) => void,
   format: StatementFormat,
 ): Promise<Uint8Array> {
+  return zipSync(
+    await createBettorFiles(data, fontBytes, signal, progress, format),
+    { level: 0 },
+  );
+}
+
+export async function createBettorFile(
+  data: BettorStatement,
+  name: string,
+  fontBytes: Uint8Array,
+  signal: AbortSignal,
+  progress: (done: number, total: number) => void,
+  format: StatementFormat,
+): Promise<{ name: string; bytes: Uint8Array }> {
+  const bettors = data.bettors.filter((bettor) => bettor.name === name);
+  if (bettors.length !== 1)
+    throw new Error("未找到该投注人的完整账单，请刷新统计后重试");
+  const files = await createBettorFiles(
+    { ...data, bettors },
+    fontBytes,
+    signal,
+    progress,
+    format,
+  );
+  const [filename, bytes] = Object.entries(files)[0];
+  return { name: filename, bytes };
+}
+
+async function createBettorFiles(
+  data: BettorStatement,
+  fontBytes: Uint8Array,
+  signal: AbortSignal,
+  progress: (done: number, total: number) => void,
+  format: StatementFormat,
+): Promise<Record<string, Uint8Array>> {
   const files: Record<string, Uint8Array> = Object.create(null),
     used = new Set<string>();
   let face: FontFace | undefined,
@@ -414,7 +449,7 @@ export async function createBettorArchive(
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     signal.throwIfAborted();
-    return zipSync(files, { level: 0 });
+    return files;
   } finally {
     if (face) document.fonts.delete(face);
   }
