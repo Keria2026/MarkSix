@@ -142,3 +142,80 @@ test("standalone amount summaries use their prefix or the whole slip when leadin
     ]);
   }
 });
+
+for (const raw of [
+  "特2尾 8尾 共1400",
+  "特2尾\u00a08尾\u00a0共1400",
+  "特码２尾\u202f８尾\u202f共１４００",
+  "特二尾八尾共一千四百",
+  "澳特2尾，8尾，共1400",
+  "特码2尾\n8尾合计1400",
+  "2尾8尾特共1400",
+]) {
+  test(`special tails keep the number play and divide the total across all numbers: ${raw}`, () => {
+    const { rows, result } = compile(raw);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toBeUndefined();
+    expect(rows[0].marker).toMatch(/^(共|合计)$/u);
+    expect(result[0].error).toBe("");
+    expect(result[0].items).toHaveLength(1);
+    const [item] = result[0].items;
+    expect(item.play_id).toBe(plays.find((p) => p.rule.name === "特码")!.id);
+    expect(item.selections).toEqual([2, 12, 22, 32, 42, 8, 18, 28, 38, 48]);
+    expect(item.amount).toBe("140.0");
+    expect(
+      basicCount(
+        plays.find((p) => p.id === item.play_id)!.rule,
+        item.selections,
+        item.compound,
+      ),
+    ).toBe(10);
+    expect(item.package_zodiacs).toBeUndefined();
+  });
+}
+
+test("special-tail totals use the actual 01-49 pool and recompute after edits", () => {
+  const { rows } = compile("特码0尾 5尾共900");
+  let result = compileText(rows, plays, mapping);
+  expect(result[0].error).toBe("");
+  expect(result[0].items[0].selections).toEqual([
+    10, 20, 30, 40, 5, 15, 25, 35, 45,
+  ]);
+  expect(result[0].items[0].amount).toBe("100.0");
+  rows[0].amount = "990";
+  result = compileText(rows, plays, mapping);
+  expect(result[0].items[0].amount).toBe("110.0");
+  rows[0].amount = "1000";
+  expect(compileText(rows, plays, mapping)[0].error).toContain("均分");
+});
+
+test("special-tail prices distinguish per-number money, totals, and flat-tail plays", () => {
+  expect(valid("特码2尾8尾各70")[0].amount).toBe("70");
+  const [flat] = valid("尾中2尾8尾共1400");
+  expect(flat.play_id).toBe(plays.find((p) => p.rule.name === "尾中")!.id);
+  expect(flat.selections).toEqual([2, 8]);
+  expect(flat.amount).toBe("700.0");
+  for (const raw of [
+    "特2尾2尾共1400",
+    "特2尾12共1400",
+    "特10尾共1400",
+    "特2尾8尾共1400.05",
+    "特2尾8尾共1400未明要求",
+  ])
+    expect(compile(raw).result.some((r) => r.error)).toBe(true);
+  const disabled = plays.map((p) => ({
+    ...p,
+    enabled: p.rule.name !== "特码",
+  }));
+  expect(compile("特2尾8尾共1400", disabled).result.some((r) => r.error)).toBe(
+    true,
+  );
+});
+
+test("repeated numeric slashes remain ambiguous without complete amount boundaries", () => {
+  for (const raw of ["11/22/33各50", "12/24/36各80"])
+    expect(compile(raw).result.some((r) => r.error)).toBe(true);
+  const items = valid("特码11/50/特码22各60");
+  expect(items.map((item) => item.selections)).toEqual([[11], [22]]);
+  expect(items.map((item) => item.amount)).toEqual(["50", "60"]);
+});

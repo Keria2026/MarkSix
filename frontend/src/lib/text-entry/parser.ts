@@ -377,7 +377,11 @@ function parseNormalizedText(
       token.text === "/" &&
       !hasObjects() &&
       !segment.explicitPlay &&
-      rows.length
+      rows.length &&
+      // Repeated bare numeric slashes can also be a selection list. A prior
+      // slash amount alone does not establish a new financial clause.
+      (rows.at(-1)!.marker !== "/" ||
+        ["play", "plays"].includes(tokens[nextSignificant(i + 1)]?.kind))
     ) {
       continue;
     }
