@@ -336,7 +336,9 @@ test("mixed markets share daily overview, statistics and export with per-entry l
   expect(boot.day.totals.stake).toBe(
     boot.today.totals.stake + boot.hk.totals.stake,
   );
-  await page.getByRole("button", { name: "展开本期统计二级菜单" }).click();
+  await expect(
+    page.getByRole("button", { name: "本期统计", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
   await page
     .getByRole("button", { name: "投注人分类统计", exact: true })
     .click();

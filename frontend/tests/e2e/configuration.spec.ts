@@ -237,7 +237,9 @@ test("account statement exports a real PNG archive and supports cancelling an ou
     .getByRole("navigation")
     .getByRole("button", { name: "本期统计", exact: true })
     .click();
-  await page.getByRole("button", { name: "展开本期统计二级菜单" }).click();
+  await expect(
+    page.getByRole("button", { name: "本期统计", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
   await page
     .getByRole("button", { name: "投注人分类统计", exact: true })
     .click();

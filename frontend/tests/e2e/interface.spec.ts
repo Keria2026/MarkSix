@@ -406,3 +406,39 @@ test("populated records keep names and monetary columns readable", async ({
   await page.keyboard.press("End");
   await expect(table).toBeFocused();
 });
+
+for (const width of [390, 1440]) {
+  test(`statistics navigation reopens saved collapsed categories at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        `marksix:menus:${encodeURIComponent("演示账号")}`,
+        JSON.stringify({ statistics: false, history: false }),
+      );
+    });
+    await workspace(page);
+    const statistics = page
+      .getByRole("navigation", { name: "主要导航" })
+      .getByRole("button", { name: "本期统计", exact: true });
+    const category = page.getByRole("button", {
+      name: "投注人分类统计",
+      exact: true,
+    });
+    await expect(statistics).toHaveAttribute("aria-expanded", "false");
+    await statistics.click();
+    await expect(statistics).toHaveAttribute("aria-expanded", "true");
+    await expect(category).toBeVisible();
+    // The active destination remains keyboard-toggleable on desktop and mobile.
+    await statistics.focus();
+    await page.keyboard.press("Enter");
+    await expect(statistics).toHaveAttribute("aria-expanded", "false");
+    await expect(category).toBeHidden();
+    await navigate(page, "本期概览");
+    await statistics.click();
+    await expect(statistics).toHaveAttribute("aria-expanded", "true");
+    await category.click();
+    await expect(page.getByLabel("账单导出格式")).toBeVisible();
+  });
+}
