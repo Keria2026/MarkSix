@@ -1,5 +1,6 @@
 <script lang="ts">
   import BettorExport from "./BettorExport.svelte";
+  import { Download } from "lucide-svelte";
   import type { api as Api } from "../lib/types";
   import { money, signed, time } from "../lib/types";
   import type { Statistics as Report } from "../lib/types";
@@ -21,6 +22,9 @@
     onpage?: (page: number) => void;
   } = $props();
   let page = $state(1);
+  let exporter = $state<{ download: (bettor?: string) => Promise<void> }>();
+  let exporting = $state(false);
+  const canExport = $derived(category !== "receivers");
   const periodId = $derived(report.period);
   const bettorCount = $derived(
     report.bettors.filter((group) => group.totals.units > 0).length,
@@ -145,7 +149,9 @@
     <h2>{category === "receivers" ? "飞出受注方统计" : "投注人分类统计"}</h2>
     <div class="statistics-actions">
       <span class="soft-chip">{groups.length} 人</span>
-      {#if category === "bettors" && !compact}<BettorExport
+      {#if canExport}<BettorExport
+          bind:this={exporter}
+          bind:busy={exporting}
           period={report.period}
           {api}
         />{/if}
@@ -169,7 +175,7 @@
             >{category === "receivers" ? "本方飞出净盈亏" : "投注人净盈亏"}</th
           ><th
             >{category === "receivers" ? "受注方净盈亏" : "本方受注净盈亏"}</th
-          ></tr
+          >{#if canExport}<th class="ledger-export-cell">操作</th>{/if}</tr
         ></thead
       ><tbody>
         {#each visible as group}<tr
@@ -200,7 +206,15 @@
                     ? -group.totals.net
                     : group.totals.net,
               )}</td
-            ></tr
+            >{#if canExport}<td class="ledger-export-cell">
+                <button
+                  class="button secondary"
+                  aria-label={`导出账单（${group.name}）`}
+                  disabled={exporting}
+                  onclick={() => exporter?.download(group.name)}
+                  ><Download size={16} />导出</button
+                >
+              </td>{/if}</tr
           >{/each}
       </tbody>
     </table>

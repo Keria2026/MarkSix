@@ -4,6 +4,7 @@ import { unzipSync } from "fflate";
 import type { Bet, Atom } from "../../src/lib/types";
 import {
   createBettorArchive,
+  createBettorFile,
   type BettorStatement,
 } from "../../src/lib/bettor-statement";
 
@@ -116,6 +117,61 @@ test("cancelled exports never return a partial archive or report progress", asyn
     ),
   ).rejects.toThrow();
   expect(progress).toBe(0);
+});
+
+test("single-bettor PDF selects an exact name and never renders another bettor", async () => {
+  const data = emptyStatement();
+  data.bettors[0].name = "张三";
+  data.bettors[1].name = "张三丰";
+  // The unrelated snapshot is deliberately invalid: it must not be rendered.
+  data.bettors[1].totals.stake = 10000;
+  const font = new Uint8Array(
+    await Bun.file(
+      new URL("../../src/assets/NotoSansSC-Regular.ttf", import.meta.url),
+    ).arrayBuffer(),
+  );
+  const progress: [number, number][] = [];
+  const file = await createBettorFile(
+    data,
+    "张三",
+    font,
+    new AbortController().signal,
+    (done, total) => progress.push([done, total]),
+    "pdf",
+  );
+  expect(file.name).toBe("张三.pdf");
+  const pdf = await PDFDocument.load(file.bytes);
+  expect(pdf.getTitle()).toBe("新澳门 第2040001期 · 张三 · 投注对账单");
+  expect(pdf.getPageCount()).toBe(1);
+  expect(progress).toEqual([[1, 1]]);
+  expect(data.bettors).toHaveLength(2);
+});
+
+test("single-bettor export rejects missing or ambiguous names and cancellation", async () => {
+  for (const name of ["不存在", "样本"]) {
+    await expect(
+      createBettorFile(
+        emptyStatement(),
+        name,
+        new Uint8Array(),
+        new AbortController().signal,
+        () => {},
+        "pdf",
+      ),
+    ).rejects.toThrow("未找到该投注人的完整账单");
+  }
+  const data = emptyStatement();
+  data.bettors = [data.bettors[0]];
+  await expect(
+    createBettorFile(
+      data,
+      "样本",
+      new Uint8Array(),
+      AbortSignal.abort(),
+      () => {},
+      "png",
+    ),
+  ).rejects.toThrow();
 });
 
 test("Hong Kong statement uses the accepted source issue instead of its internal period id", async () => {
