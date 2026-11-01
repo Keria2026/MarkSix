@@ -2,7 +2,6 @@
   import { site } from "./lib/site";
   import { businessDate } from "./lib/business-date";
   import { onMount, onDestroy } from "svelte";
-  import { pageFade } from "./lib/navigation";
   import {
     Users,
     KeyRound,
@@ -395,7 +394,7 @@
         >
       </div>
     </aside>
-    <main class="owner-main" use:pageFade={tab}>
+    <main class="owner-main">
       <header>
         <div>
           <p class="eyebrow">AUTH · {site.version}</p>
@@ -712,14 +711,21 @@
     gap: 16px;
   }
   .owner-login section {
+    min-width: 0;
     padding: 36px;
     width: min(430px, calc(100vw - 40px));
-    border-radius: 28px;
+    border-radius: 12px;
   }
   .owner-login form,
   .owner-form {
     display: grid;
     gap: 18px;
+  }
+  .owner-login form,
+  .owner-login label,
+  .owner-login input {
+    min-width: 0;
+    width: 100%;
   }
   .owner-login h1 {
     font-size: 30px;

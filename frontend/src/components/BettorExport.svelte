@@ -87,18 +87,22 @@
   }
 </script>
 
-<div class="bettor-export">
+<div class="bettor-export" aria-busy={busy}>
   <label class="export-format"
-    >导出格式
+    ><span class="sr-only">导出格式</span>
     <select aria-label="账单导出格式" bind:value={format} disabled={busy}>
       <option value="pdf">PDF 文档</option>
       <option value="png">PNG 图片</option>
     </select>
   </label>
-  <button class="button secondary" disabled={busy} onclick={download}
+  <button
+    class="button secondary"
+    aria-label="导出账单（全部投注人）"
+    disabled={busy}
+    onclick={download}
     >{#if busy}<LoaderCircle size={16} class="spin" />{:else}<Download
         size={16}
-      />{/if}导出全部投注人账单</button
+      />{/if}导出账单</button
   >
   {#if busy}<button class="text-button" onclick={cancelExport}>取消导出</button
     >{/if}

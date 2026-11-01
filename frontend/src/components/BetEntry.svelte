@@ -318,19 +318,26 @@
   const validAmount = $derived(entryCents(draft.amount) !== null);
 </script>
 
-<label
-  >投注市场<select
-    aria-label="投注市场"
-    value={draft.market ?? "macau"}
-    disabled={busy}
-    onchange={(event) => {
-      draft.market = event.currentTarget.value as "macau" | "hk";
-      draft.pendingSubmission = null;
-    }}
-    ><option value="macau">新澳门</option><option value="hk">香港</option
-    ></select
-  ></label
->
+<fieldset class="market-switch" disabled={busy}>
+  <legend>投注市场</legend>
+  <div class="segmented">
+    {#each [{ value: "macau", name: "新澳门" }, { value: "hk", name: "香港" }] as market}
+      <label class:active={(draft.market ?? "macau") === market.value}>
+        <input
+          type="radio"
+          name="bet-market"
+          value={market.value}
+          checked={(draft.market ?? "macau") === market.value}
+          onchange={() => {
+            draft.market = market.value as "macau" | "hk";
+            draft.pendingSubmission = null;
+          }}
+        />
+        {market.name}
+      </label>
+    {/each}
+  </div>
+</fieldset>
 
 <div class="bet-layout">
   <section class="bet-form glass">
@@ -360,6 +367,7 @@
     <div class="play-picker">
       {#each draft.pickerExpanded || draft.playSearch.trim() ? matchingPlays : matchingPlays.slice(0, 6) as play}<button
           class:selected={currentPlay?.id === play.id}
+          aria-pressed={currentPlay?.id === play.id}
           onclick={() => selectPlay(play.id)}
           ><span>{play.rule.name}</span><small
             >{kinds[play.rule.kind]} · {play.rule.odds} 倍</small
@@ -522,44 +530,15 @@
             >{/if}
         </div>
       {/if}
-      <div class="section-head amount-heading">
-        <h2><span class="step">03</span> 填写金额</h2>
-        <span class="muted small"
-          >{draft.packageMode
-            ? "每肖总本金，逐号均分"
-            : "每条基础注的本金"}</span
-        >
-      </div>
-      <label class="bettor-input"
-        >投注人<input
-          bind:value={draft.bettor}
-          list="bettor-suggestions"
-          maxlength="80"
-          autocomplete="off"
-          placeholder="手工填写姓名或代号"
-          required
-        /></label
-      >
-      <label class="amount-input"
-        ><span>¥</span><input
-          aria-label={draft.packageMode ? "每肖金额" : "每注金额"}
-          inputmode="decimal"
-          pattern="[0-9]+([.][0-9])?"
-          bind:value={draft.amount}
-          maxlength="16"
-        /><small>{draft.packageMode ? "元 / 肖" : "元 / 注"}</small></label
-      >
-      <div class="quick-amounts">
-        {#each ["10", "50", "100", "500", "1000"] as value}<button
-            class:active={draft.amount === value}
-            onclick={() => (draft.amount = value)}>{value} 元</button
-          >{/each}
-      </div>{/if}
+    {/if}
   </section>
   <aside class="bet-summary glass">
     <div class="section-head">
       <div>
-        <h2>本次投注</h2>
+        <h2><span class="step">03</span> 本次投注</h2>
+        <p class="summary-market">
+          {draft.market === "hk" ? "香港" : "新澳门"}
+        </p>
       </div>
       <ReceiptText size={21} class="muted" />
     </div>
@@ -588,6 +567,36 @@
     {#if draft.packageMode}<p class="field-help">
         包号：{packageNumbers.map((n) => label("number", n)).join(" · ")}
       </p>{/if}
+    {#if currentPlay}
+      <label class="bettor-input"
+        >投注人<input
+          bind:value={draft.bettor}
+          list="bettor-suggestions"
+          maxlength="80"
+          autocomplete="off"
+          placeholder="手工填写姓名或代号"
+          required
+        /></label
+      >
+      <p class="filter-label">{draft.packageMode ? "每肖金额" : "每注金额"}</p>
+      {#if draft.packageMode}<p class="field-help">每肖总本金，逐号均分</p>{/if}
+      <label class="amount-input"
+        ><span>¥</span><input
+          aria-label={draft.packageMode ? "每肖金额" : "每注金额"}
+          inputmode="decimal"
+          pattern="[0-9]+([.][0-9])?"
+          bind:value={draft.amount}
+          maxlength="16"
+        /><small>{draft.packageMode ? "元 / 肖" : "元 / 注"}</small></label
+      >
+      <div class="quick-amounts">
+        {#each ["10", "50", "100", "500", "1000"] as value}<button
+            class:active={draft.amount === value}
+            aria-pressed={draft.amount === value}
+            onclick={() => (draft.amount = value)}>{value}</button
+          >{/each}
+      </div>
+    {/if}
     <div class="ledger-row">
       <span>基础注数量</span><strong>{selectedCount.toLocaleString()} 注</strong
       >
@@ -647,6 +656,18 @@
         }
       }}>加入组合单</button
     >
+    {#if !busy && today.accepting_entries && (!inputValid || !draft.bettor.trim())}<p
+        class="submit-guidance"
+        role="status"
+      >
+        {!selectedCount
+          ? "请先选择投注项"
+          : !validAmount
+            ? "请填写有效金额"
+            : !draft.bettor.trim()
+              ? "请填写投注人后确认录入"
+              : "请检查投注项与数量"}
+      </p>{/if}
     <div class="quota">
       <span>本期容量</span><small
         >{entryUnits.toLocaleString()} / 10,000 基础注</small

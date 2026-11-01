@@ -237,7 +237,9 @@ test("account statement exports a real PNG archive and supports cancelling an ou
     .getByRole("navigation")
     .getByRole("button", { name: "本期统计", exact: true })
     .click();
-  await page.getByRole("button", { name: "展开本期统计二级菜单" }).click();
+  await expect(
+    page.getByRole("button", { name: "本期统计", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
   await page
     .getByRole("button", { name: "投注人分类统计", exact: true })
     .click();
@@ -261,7 +263,7 @@ test("account statement exports a real PNG archive and supports cancelling an ou
   expect(response.ok()).toBe(true);
   await page.getByLabel("账单导出格式").selectOption("png");
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出全部投注人账单" }).click();
+  await page.getByRole("button", { name: "导出账单（全部投注人）" }).click();
   const file = await download;
   expect(file.suggestedFilename()).toContain("png.zip");
   const stream = await file.createReadStream();
@@ -285,10 +287,10 @@ test("account statement exports a real PNG archive and supports cancelling an ou
     await pending;
     await route.fulfill({ json: { bettors: [] } }).catch(() => {});
   });
-  await page.getByRole("button", { name: "导出全部投注人账单" }).click();
+  await page.getByRole("button", { name: "导出账单（全部投注人）" }).click();
   await page.getByRole("button", { name: "取消导出" }).click();
   release();
   await expect(page.getByText("已取消导出")).toBeVisible();
-  await page.getByRole("button", { name: "导出全部投注人账单" }).click();
+  await page.getByRole("button", { name: "导出账单（全部投注人）" }).click();
   await expect(page.getByRole("alert")).toContainText("本期暂无投注人记录");
 });

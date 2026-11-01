@@ -336,7 +336,9 @@ test("mixed markets share daily overview, statistics and export with per-entry l
   expect(boot.day.totals.stake).toBe(
     boot.today.totals.stake + boot.hk.totals.stake,
   );
-  await page.getByRole("button", { name: "展开本期统计二级菜单" }).click();
+  await expect(
+    page.getByRole("button", { name: "本期统计", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
   await page
     .getByRole("button", { name: "投注人分类统计", exact: true })
     .click();
@@ -349,7 +351,7 @@ test("mixed markets share daily overview, statistics and export with per-entry l
     await route.continue();
   });
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出全部投注人账单" }).click();
+  await page.getByRole("button", { name: "导出账单（全部投注人）" }).click();
   await expect(page.getByText("正在准备中文对账单…")).toBeVisible();
   const refreshed = page.waitForResponse((r) =>
     r.url().includes("/statistics?page="),
@@ -410,7 +412,7 @@ test("manual Hong Kong entry retains its market without requesting risk predicti
     .getByRole("navigation")
     .getByRole("button", { name: "录入投注", exact: true })
     .click();
-  await page.getByLabel("投注市场").selectOption("hk");
+  await page.getByRole("radio", { name: "香港", exact: true }).check();
   await page.getByLabel("搜索玩法名称").fill("特码");
   await page
     .locator(".play-picker button")

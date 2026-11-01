@@ -39,10 +39,6 @@
   });
 </script>
 
-{#if category === "bettors" && !compact}<BettorExport
-    period={report.period}
-    {api}
-  />{/if}
 {#if !compact}
   <div class="stats-grid ledger-stats" aria-label="分类统计摘要">
     {#if category === "receivers"}
@@ -147,7 +143,13 @@
 <section class="glass records-panel">
   <div class="section-head">
     <h2>{category === "receivers" ? "飞出受注方统计" : "投注人分类统计"}</h2>
-    <span class="soft-chip">{groups.length} 人</span>
+    <div class="statistics-actions">
+      <span class="soft-chip">{groups.length} 人</span>
+      {#if category === "bettors" && !compact}<BettorExport
+          period={report.period}
+          {api}
+        />{/if}
+    </div>
   </div>
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
   <div
@@ -158,7 +160,7 @@
       ? "飞出受注方统计，可横向滚动"
       : "投注人分类统计，可横向滚动"}
   >
-    <table>
+    <table class="ledger-table">
       <thead
         ><tr
           ><th>{category === "receivers" ? "受注方" : "投注人"}</th><th
@@ -233,7 +235,7 @@
       tabindex="0"
       aria-label="全部账目汇总，可横向滚动"
     >
-      <table>
+      <table class="ledger-table">
         <thead
           ><tr><th>账目</th><th>有效本金</th><th>反水</th><th>净盈亏</th></tr
           ></thead
@@ -258,7 +260,7 @@
       tabindex="0"
       aria-label="飞出记录，可横向滚动"
     >
-      <table>
+      <table class="ledger-table">
         <thead
           ><tr
             ><th>受注方 / 时间</th><th>每注飞出</th><th>总额</th><th>状态</th
