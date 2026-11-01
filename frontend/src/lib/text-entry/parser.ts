@@ -371,6 +371,54 @@ function parseNormalizedText(
   }
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    // Once a financial row is complete, slash starts its next clause. Before
+    // an amount it remains an operator, e.g. 三中三/5.
+    if (
+      token.text === "/" &&
+      !hasObjects() &&
+      !segment.explicitPlay &&
+      rows.length &&
+      // Repeated bare numeric slashes can also be a selection list. A prior
+      // slash amount alone does not establish a new financial clause.
+      (rows.at(-1)!.marker !== "/" ||
+        ["play", "plays"].includes(tokens[nextSignificant(i + 1)]?.kind))
+    ) {
+      continue;
+    }
+    if (
+      token.kind === "amount" &&
+      ["共", "合计"].includes(token.text) &&
+      !hasObjects() &&
+      !segment.explicitPlay &&
+      (rows.length || /^\s*$/u.test(raw.slice(0, token.start)))
+    ) {
+      const money = readAmount(i + 1);
+      if (money) {
+        const end = tokens[money.last].end;
+        const inline =
+          rows.length > 0 &&
+          !/[\r\n]/u.test(raw.slice(rows.at(-1)!.end, token.start));
+        rows.push({
+          key: `${start}:${end}:summary`,
+          source: raw.slice(start, end),
+          start,
+          end,
+          playLabel: "",
+          playId: 0,
+          body: token.text + money.amount,
+          amount: "",
+          marker: "",
+          mode: "auto",
+          customAlias: false,
+          summary: true,
+          summaryScope: inline ? "section" : undefined,
+        });
+        start = end;
+        segment = fresh();
+        i = money.last;
+        continue;
+      }
+    }
     if (token.kind === "summary") {
       if (segment.explicitPlay || hasObjects() || segment.amount)
         emit(token.start);
@@ -444,14 +492,14 @@ function parseNormalizedText(
       if (
         !segment.explicitPlay ||
         selected?.rule.kind === "tail" ||
-        (selected?.rule.kind === "number" &&
-          segment.content.some((t) => t.kind === "drag"))
+        selected?.rule.kind === "number"
       ) {
         if (
           !segment.explicitPlay &&
           !segment.content.some((t) => t.kind === "drag")
         )
           infer("tail");
+        if (segment.context.label === "平") segment.context = context("尾中");
         segment.content.push({ ...token, kind: "object", text: "尾" });
         continue;
       }
@@ -471,7 +519,7 @@ function parseNormalizedText(
       // A tail qualifier narrows generic 平特 to 尾中.
       if (
         ["尾", "尾中"].includes(token.text) &&
-        segment.context.label === "平特" &&
+        ["平特", "平"].includes(segment.context.label) &&
         hasObjects()
       ) {
         segment.context = context("尾中");

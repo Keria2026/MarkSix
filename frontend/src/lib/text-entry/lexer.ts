@@ -53,6 +53,8 @@ const amountAliases: Record<string, string> = {
   個肖: "各肖",
   个组: "各组",
   個組: "各组",
+  各打: "各",
+  各买: "各",
 };
 const operators: [string, TokenKind][] = [
   ...marketLabels.map((s): [string, TokenKind] => [s, "market"]),
@@ -209,7 +211,14 @@ export function tokenize(
   while (cursor < normalized.length) {
     const rest = normalized.slice(cursor);
     const summary = summaryPattern.exec(rest)?.[0];
-    if (summary) {
+    if (
+      summary &&
+      previousSignificant()?.kind !== "object" &&
+      !(
+        summary.startsWith("一组") &&
+        ["number", "money"].includes(previousSignificant()?.kind ?? "")
+      )
+    ) {
       tokens.push({
         kind: "summary",
         text: summary,
@@ -219,10 +228,31 @@ export function tokenize(
       cursor += summary.length;
       continue;
     }
+    // A named head pool followed by 不中 chooses the matching configured
+    // number-combination play; 0-head has nine legal numbers, other heads ten.
+    const head = /^([0-4零〇一二三四])\s*头不中/u.exec(rest);
+    if (head && !playNames.includes(head[0])) {
+      const n = Number(monetaryLiteral(head[1]));
+      const pool = Array.from({ length: 49 }, (_, i) => i + 1).filter(
+        (value) => Math.floor(value / 10) === n,
+      );
+      const span = {
+        start: offsets[cursor],
+        end: offsets[cursor + head[0].length],
+      };
+      tokens.push({
+        kind: "play",
+        text: pool.length === 9 ? "九不中" : "十不中",
+        ...span,
+      });
+      tokens.push({ kind: "number", text: pool.join(" "), ...span });
+      cursor += head[0].length;
+      continue;
+    }
     const combined =
       previousSignificant()?.kind === "amount" && /^\d/u.test(rest)
         ? undefined
-        : /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[./、]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
+        : /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*)+[二三四五2345](?=\s*[鼠牛虎兔龙蛇马羊猴鸡狗猪])|^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[./、]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
             rest,
           )?.[0];
     if (combined && !playNames.includes(combined)) {

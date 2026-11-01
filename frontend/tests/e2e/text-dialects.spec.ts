@@ -420,3 +420,85 @@ test("conflicting market markers require an explicit choice before submission", 
     "hk",
   );
 });
+
+test("special tail pools submit explicit numbers at the divided total price", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  const previewItems: unknown[] = [];
+  await page.route("**/api/slips/preview", async (route) => {
+    previewItems.push(route.request().postDataJSON().items);
+    await route.fulfill({
+      json: {
+        valid: true,
+        units: 10,
+        stake: 140000,
+        error: null,
+        items: [{ units: 10, stake: 140000, error: null }],
+      },
+    });
+  });
+  await page.getByLabel("投注原文").fill("特2尾\u00a08尾\u00a0共1400");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await expect(modal.locator(".text-entry-rows > li")).toHaveCount(1);
+  await modal.getByPlaceholder("填写投注人").fill("合成尾数投注人");
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const body = writes[0] as {
+    items: { play_id: number; selections: number[]; amount: string }[];
+  };
+  expect(body.items).toHaveLength(1);
+  expect(body.items[0]).toMatchObject({
+    play_id: plays.find((p) => p.rule.name === "特码")!.id,
+    selections: [2, 12, 22, 32, 42, 8, 18, 28, 38, 48],
+    amount: "140.0",
+  });
+  expect(previewItems.length).toBeGreaterThan(0);
+  expect(
+    previewItems.every(
+      (items) => JSON.stringify(items) === JSON.stringify(body.items),
+    ),
+  ).toBe(true);
+});
+
+test("tail-to-zodiac number drag survives preview and confirmation", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  await page.route("**/api/slips/preview", async (route) => {
+    await route.fulfill({
+      json: {
+        valid: true,
+        units: 20,
+        stake: 60000,
+        error: null,
+        items: [{ units: 20, stake: 60000, error: null }],
+      },
+    });
+  });
+  await page.getByLabel("投注原文").fill("澳二中二：8尾拖狗各组30");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await expect(modal.locator(".text-entry-rows > li")).toHaveCount(1);
+  await modal.getByPlaceholder("填写投注人").fill("合成拖投注人");
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const body = writes[0] as { items: unknown[] };
+  expect(body.items).toHaveLength(1);
+  expect(body.items[0]).toMatchObject({
+    play_id: plays.find((p) => p.rule.name === "二中二")!.id,
+    selections: [],
+    compound: true,
+    amount: "30",
+    drag: { left: [8, 18, 28, 38, 48], right: [9, 21, 33, 45], zodiac: false },
+  });
+});
