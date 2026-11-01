@@ -6,6 +6,20 @@ import { tokenize } from "./lexer";
 import type { TextRow } from "../text-entry";
 
 function values(body: string, kind: Play["rule"]["kind"]): number[] {
+  // Three or more explicitly enumerated numbers are a list, not a range.
+  // Two endpoints and signed numbers remain ambiguous and must be corrected.
+  if (/^\s*\d{1,2}(?:\s*-\s*\d{1,2}){2,}\s*$/u.test(body))
+    body = body.replace(/-/gu, " ");
+  if (kind === "number")
+    body = body.replace(
+      /(?<![\d.])([0-9])\s*尾/gu,
+      (_, tail: string) =>
+        " " +
+        Array.from({ length: 49 }, (_, i) => i + 1)
+          .filter((n) => n % 10 === Number(tail))
+          .join(" ") +
+        " ",
+    );
   if (body.includes("-"))
     throw new Error("横线可能表示范围或负数，请改为明确的选项列表");
   body = body.replace(/(?<=\d)号/gu, "");
@@ -337,13 +351,19 @@ export function compileText(
   const full = empty();
   compiled.forEach((result) => accumulate(full, result));
   const prefix = empty();
+  let section = empty();
   let precedingBets = 0;
   return rows.map((row, index) => {
     if (row.excluded) return compiled[index];
     if (row.summary) {
       // A leading summary checks the full slip; later summaries check its prefix.
-      const totals = precedingBets ? prefix : full;
       const match = readSummary(row.body);
+      const totals =
+        row.summaryScope === "section"
+          ? section
+          : precedingBets
+            ? prefix
+            : full;
       const expected = match ? entryCents(match.amount) : null;
       const detailMismatch =
         match?.plays.some(
@@ -351,21 +371,24 @@ export function compileText(
         ) ||
         (match?.plays.length &&
           match.plays.reduce((n, p) => n + BigInt(p.count), 0n) !==
-            BigInt(match.count));
+            BigInt(match.count ?? 0));
       const error =
         !match || expected === null
           ? "合计格式或金额精度不正确，请修改或移除此项"
           : !totals.valid
             ? "请先处理投注项，再核对合计"
-            : BigInt(match.count) !== BigInt(totals.units) ||
+            : (match.count !== null &&
+                  BigInt(match.count) !== BigInt(totals.units)) ||
                 expected !== totals.stake ||
                 detailMismatch
               ? `原文合计与投注不符：当前 ${totals.units} 组，共 ${totals.stake / 100n}.${String(totals.stake % 100n).padStart(2, "0")} 元`
               : "";
+      section = empty();
       return { items: [], error };
     }
     precedingBets++;
     accumulate(prefix, compiled[index]);
+    accumulate(section, compiled[index]);
     return compiled[index];
   });
 }

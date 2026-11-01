@@ -12,6 +12,7 @@ export interface TextRow {
   marketConflict?: boolean;
   market?: import("./types").Market;
   summary?: boolean;
+  summaryScope?: "section";
   key: string;
   source: string;
   start: number;
