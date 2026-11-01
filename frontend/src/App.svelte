@@ -132,9 +132,6 @@
 <svelte:head
   ><title>{loggedIn ? "MarkSix" : "登录 · MarkSix"}</title></svelte:head
 >
-<div class="ambient ambient-one"></div>
-<div class="ambient ambient-two"></div>
-<div class="ambient ambient-three"></div>
 {#if loading}
   <div class="initial-loading">
     <div class="brand-mark">M</div>

@@ -4,11 +4,7 @@
   import type { ModuleFeatures, EntryMode } from "./lib/types";
   import { site } from "./lib/site";
   import { onMount, onDestroy, tick } from "svelte";
-  import {
-    glassNavigation,
-    pageFade,
-    reserveNavigationSpace,
-  } from "./lib/navigation";
+  import { reserveNavigationSpace } from "./lib/navigation";
   import {
     LayoutDashboard,
     Plus,
@@ -469,6 +465,9 @@
     );
   }
   async function navigate(next: Tab) {
+    if (next === "statistics") submenuExpanded.statistics = true;
+    if (next === "history" && historyTabs.length)
+      submenuExpanded.history = true;
     tab = next;
     selectedDay = null;
     selectedBettors = [];
@@ -706,6 +705,7 @@
 <svelte:head
   ><title>{nav.find((n) => n.id === tab)?.label} · MarkSix</title></svelte:head
 >
+<a class="skip-link" href="#main">跳到主要内容</a>
 <div class="app-shell">
   <aside class="sidebar glass" use:reserveNavigationSpace>
     <a
@@ -718,8 +718,7 @@
       ><div class="brand-mark">M</div>
       <span>MarkSix<span class="brand-dot">.</span></span></a
     >
-    <nav aria-label="主要导航" use:glassNavigation={tab}>
-      <div class="nav-indicator" aria-hidden="true"></div>
+    <nav aria-label="主要导航">
       {#each nav.filter((item) => item.id !== "bet" || canEnter) as item (item.id)}<div
           class="nav-item"
           class:nav-group-start={item.id === "statistics" ||
@@ -833,11 +832,7 @@
       >
     </div>
   </aside>
-  <main
-    class="main-content"
-    id="main"
-    use:pageFade={`${tab}:${selectedDay?.id ?? ""}:${statisticsCategory}:${historyCategory}`}
-  >
+  <main id="main" class="main-content" tabindex="-1">
     <header class="topbar">
       <div class="breadcrumb">
         工作台 <ChevronRight size={13} /><span
@@ -1005,13 +1000,7 @@
         bind:minAmount
         bind:maxAmount
         bind:recordOrder
-        onload={async (page = 1) => {
-          try {
-            await loadRecords(page);
-          } catch (e) {
-            notify(fail(e));
-          }
-        }}
+        onload={loadRecords}
         showDetail={showRecord}
         {canEnter}
         onbet={() => navigate("bet")}
@@ -1022,24 +1011,26 @@
           <h1>录入投注</h1>
           <p>港澳投注统一录入</p>
         </div>
-        <button class="button secondary" onclick={() => navigate("overview")}
-          ><LayoutDashboard size={16} /> 本期概览</button
-        >
+        <div class="entry-heading-actions">
+          <div class="segmented entry-mode" aria-label="录注方式">
+            {#if features?.manual_entry}<button
+                class:active={entryMode === "manual"}
+                aria-pressed={entryMode === "manual"}
+                disabled={entryModeSaving}
+                onclick={() => selectEntryMode("manual")}>手工录注</button
+              >{/if}
+            {#if features?.text_entry}<button
+                class:active={entryMode === "text"}
+                aria-pressed={entryMode === "text"}
+                disabled={entryModeSaving}
+                onclick={() => selectEntryMode("text")}>文本录注</button
+              >{/if}
+          </div>
+          <button class="button secondary" onclick={() => navigate("overview")}
+            ><LayoutDashboard size={16} /> 本期概览</button
+          >
+        </div>
       </section>
-      <div class="segmented entry-mode" aria-label="录注方式">
-        {#if features?.manual_entry}<button
-            class:active={entryMode === "manual"}
-            aria-pressed={entryMode === "manual"}
-            disabled={entryModeSaving}
-            onclick={() => selectEntryMode("manual")}>手工录注</button
-          >{/if}
-        {#if features?.text_entry}<button
-            class:active={entryMode === "text"}
-            aria-pressed={entryMode === "text"}
-            disabled={entryModeSaving}
-            onclick={() => selectEntryMode("text")}>文本录注</button
-          >{/if}
-      </div>
       {#if entryMode !== "text"}
         <BetEntry
           boot={boot!}
@@ -1182,13 +1173,7 @@
           bind:minAmount
           bind:maxAmount
           bind:recordOrder
-          onload={async (page = 1) => {
-            try {
-              await loadRecords(page);
-            } catch (e) {
-              notify(fail(e));
-            }
-          }}
+          onload={loadRecords}
           showDetail={showRecord}
           {canEnter}
           onbet={() => navigate("bet")}

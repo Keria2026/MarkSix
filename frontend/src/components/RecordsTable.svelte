@@ -1,10 +1,14 @@
 <script lang="ts">
+  import FilterPicker from "./FilterPicker.svelte";
   import { dragLabel } from "../lib/drag";
   import {
     ArrowRight,
     ArrowUpRight,
     ChevronLeft,
     ChevronRight,
+    ListFilter,
+    SearchX,
+    ReceiptText,
   } from "lucide-svelte";
   import { money, signed, label } from "../lib/types";
   import type { Page, RecordGroup } from "../lib/types";
@@ -35,12 +39,91 @@
     showDetail: (bet: RecordGroup) => Promise<void>;
     onbet: () => Promise<void>;
   } = $props();
-  function loadRecords(page = 1) {
-    return onload(page);
+  let pendingBettors = $state<string[]>([]);
+  let pendingPlays = $state<number[]>([]);
+  let pendingMin = $state("");
+  let pendingMax = $state("");
+  let pendingOrder = $state("newest");
+  let busy = $state(false);
+  let error = $state("");
+  $effect(() => {
+    pendingBettors = [...selectedBettors];
+    pendingPlays = [...selectedPlays];
+    pendingMin = minAmount;
+    pendingMax = maxAmount;
+    pendingOrder = recordOrder;
+  });
+  const filtered = $derived(
+    !!(
+      selectedBettors.length ||
+      selectedPlays.length ||
+      minAmount ||
+      maxAmount
+    ),
+  );
+  const dirty = $derived(
+    JSON.stringify([
+      pendingBettors,
+      pendingPlays,
+      pendingMin,
+      pendingMax,
+      pendingOrder,
+    ]) !==
+      JSON.stringify([
+        selectedBettors,
+        selectedPlays,
+        minAmount,
+        maxAmount,
+        recordOrder,
+      ]),
+  );
+  async function loadRecords(page = 1) {
+    if (busy) return;
+    busy = true;
+    try {
+      error = "";
+      await onload(page);
+    } catch (cause) {
+      if (!(cause instanceof DOMException && cause.name === "AbortError"))
+        error =
+          cause instanceof Error ? cause.message : "记录加载失败，请重试。";
+    } finally {
+      busy = false;
+    }
+  }
+  async function applyFilters() {
+    error = "";
+    const amounts = [pendingMin.trim(), pendingMax.trim()];
+    if (amounts.some((value) => value && !/^\d+(?:\.\d{1,2})?$/.test(value))) {
+      error = "请输入非负金额，最多保留两位小数。";
+      return;
+    }
+    if (amounts.every(Boolean) && Number(amounts[0]) > Number(amounts[1])) {
+      error = "金额下限不能大于上限。";
+      return;
+    }
+    selectedBettors = [...pendingBettors];
+    selectedPlays = [...pendingPlays];
+    [minAmount, maxAmount] = amounts;
+    recordOrder = pendingOrder;
+    await loadRecords();
+  }
+  function resetFilters() {
+    selectedBettors = [];
+    selectedPlays = [];
+    minAmount = maxAmount = "";
+    recordOrder = "newest";
+    // Also clear unapplied edits when the applied filters were already empty.
+    pendingBettors = [];
+    pendingPlays = [];
+    pendingMin = pendingMax = "";
+    pendingOrder = "newest";
+    error = "";
+    void loadRecords();
   }
 </script>
 
-<section class="records-panel glass">
+<section class="records-panel glass" aria-busy={busy}>
   <div class="section-head">
     <div class="title-with-count">
       <h2>投注记录</h2>
@@ -49,89 +132,76 @@
   </div>
   <form
     class="record-filters"
-    onsubmit={(e) => {
-      e.preventDefault();
-      void loadRecords(1);
+    onsubmit={(event) => {
+      event.preventDefault();
+      void applyFilters();
     }}
+    aria-label="筛选投注记录"
   >
-    <label
-      >投注总额下限（元）<input
-        bind:value={minAmount}
-        inputmode="decimal"
-        placeholder="不限"
-      /></label
-    >
-    <label
-      >投注总额上限（元）<input
-        bind:value={maxAmount}
-        inputmode="decimal"
-        placeholder="不限"
-      /></label
-    >
-    <button class="button secondary" type="submit">筛选</button><button
-      class="text-button"
-      type="button"
-      onclick={() => {
-        selectedBettors = [];
-        selectedPlays = [];
-        recordOrder = "newest";
-        minAmount = "";
-        maxAmount = "";
-        void loadRecords(1);
-      }}>重置</button
-    >
+    <fieldset class="filter-fields" disabled={busy}>
+      <legend class="sr-only">筛选条件</legend>
+      <FilterPicker
+        label="投注人"
+        options={recordChoices.bettors.map((name) => ({
+          value: name,
+          label: name || "未登记",
+        }))}
+        bind:selected={pendingBettors}
+        disabled={busy}
+      />
+      <FilterPicker
+        label="玩法"
+        options={recordChoices.plays.map((play) => ({
+          value: play.id,
+          label: play.name,
+        }))}
+        bind:selected={pendingPlays}
+        disabled={busy}
+      />
+      <div class="amount-range">
+        <span class="filter-label" id="amount-range-label">投注总额（元）</span>
+        <div role="group" aria-labelledby="amount-range-label">
+          <input
+            aria-label="投注总额下限（元）"
+            bind:value={pendingMin}
+            inputmode="decimal"
+            placeholder="最低金额"
+          />
+          <span aria-hidden="true">—</span>
+          <input
+            aria-label="投注总额上限（元）"
+            bind:value={pendingMax}
+            inputmode="decimal"
+            placeholder="最高金额"
+          />
+        </div>
+      </div>
+      <label class="record-order"
+        >记录排序<select aria-label="记录排序" bind:value={pendingOrder}>
+          <option value="newest">最新录入优先</option>
+          <option value="amount_asc">投注总额从小到大</option>
+          <option value="amount_desc">投注总额从大到小</option>
+        </select></label
+      >
+      <div class="filter-actions">
+        <button class="button primary" type="submit"
+          ><ListFilter size={16} />{busy ? "筛选中…" : "筛选"}</button
+        >
+        <button
+          class="button secondary"
+          type="button"
+          disabled={!filtered && !dirty && recordOrder === "newest"}
+          onclick={resetFilters}>重置</button
+        >
+      </div>
+    </fieldset>
+    {#if error}<p class="form-error" role="alert">{error}</p>{/if}
+    {#if dirty}<p class="field-help filter-hint" role="status">
+        条件已修改，点击“筛选”应用。
+      </p>{:else if filtered}<p class="field-help filter-hint" role="status">
+        已应用筛选 · 找到 {records.total} 条记录
+      </p>{/if}
   </form>
-  <div class="record-multifilters">
-    <details class="record-picker">
-      <summary
-        >投注人多选{selectedBettors.length
-          ? ` · ${selectedBettors.length} 位`
-          : " · 全部"}</summary
-      >
-      <div class="record-picker-options">
-        {#each recordChoices.bettors as name (name)}<label
-            class="checkbox-label"
-            ><input
-              type="checkbox"
-              value={name}
-              bind:group={selectedBettors}
-              onchange={() => queueMicrotask(() => void loadRecords(1))}
-            />{name || "未登记"}</label
-          >{/each}{#if !recordChoices.bettors.length}<p class="field-help">
-            本期暂无投注人
-          </p>{/if}
-      </div>
-    </details>
-    <details class="record-picker">
-      <summary
-        >玩法多选{selectedPlays.length
-          ? ` · ${selectedPlays.length} 项`
-          : " · 全部"}</summary
-      >
-      <div class="record-picker-options">
-        {#each recordChoices.plays as play (play.id)}<label
-            class="checkbox-label"
-            ><input
-              type="checkbox"
-              value={play.id}
-              bind:group={selectedPlays}
-              onchange={() => queueMicrotask(() => void loadRecords(1))}
-            />{play.name}</label
-          >{/each}{#if !recordChoices.plays.length}<p class="field-help">
-            本期暂无投注玩法
-          </p>{/if}
-      </div>
-    </details>
-    <label
-      >记录排序<select
-        bind:value={recordOrder}
-        onchange={() => queueMicrotask(() => void loadRecords(1))}
-        ><option value="newest">最新录入优先</option><option value="amount_asc"
-          >投注总额从小到大</option
-        ><option value="amount_desc">投注总额从大到小</option></select
-      ></label
-    >
-  </div>
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->
   <div
     class="table-scroll"
@@ -139,7 +209,7 @@
     tabindex="0"
     aria-label="数据表格，可横向滚动"
   >
-    <table>
+    <table class="ledger-table">
       <thead
         ><tr
           ><th>玩法 / 投注人 / 投注项</th><th>基础注</th><th>投注本金</th><th
@@ -198,33 +268,41 @@
           >{/each}</tbody
       >
     </table>
-    {#if !records.items.length}<div class="empty-state record-empty">
-        <p>
-          {selectedBettors.length ||
-          selectedPlays.length ||
-          minAmount ||
-          maxAmount
-            ? "暂无符合筛选条件的记录，可调整条件或重置筛选。"
-            : "本期暂无投注记录"}
-        </p>
-        {#if !historical && canEnter}<button class="text-button" onclick={onbet}
-            >录入第一笔投注 <ArrowRight size={15} /></button
-          >{/if}
-      </div>{/if}
   </div>
+  {#if !records.items.length}<div class="empty-state record-empty">
+      <div class="empty-icon" aria-hidden="true">
+        {#if filtered}<SearchX size={24} />{:else}<ReceiptText size={24} />{/if}
+      </div>
+      <h3>{filtered ? "没有符合条件的记录" : "本期暂无投注记录"}</h3>
+      <p>
+        {filtered
+          ? "调整投注人、玩法或金额范围后再试。"
+          : "录入后，可在这里查看投注明细与结算状态。"}
+      </p>
+      {#if filtered}<button
+          class="button secondary"
+          disabled={busy}
+          onclick={resetFilters}>清除筛选</button
+        >
+      {:else if !historical && canEnter}<button
+          class="text-button"
+          onclick={onbet}>录入第一笔投注 <ArrowRight size={15} /></button
+        >{/if}
+    </div>{/if}
   <div class="table-footer">
     <span>共 {records.total} 条记录</span>
     <div class="pagination">
       <button
         class="icon-button"
         aria-label="上一页记录"
-        disabled={records.page === 1}
+        disabled={busy || records.page <= 1}
         onclick={() => loadRecords(records.page - 1)}
         ><ChevronLeft size={16} /></button
-      ><span>{records.page}</span><button
+      ><span>{records.page} / {Math.max(1, Math.ceil(records.total / 25))}</span
+      ><button
         class="icon-button"
         aria-label="下一页记录"
-        disabled={records.page * 25 >= records.total}
+        disabled={busy || records.page * 25 >= records.total}
         onclick={() => loadRecords(records.page + 1)}
         ><ChevronRight size={16} /></button
       >
