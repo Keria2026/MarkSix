@@ -336,7 +336,9 @@ function parseNormalizedText(
     }
     return ["play", "plays"].includes(tokens[i]?.kind);
   }
-  function readAmount(index: number): { amount: string; last: number } | null {
+  function readAmount(
+    index: number,
+  ): { amount: string; last: number; perGroup: boolean } | null {
     let i = index;
     while (
       tokens[i]?.kind === "separator" &&
@@ -358,16 +360,54 @@ function parseNormalizedText(
       i += 2;
     }
     const currency = nextSignificant(i + 1);
-    if (tokens[currency]?.kind === "currency") i = currency;
+    // 点/點 is an amount unit only in the confirmed “金额点一组” syntax.
+    // Decimal-point prose and unknown text remain visible for correction.
+    const groupPoint =
+      tokens[currency]?.kind === "unknown" &&
+      ["点", "點"].includes(tokens[currency].text) &&
+      tokens[nextSignificant(currency + 1)]?.text === "一组";
+    if (tokens[currency]?.kind === "currency" || groupPoint) i = currency;
     const suffix = nextSignificant(i + 1);
-    if (tokens[suffix]?.text === "一组") i = suffix;
+    const perGroup = tokens[suffix]?.text === "一组";
+    if (perGroup) i = suffix;
     return {
       amount: (monetaryLiteral(amount) ?? amount).replace(
         /(\.\d*?[1-9])0+$|\.0+$/u,
         "$1",
       ),
       last: i,
+      perGroup,
     };
+  }
+  function applyAmount(
+    money: { amount: string; perGroup: boolean },
+    marker = "",
+  ) {
+    segment.amount = money.amount;
+    const rule = active.find((play) => play.id === segment.context.id)?.rule;
+    const first = segment.content.findIndex((token) => token.kind === "number");
+    const list = segment.content.slice(first);
+    const numbers = list.filter((token) => token.kind !== "separator");
+    // A single flat number pool with an explicit per-group suffix denotes
+    // combinations. Brackets, multiple object lines and unknown words cannot
+    // silently become one pool; the compiler still validates values and counts.
+    if (
+      money.perGroup &&
+      !["共", "合计"].includes(marker) &&
+      first >= 0 &&
+      rule?.kind === "number" &&
+      rule.relation === "eq" &&
+      rule.quantity > 1 &&
+      rule.compound_enabled &&
+      numbers.length > rule.quantity &&
+      numbers.every(
+        (token) => token.kind === "number" && /^\d{1,2}$/u.test(token.text),
+      ) &&
+      list.every(
+        (token) => token.kind !== "separator" || !/[\r\n;；]/u.test(token.text),
+      )
+    )
+      segment.compound = true;
   }
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -604,7 +644,7 @@ function parseNormalizedText(
       }
       const money = readAmount(i + 1);
       if (money && !segment.amount) {
-        segment.amount = money.amount;
+        applyAmount(money, token.text);
         segment.marker = token.text;
         if (
           !(!segment.explicitPlay && postfixPlayAfter(money.last)) &&
@@ -679,7 +719,7 @@ function parseNormalizedText(
           (hasObjects() &&
             ["play", "connector"].includes(previousSignificant(i)?.kind ?? "")))
       ) {
-        segment.amount = money.amount;
+        applyAmount(money);
         if (
           !(!segment.explicitPlay && postfixPlayAfter(money.last)) &&
           (hasObjects() ||

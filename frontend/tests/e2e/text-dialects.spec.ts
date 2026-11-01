@@ -502,3 +502,65 @@ test("tail-to-zodiac number drag survives preview and confirmation", async ({
     drag: { left: [8, 18, 28, 38, 48], right: [9, 21, 33, 45], zodiac: false },
   });
 });
+
+test("per-group point prices inherit the number-play heading without merging pools", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  const previews: unknown[] = [];
+  await page.route("**/api/slips/preview", async (route) => {
+    previews.push(route.request().postDataJSON().items);
+    await route.fulfill({
+      json: {
+        valid: true,
+        units: 20,
+        stake: 20000,
+        error: null,
+        items: [
+          { units: 10, stake: 12000, error: null },
+          { units: 10, stake: 8000, error: null },
+        ],
+      },
+    });
+  });
+  await page
+    .getByLabel("投注原文")
+    .fill("二中二带特\n17.21.29.32.48/12点一组\n09.21.29.48.17/8点一组");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await expect(modal.locator(".text-entry-rows > li")).toHaveCount(2);
+  await expect(modal.getByLabel("第1项金额", { exact: true })).toHaveValue(
+    "12",
+  );
+  await expect(modal.getByLabel("第2项金额", { exact: true })).toHaveValue("8");
+  await modal.getByPlaceholder("填写投注人").fill("合成分组投注人");
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const body = writes[0] as { items: unknown[] };
+  expect(body.items).toEqual([
+    {
+      play_id: plays.find((p) => p.rule.name === "二中二含特")!.id,
+      play_version: 1,
+      selections: [17, 21, 29, 32, 48],
+      compound: true,
+      amount: "12",
+    },
+    {
+      play_id: plays.find((p) => p.rule.name === "二中二含特")!.id,
+      play_version: 1,
+      selections: [9, 21, 29, 48, 17],
+      compound: true,
+      amount: "8",
+    },
+  ]);
+  expect(previews.length).toBeGreaterThan(0);
+  expect(
+    previews.every(
+      (items) => JSON.stringify(items) === JSON.stringify(body.items),
+    ),
+  ).toBe(true);
+});
