@@ -5,6 +5,7 @@
   import { site } from "./lib/site";
   import { onMount, onDestroy, tick } from "svelte";
   import { reserveNavigationSpace } from "./lib/navigation";
+  import { liquidNavigation } from "./lib/liquid-navigation";
   import {
     LayoutDashboard,
     Plus,
@@ -323,6 +324,9 @@
       icon: Settings2,
     },
   ];
+  const visibleNav = $derived(
+    nav.filter((item) => item.id !== "bet" || canEnter),
+  );
   const serverClock = $derived(
     new Intl.DateTimeFormat("zh-CN", {
       timeZone: "Asia/Shanghai",
@@ -718,14 +722,77 @@
       ><div class="brand-mark">M</div>
       <span>MarkSix<span class="brand-dot">.</span></span></a
     >
-    <nav aria-label="主要导航">
-      {#each nav.filter((item) => item.id !== "bet" || canEnter) as item (item.id)}<div
+    <nav
+      aria-label="主要导航"
+      use:liquidNavigation={tab}
+      style:--navigation-count={visibleNav.length}
+    >
+      <svg
+        class="nav-glass-optics"
+        aria-hidden="true"
+        focusable="false"
+        width="0"
+        height="0"
+      >
+        <defs>
+          <filter
+            id="navigation-lens-refraction"
+            x="0"
+            y="0"
+            width="100%"
+            height="100%"
+            color-interpolation-filters="sRGB"
+          >
+            <feImage
+              data-glass-map="lens"
+              width="100%"
+              height="100%"
+              preserveAspectRatio="none"
+              result="lens-map"
+            />
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="lens-map"
+              scale="20"
+              xChannelSelector="R"
+              yChannelSelector="G"
+            />
+          </filter>
+          <filter
+            id="navigation-dock-refraction"
+            x="0"
+            y="0"
+            width="100%"
+            height="100%"
+            color-interpolation-filters="sRGB"
+          >
+            <feImage
+              data-glass-map="dock"
+              width="100%"
+              height="100%"
+              preserveAspectRatio="none"
+              result="dock-map"
+            />
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="dock-map"
+              scale="9"
+              xChannelSelector="R"
+              yChannelSelector="G"
+            />
+          </filter>
+        </defs>
+      </svg>
+      <span class="nav-glass-surface" aria-hidden="true"></span>
+      <span class="nav-glass-lens" aria-hidden="true"></span>
+      {#each visibleNav as item (item.id)}<div
           class="nav-item"
           class:nav-group-start={item.id === "statistics" ||
             item.id === "settings"}
         >
           <button
             class="nav-link"
+            data-nav-id={item.id}
             class:active={tab === item.id}
             aria-label={item.label}
             aria-current={tab === item.id ? "page" : undefined}
