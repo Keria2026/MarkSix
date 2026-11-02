@@ -92,6 +92,8 @@ const operators: [string, TokenKind][] = [
   ["包", "package"],
   ["拖", "drag"],
   ["波", "object"],
+  ["头", "object"],
+  ["頭", "object"],
   ["中", "single"],
   ...["元", "米", "斤", "块"].map((s): [string, TokenKind] => [s, "currency"]),
   ...[

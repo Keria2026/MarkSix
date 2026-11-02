@@ -655,3 +655,128 @@ for (const width of [390, 1440]) {
     await expect(page.getByLabel("账单导出格式")).toBeVisible();
   });
 }
+
+for (const width of [320, 390, 720]) {
+  test(`liquid glass dock tracks selection and preserves menus at ${width}px`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await workspace(page, exportSnapshot());
+    const nav = page.getByRole("navigation", { name: "主要导航" });
+    const lens = nav.locator(".nav-glass-lens");
+    await expect(nav).toHaveAttribute("data-glass-ready", "true");
+    const backdrop = await nav
+      .locator(".nav-glass-surface")
+      .evaluate((surface) => getComputedStyle(surface).backdropFilter);
+    expect(backdrop).toContain("blur(");
+    if (browserName === "webkit") expect(backdrop).not.toContain("url(");
+    const buttons = nav.locator(".nav-link");
+    await expect(buttons).toHaveCount(5);
+    for (const button of await buttons.all()) {
+      const box = (await button.boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+    const stats = nav.getByRole("button", { name: "本期统计", exact: true });
+    const centerError = async () => {
+      const a = (await lens.boundingBox())!,
+        b = (await stats.boundingBox())!;
+      return Math.abs(a.x + a.width / 2 - b.x - b.width / 2);
+    };
+    await stats.click();
+    await expect(stats).toHaveAttribute("aria-current", "page");
+    await expect(
+      page.getByRole("button", { name: "投注人分类统计", exact: true }),
+    ).toBeVisible();
+    await expect.poll(centerError).toBeLessThan(1.5);
+    const before = (await lens.boundingBox())!;
+    await stats.focus();
+    await page.keyboard.press("Enter");
+    await expect(stats).toHaveAttribute("aria-expanded", "false");
+    await expect.poll(centerError).toBeLessThan(1.5);
+    const after = (await lens.boundingBox())!;
+    expect(Math.abs(before.y - after.y)).toBeLessThan(1);
+    expect(
+      await nav.locator('[data-glass-map="lens"]').getAttribute("href"),
+    ).toMatch(/^data:image\/png/);
+    await accessible(page);
+    expect(errors).toEqual([]);
+    await stats.evaluate((button) => button.blur());
+    await page.screenshot({
+      path: test.info().outputPath(`liquid-glass-${width}.png`),
+    });
+  });
+}
+
+test("liquid glass drag commits one destination and cancellation keeps the active page", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await workspace(page);
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  const first = nav.getByRole("button", { name: "本期概览", exact: true });
+  const target = nav.getByRole("button", { name: "玩法与配置", exact: true });
+  const a = (await first.boundingBox())!,
+    b = (await target.boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 });
+  await expect(nav).toHaveAttribute("data-glass-drag", "true");
+  await expect(first).toHaveAttribute("aria-current", "page");
+  await page.mouse.up();
+  await expect(target).toHaveAttribute("aria-current", "page");
+  await expect(target).toBeFocused();
+  await expect(nav).not.toHaveAttribute("data-glass-press");
+  await target.dispatchEvent("pointerdown", {
+    pointerId: 9,
+    isPrimary: true,
+    button: 0,
+    clientX: b.x + b.width / 2,
+    clientY: b.y + b.height / 2,
+  });
+  await target.dispatchEvent("pointercancel", { pointerId: 9 });
+  await expect(nav).not.toHaveAttribute("data-glass-press");
+  await expect(target).toHaveAttribute("aria-current", "page");
+  await target.dispatchEvent("pointerdown", {
+    pointerId: 10,
+    isPrimary: true,
+    button: 0,
+    clientX: b.x + b.width / 2,
+    clientY: b.y + b.height / 2,
+  });
+  await target.dispatchEvent("pointermove", {
+    pointerId: 10,
+    clientX: b.x + b.width / 2,
+    clientY: b.y - 40,
+  });
+  await expect(nav).not.toHaveAttribute("data-glass-press");
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2, { steps: 8 });
+  await page.mouse.move(a.x + a.width / 2, 100, { steps: 4 });
+  await page.mouse.up();
+  await expect(target).toHaveAttribute("aria-current", "page");
+});
+
+test("liquid glass has static high-contrast fallback and stays off the desktop sidebar", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "reduce", forcedColors: "active" });
+  await workspace(page);
+  const lens = page.locator(".nav-glass-lens");
+  const transition = await lens.evaluate(
+    (element) => getComputedStyle(element).transitionDuration,
+  );
+  expect(parseFloat(transition)).toBeLessThan(0.01);
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await expect(lens).toBeHidden();
+  await expect(
+    page
+      .getByRole("navigation", { name: "主要导航" })
+      .getByRole("button", { name: "本期统计", exact: true }),
+  ).toBeVisible();
+});

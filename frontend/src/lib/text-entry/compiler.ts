@@ -5,20 +5,49 @@ import { dragPreview } from "../drag";
 import { tokenize } from "./lexer";
 import type { TextRow } from "../text-entry";
 
-function values(body: string, kind: Play["rule"]["kind"]): number[] {
+function zodiacNumbers(selected: number[], mapping: Mapping): number[] {
+  if (
+    mapping.zodiac.length !== 49 ||
+    mapping.zodiac.some((z) => !Number.isInteger(z) || z < 0 || z > 11)
+  )
+    throw new Error("当期生肖映射不完整，请刷新期次");
+  return mapping.zodiac.flatMap((z, i) =>
+    selected.includes(z) ? [i + 1] : [],
+  );
+}
+
+function values(
+  body: string,
+  kind: Play["rule"]["kind"],
+  mapping: Mapping,
+): number[] {
   // Three or more explicitly enumerated numbers are a list, not a range.
   // Two endpoints and signed numbers remain ambiguous and must be corrected.
   if (/^\s*\d{1,2}(?:\s*-\s*\d{1,2}){2,}\s*$/u.test(body))
     body = body.replace(/-/gu, " ");
   if (kind === "number")
     body = body.replace(
-      /(?<![\d.])([0-9])\s*尾/gu,
-      (_, tail: string) =>
-        " " +
-        Array.from({ length: 49 }, (_, i) => i + 1)
-          .filter((n) => n % 10 === Number(tail))
-          .join(" ") +
-        " ",
+      /[鼠牛虎兔龙蛇马羊猴鸡狗猪]|(?<![\d.])([0-9])\s*([尾头頭])/gu,
+      (
+        selection: string,
+        digit: string | undefined,
+        unit: string | undefined,
+      ) => {
+        let pool: number[];
+        if (digit === undefined) {
+          pool = zodiacNumbers([zodiacs.indexOf(selection)], mapping);
+          if (!pool.length)
+            throw new Error("当期生肖映射没有对应号码，请刷新期次");
+        } else {
+          const value = Number(digit);
+          if (unit !== "尾" && value > 4)
+            throw new Error("头数须为0—4，号码范围为01—49");
+          pool = Array.from({ length: 49 }, (_, i) => i + 1).filter(
+            (n) => (unit === "尾" ? n % 10 : Math.floor(n / 10)) === value,
+          );
+        }
+        return " " + pool.join(" ") + " ";
+      },
     );
   if (body.includes("-"))
     throw new Error("横线可能表示范围或负数，请改为明确的选项列表");
@@ -173,24 +202,9 @@ export function compileRow(
         /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s,，、;；:：.。/]+$/u.test(part);
       const zodiac = rule.kind === "number" && halves.every(zodiacOnly);
       function dragValues(part: string): number[] {
-        if (zodiac) return values(part, "zodiac");
-        if (rule.kind !== "number") return values(part, rule.kind);
-        // Mixed number / zodiac / tail drag is normalized using this period's
-        // mapping. The persisted request then contains explicit number pools.
-        const expanded = part.replace(
-          /[鼠牛虎兔龙蛇马羊猴鸡狗猪]|(?<!\d)[0-9]\s*尾/gu,
-          (selection) => {
-            const selected = selection.endsWith("尾")
-              ? Array.from({ length: 49 }, (_, i) => i + 1).filter(
-                  (n) => n % 10 === Number(selection[0]),
-                )
-              : mapping.zodiac.flatMap((z, i) =>
-                  z === zodiacs.indexOf(selection) ? [i + 1] : [],
-                );
-            return " " + selected.join(" ") + " ";
-          },
-        );
-        return values(expanded, "number");
+        // Number selectors share the same expansion in ordinary, compound and
+        // mixed drag pools; native zodiac/tail plays retain their own objects.
+        return values(part, zodiac ? "zodiac" : rule.kind, mapping);
       }
       const drag = {
         left: dragValues(halves[0]),
@@ -201,11 +215,14 @@ export function compileRow(
       items = [{ ...base, compound: true, drag }];
     } else if (
       rule.kind === "number" &&
-      /[鼠牛虎兔龙蛇马羊猴鸡狗猪]/u.test(body)
+      rule.quantity === 1 &&
+      /[鼠牛虎兔龙蛇马羊猴鸡狗猪]/u.test(body) &&
+      (packageIntent ||
+        /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s,，、;；:：.。/\[\]【】{}()（）]+$/u.test(
+          body,
+        ))
     ) {
-      if (rule.quantity !== 1)
-        throw new Error("号码组合中的生肖请明确写成拖投注或改为号码");
-      const zs = values(body, "zodiac");
+      const zs = values(body, "zodiac", mapping);
       if (mode === "auto")
         throw new Error("生肖金额有歧义：请选择每号金额或每肖包号金额");
       items = [
@@ -213,14 +230,19 @@ export function compileRow(
           ? { ...base, package_zodiacs: zs }
           : {
               ...base,
-              selections: mapping.zodiac.flatMap((z, i) =>
-                zs.includes(z) ? [i + 1] : [],
-              ),
+              selections: zodiacNumbers(zs, mapping),
             },
       ];
     } else {
       if (mode === "package")
         throw new Error("包肖只适用于单号码玩法与生肖选项");
+      if (
+        rule.kind === "number" &&
+        rule.quantity === 1 &&
+        /[鼠牛虎兔龙蛇马羊猴鸡狗猪]/u.test(body) &&
+        mode === "auto"
+      )
+        throw new Error("生肖金额有歧义：请选择每号金额或每肖包号金额");
       // Comma-separated full zodiac sets are separate lines of the same slip.
       const parts = body
         .split(rule.kind === "zodiac" ? /[,，;；、/\r\n]+/u : /[;；]+/u)
@@ -233,7 +255,7 @@ export function compileRow(
         lines.length > 1 &&
         lines.every((line) => {
           try {
-            const n = values(line, rule.kind).length;
+            const n = values(line, rule.kind, mapping).length;
             return compound ? n >= rule.combination_size : n === rule.quantity;
           } catch {
             return false;
@@ -253,7 +275,7 @@ export function compileRow(
               parts.every((s) => {
                 let n: number;
                 try {
-                  n = values(s, rule.kind).length;
+                  n = values(s, rule.kind, mapping).length;
                 } catch {
                   return false;
                 }
@@ -273,7 +295,7 @@ export function compileRow(
                   .match(new RegExp(`.{${rule.quantity}}`, "gu"))!
               : [body];
       items = groups.map((group) => {
-        const selections = values(group, rule.kind);
+        const selections = values(group, rule.kind, mapping);
         if (
           !compound &&
           rule.quantity > 1 &&

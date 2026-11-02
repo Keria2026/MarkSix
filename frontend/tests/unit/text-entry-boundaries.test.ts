@@ -105,14 +105,13 @@ for (const label of [
     ]);
   });
 }
-test("unspecified each-zodiac and each-number use special even after another play", () => {
+test("each-zodiac and each-number markers preserve an inherited play", () => {
   const items = compile("一肖中牛70元；鼠羊各肖90元；兔蛇各数40元");
   expect(
     items.map((i) => plays.find((p) => p.id === i.play_id)!.rule.name),
-  ).toEqual(["一肖中", "特码", "特码"]);
-  expect(items[1].package_zodiacs).toEqual([0, 7]);
-  expect(items[2].selections).toEqual(
-    mapping.zodiac.flatMap((z, i) => ([3, 5].includes(z) ? [i + 1] : [])),
-  );
+  ).toEqual(["一肖中", "一肖中", "一肖中"]);
+  expect(items[1].package_zodiacs).toBeUndefined();
+  expect(items[1].selections).toEqual([0, 7]);
+  expect(items[2].selections).toEqual([3, 5]);
   expect(compile("一肖中鼠羊各肖70")[0].selections).toEqual([0, 7]);
 });
