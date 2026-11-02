@@ -4330,6 +4330,21 @@ summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+@keyframes nav-content-rebound {
+  0%,
+  100% {
+    transform: none;
+  }
+  22% {
+    transform: translateY(-1px) scale(var(--nav-pop, 1.16));
+  }
+  68% {
+    transform: scale(0.98);
+  }
+  86% {
+    transform: scale(1.015);
+  }
+}
 /* Liquid glass is a mobile navigation material, not a page-wide surface. */
 .nav-glass-optics,
 .nav-glass-surface,
@@ -4368,23 +4383,33 @@ summary {
     z-index: 1;
     left: 0;
     top: auto;
-    bottom: -5px;
-    width: var(--lens-width, 88px);
-    height: var(--lens-height, 78px);
-    transform: translate3d(var(--lens-x, 0px), 0, 0);
-    border: 1px solid #fff;
-    background: #ffffffa6;
+    bottom: 6px;
+    width: var(--lens-width, 72px);
+    height: var(--lens-height, 56px);
+    translate: var(--lens-x, 0px) 0;
+    scale: 1;
+    border: 1px solid transparent;
+    background: #25314610;
     opacity: 0;
+    box-shadow: none;
+    transition:
+      translate 480ms cubic-bezier(0.2, 1.15, 0.35, 1),
+      scale 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      width 350ms ease,
+      background 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease,
+      opacity 180ms ease;
+  }
+  [data-glass-press] > .nav-glass-lens,
+  [data-glass-settling] > .nav-glass-lens {
+    border-color: #fff;
+    background: #ffffffa6;
     box-shadow:
       0 5px 14px #233b541c,
       0 1px 3px #172b4d10,
       inset 0 2px 3px #fff,
       inset 0 -2px 3px #75809a24;
-    transition:
-      transform 480ms cubic-bezier(0.2, 1.25, 0.35, 1),
-      width 350ms ease,
-      height 350ms ease,
-      opacity 180ms ease;
   }
   [data-glass-ready] > .nav-glass-lens {
     opacity: 1;
@@ -4396,6 +4421,8 @@ summary {
     inset: 0;
     border-radius: inherit;
     pointer-events: none;
+    opacity: 0;
+    transition: opacity 180ms ease;
   }
   .nav-glass-lens::before {
     background: linear-gradient(
@@ -4429,10 +4456,17 @@ summary {
       linear-gradient(#fff 0 0) content-box,
       linear-gradient(#fff 0 0);
     mask-composite: exclude;
+  }
+  [data-glass-press] > .nav-glass-lens::before,
+  [data-glass-settling] > .nav-glass-lens::before {
+    opacity: 1;
+  }
+  [data-glass-press] > .nav-glass-lens::after,
+  [data-glass-settling] > .nav-glass-lens::after {
     opacity: 0.7;
   }
   [data-glass-press] > .nav-glass-lens {
-    transform: translate3d(var(--lens-x, 0px), 0, 0) scale(1.055, 0.96);
+    scale: 1.2 1.4;
   }
   [data-glass-drag] > .nav-glass-lens {
     transition: none;
@@ -4447,6 +4481,11 @@ summary {
         saturate(150%);
     }
     .nav-glass-lens {
+      -webkit-backdrop-filter: blur(8px) saturate(120%);
+      backdrop-filter: blur(8px) saturate(120%);
+    }
+    [data-glass-press] > .nav-glass-lens,
+    [data-glass-settling] > .nav-glass-lens {
       background: #ffffff26;
       -webkit-backdrop-filter: blur(3px) saturate(160%);
       backdrop-filter: url(#navigation-lens-refraction) blur(0.4px)
@@ -4459,6 +4498,10 @@ summary {
       backdrop-filter: blur(16px) saturate(150%);
     }
     .nav-glass-lens {
+      backdrop-filter: blur(8px) saturate(120%);
+    }
+    [data-glass-press] > .nav-glass-lens,
+    [data-glass-settling] > .nav-glass-lens {
       backdrop-filter: blur(3px) saturate(160%);
     }
   }
@@ -4470,8 +4513,14 @@ summary {
   .nav-glass-lens {
     background: #eaf1ff;
   }
+  [data-glass-press] > .nav-glass-lens,
+  [data-glass-settling] > .nav-glass-lens {
+    background: #eaf1ff;
+  }
   .nav-glass-surface,
-  .nav-glass-lens {
+  .nav-glass-lens,
+  [data-glass-press] > .nav-glass-lens,
+  [data-glass-settling] > .nav-glass-lens {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -4479,9 +4528,22 @@ summary {
     display: none;
   }
 }
+@media (max-width: 720px) and (prefers-reduced-motion: reduce) {
+  [data-glass-press] > .nav-glass-lens,
+  [data-glass-settling] > .nav-glass-lens {
+    scale: 1;
+  }
+  .sidebar nav .nav-link > svg:first-child,
+  .sidebar nav .nav-link .nav-label-short {
+    animation: none !important;
+    transform: none !important;
+  }
+}
 @media (max-width: 720px) and (forced-colors: active) {
   .nav-glass-surface,
-  .nav-glass-lens {
+  .nav-glass-lens,
+  [data-glass-press] > .nav-glass-lens,
+  [data-glass-settling] > .nav-glass-lens {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -4490,6 +4552,12 @@ summary {
     border: 1px solid CanvasText;
   }
   .nav-glass-lens {
+    background: Canvas;
+    border: 2px solid Highlight;
+    box-shadow: none;
+  }
+  [data-glass-press] > .nav-glass-lens,
+  [data-glass-settling] > .nav-glass-lens {
     background: Canvas;
     border: 2px solid Highlight;
     box-shadow: none;
@@ -4554,7 +4622,7 @@ summary {
   }
   .sidebar .nav-link.active,
   .sidebar .nav-link[data-glass-preview="true"] {
-    color: #0969d7;
+    color: #0961c9;
     font-weight: 650;
   }
   .sidebar
@@ -4567,10 +4635,22 @@ summary {
     width: 25px;
     height: 25px;
     flex: 0 0 25px;
-    transition: transform 450ms cubic-bezier(0.2, 1.35, 0.35, 1);
+    transform: none;
+    transition: transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
-  .sidebar .nav-link.active > svg:first-child {
-    transform: translateY(-1px) scale(1.08);
+  .sidebar .nav-label-short {
+    --nav-pop: 1.05;
+    transition: transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .sidebar .nav-link[data-glass-preview="true"] > svg:first-child {
+    transform: translateY(-1px) scale(1.16);
+  }
+  .sidebar .nav-link[data-glass-preview="true"] .nav-label-short {
+    transform: scale(1.05);
+  }
+  .sidebar nav[data-glass-settling] .nav-link.active > svg:first-child,
+  .sidebar nav[data-glass-settling] .nav-link.active .nav-label-short {
+    animation: nav-content-rebound 560ms both;
   }
   .sidebar .nav-link:focus-visible {
     outline: 2px solid var(--primary);

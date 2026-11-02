@@ -692,6 +692,7 @@ for (const width of [320, 390, 720]) {
       page.getByRole("button", { name: "投注人分类统计", exact: true }),
     ).toBeVisible();
     await expect.poll(centerError).toBeLessThan(1.5);
+    await expect(nav).not.toHaveAttribute("data-glass-settling");
     const before = (await lens.boundingBox())!;
     await stats.focus();
     await page.keyboard.press("Enter");
@@ -772,6 +773,12 @@ test("liquid glass has static high-contrast fallback and stays off the desktop s
     (element) => getComputedStyle(element).transitionDuration,
   );
   expect(parseFloat(transition)).toBeLessThan(0.01);
+  const nav = page.getByRole("navigation", { name: "主要导航" });
+  await nav.getByRole("button", { name: "本期统计", exact: true }).click();
+  await expect(nav).not.toHaveAttribute("data-glass-settling");
+  expect(
+    await lens.evaluate((element) => getComputedStyle(element).scale),
+  ).toBe("1");
   await page.setViewportSize({ width: 1024, height: 844 });
   await expect(lens).toBeHidden();
   await expect(
@@ -779,4 +786,142 @@ test("liquid glass has static high-contrast fallback and stays off the desktop s
       .getByRole("navigation", { name: "主要导航" })
       .getByRole("button", { name: "本期统计", exact: true }),
   ).toBeVisible();
+});
+
+type NavigationFrame = {
+  time: number;
+  x: number;
+  height: number;
+  icon: number;
+};
+type RecordedNavigation = HTMLElement & {
+  motionFrames?: Promise<NavigationFrame[]>;
+};
+
+test.describe("liquid glass touch motion", () => {
+  test.use({ hasTouch: true });
+
+  test("a quick tap visibly slides and enlarges the lens, then restores its compact size", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await workspace(page);
+    const nav = page.getByRole("navigation", { name: "主要导航" });
+    const lens = nav.locator(".nav-glass-lens");
+    await expect(nav).toHaveAttribute("data-glass-ready", "true");
+    await expect
+      .poll(() => lens.evaluate((element) => element.getAnimations().length))
+      .toBe(0);
+    const initial = (await lens.boundingBox())!;
+    const target = nav.getByRole("button", { name: "玩法与配置", exact: true });
+    const destination = (await target.boundingBox())!;
+    await nav.evaluate((node) => {
+      const element = node as RecordedNavigation;
+      const lens = element.querySelector<HTMLElement>(".nav-glass-lens")!;
+      // Install the recorder synchronously, then sample from the actual click.
+      // WebKit must not wait on an evaluation promise before delivering input.
+      element.motionFrames = new Promise<NavigationFrame[]>((resolve) => {
+        element.addEventListener(
+          "click",
+          () => {
+            const samples: NavigationFrame[] = [];
+            const start = performance.now();
+            function frame() {
+              const box = lens.getBoundingClientRect();
+              const icon = element
+                .querySelector(".nav-link.active > svg")!
+                .getBoundingClientRect();
+              samples.push({
+                time: performance.now() - start,
+                x: box.x + box.width / 2,
+                height: box.height,
+                icon: icon.height,
+              });
+              if (performance.now() - start < 950) requestAnimationFrame(frame);
+              else resolve(samples);
+            }
+            frame();
+          },
+          { once: true, capture: true },
+        );
+      });
+    });
+    await page.touchscreen.tap(
+      destination.x + destination.width / 2,
+      destination.y + destination.height / 2,
+    );
+    await expect(target).toHaveAttribute("aria-current", "page");
+    const samples = await nav.evaluate(
+      (node) => (node as RecordedNavigation).motionFrames!,
+    );
+    await test.info().attach("tap-animation-frames", {
+      body: JSON.stringify(samples),
+      contentType: "application/json",
+    });
+    const start = initial.x + initial.width / 2;
+    const end = destination.x + destination.width / 2;
+    expect(
+      samples.some((sample) => sample.x > start + 20 && sample.x < end - 20),
+    ).toBe(true);
+    expect(Math.max(...samples.map((sample) => sample.height))).toBeGreaterThan(
+      initial.height * 1.16,
+    );
+    expect(Math.max(...samples.map((sample) => sample.icon))).toBeGreaterThan(
+      27,
+    );
+    await expect(nav).not.toHaveAttribute("data-glass-settling");
+    const resting = (await lens.boundingBox())!;
+    expect(resting.height).toBeCloseTo(initial.height, 0);
+    expect(resting.height).toBeLessThan(destination.height);
+    expect(resting.y).toBeGreaterThan(destination.y);
+    expect(Math.abs(resting.x + resting.width / 2 - end)).toBeLessThan(1.5);
+    expect(
+      (await target.locator("svg").first().boundingBox())!.height,
+    ).toBeCloseTo(25, 0);
+  });
+
+  test("rapid taps and a cancelled hold always return to a compact selection", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await workspace(page);
+    const nav = page.getByRole("navigation", { name: "主要导航" });
+    const lens = nav.locator(".nav-glass-lens");
+    for (const name of ["本期统计", "玩法与配置", "录入投注", "本期概览"]) {
+      const box = (await nav
+        .getByRole("button", { name, exact: true })
+        .boundingBox())!;
+      await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await expect(nav).not.toHaveAttribute("data-glass-settling");
+    await expect
+      .poll(async () => (await lens.boundingBox())!.height)
+      .toBeCloseTo(56, 0);
+    const current = nav.getByRole("button", { name: "本期概览", exact: true });
+    const box = (await current.boundingBox())!;
+    await current.dispatchEvent("pointerdown", {
+      pointerId: 25,
+      isPrimary: true,
+      button: 0,
+      clientX: box.x + box.width / 2,
+      clientY: box.y + box.height / 2,
+    });
+    await expect
+      .poll(async () => (await lens.boundingBox())!.height)
+      .toBeGreaterThan(65);
+    await current.dispatchEvent("pointercancel", { pointerId: 25 });
+    await expect(nav).not.toHaveAttribute("data-glass-press");
+    await expect(nav).not.toHaveAttribute("data-glass-settling");
+    await expect(current).toHaveAttribute("aria-current", "page");
+    await expect
+      .poll(async () => (await lens.boundingBox())!.height)
+      .toBeCloseTo(56, 0);
+    await expect
+      .poll(
+        async () =>
+          (await current.locator("svg").first().boundingBox())!.height,
+      )
+      .toBeCloseTo(25, 0);
+  });
 });
