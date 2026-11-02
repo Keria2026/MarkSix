@@ -1,5 +1,8 @@
-import type { Page } from "@playwright/test";
+import type { Page, Cookie } from "@playwright/test";
 import { expect } from "./scenario-fixtures";
+// One serial worker shares a real authenticated session across independent
+// browser contexts. Repeated business journeys must not exhaust login protection.
+let workerSession: Cookie[] = [];
 export async function signIn(page: Page) {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
@@ -7,13 +10,26 @@ export async function signIn(page: Page) {
       value: { readText: async () => "" },
     });
   });
+  if (workerSession.length) {
+    await page.context().addCookies(workerSession);
+    const session = await page.request.get("/api/session");
+    if (!session.ok()) {
+      workerSession = [];
+      await page.context().clearCookies();
+    }
+  }
   await page.goto("/");
-  await page.getByLabel("客户账号").fill("test-admin");
-  await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
-  await page.getByRole("button", { name: "进入工作台" }).click();
+  if (!workerSession.length) {
+    await page.getByLabel("客户账号").fill("test-admin");
+    await page.getByLabel("登录密码").fill(process.env.TEST_ADMIN_PASSWORD!);
+    await page.getByRole("button", { name: "进入工作台" }).click();
+  }
   await expect(
     page.getByRole("navigation", { name: "主要导航" }),
   ).toBeVisible();
+  workerSession = (await page.context().cookies()).filter(
+    (cookie) => cookie.name === "marksix_session",
+  );
   const response = await page.request.put("/api/settings/features", {
     headers: { "X-Marksix": "1" },
     data: { layoffs: false, manual_entry: true, text_entry: true },
