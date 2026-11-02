@@ -32,7 +32,7 @@ jobs:
           bun x prettier --check '../README.md' '../docs/**/*.md'
           bun run check
           bun run check:tests
-          bun test --coverage --coverage-reporter=lcov --coverage-dir=../test-results/coverage/frontend tests/unit
+          bun test --coverage --coverage-reporter=lcov --coverage-dir=../test-results/coverage/frontend tests/contracts
           bun ../scripts/generate_text_entry.ts ../test-results/text-entry-corpus
           bun ../scripts/train_text_entry.ts ../test-results/text-entry-corpus/train.jsonl
           git diff --exit-code -- src/lib/generated/text-entry-candidates.json
@@ -41,6 +41,10 @@ jobs:
           bun ../scripts/evaluate_text_entry.ts ../test-results/text-entry-corpus/test.jsonl ../test-results/text-entry-corpus/test-report.json
           bun ../scripts/generate_text_entry_boundaries.ts ../test-results/text-entry-boundaries
           bun ../scripts/evaluate_text_entry_boundaries.ts ../test-results/text-entry-boundaries
+          bun ../scripts/check_text_entry_campaign.ts --size 3600 --output ../test-results/text-entry-campaign
+          bun ../scripts/check_text_entry_campaign.ts --seed 52061 --size 360 --output ../test-results/text-entry-vectors --vectors ../test-results/text-entry-vectors/vectors.json
+          cmp ../backend/tests/fixtures/text-entry-vectors.json ../test-results/text-entry-vectors/vectors.json
+          python3 ../scripts/tests/run_mutation_campaign.py
           bun x playwright test --list
           bun run build
       - uses: actions/upload-artifact@v4
@@ -57,6 +61,9 @@ jobs:
           path: |
             test-results/text-entry-corpus/
             test-results/text-entry-boundaries/
+            test-results/text-entry-campaign/
+            test-results/text-entry-vectors/
+            test-results/rebuild/mutations/
           retention-days: 7
           if-no-files-found: error
   integration:

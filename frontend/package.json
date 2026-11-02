@@ -9,7 +9,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "preview": "vite preview --host 127.0.0.1",
     "test:e2e": "playwright test",
-    "test": "bun test tests/unit",
+    "test": "bun test tests/contracts",
     "check:tests": "tsc --project tsconfig.tests.json"
   },
   "dependencies": {

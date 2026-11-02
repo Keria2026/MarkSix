@@ -3170,6 +3170,9 @@ td {
   }
 }
 @media (max-width: 380px) {
+  .option-grid.number-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
   .rule-form .form-two {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -481,8 +481,10 @@ export interface RecordGroup {
 export function entryCents(value: string): bigint | null {
   if (!/^\d+(?:\.\d)?$/.test(value)) return null;
   const [whole, fraction = ""] = value.split(".");
-  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
-  return cents > 0n ? cents : null;
+  const significant = whole.replace(/^0+/u, "") || "0";
+  if (significant.length > 14) return null;
+  const cents = BigInt(significant) * 100n + BigInt(fraction.padEnd(2, "0"));
+  return cents > 0n && cents <= 9_000_000_000_000_000n ? cents : null;
 }
 
 export interface SlipLine {

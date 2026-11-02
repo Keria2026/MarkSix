@@ -141,6 +141,9 @@ export function tokenize(
       (char): [string, TokenKind] => [char, "object"],
     ),
   );
+  const exactWords = new Map<string, [string, TokenKind]>();
+  for (const entry of dictionary)
+    if (!exactWords.has(entry[0])) exactWords.set(entry[0], entry);
   const sounds = new Map<string, string>();
   const sound = (text: string) =>
     [...text]
@@ -167,7 +170,7 @@ export function tokenize(
       // alias/homophone that would consume the zodiac (特马 / 平马).
       if (/^[特平]马/u.test(input) && length > 1 && !playNames.includes(input))
         continue;
-      const exact = dictionary.find(([name]) => name === input);
+      const exact = exactWords.get(input);
       if (exact) return [...exact, length];
       // Literal numerals must not become homophones such as 零 -> 另.
       if (/^[零〇一二两三四五六七八九十百千万]+$/u.test(input)) continue;
@@ -203,6 +206,12 @@ export function tokenize(
         "u",
       ),
     }));
+  const spacedByFirst = new Map<string, typeof spaced>();
+  for (const entry of spaced) {
+    const entries = spacedByFirst.get(entry.name[0]) ?? [];
+    entries.push(entry);
+    spacedByFirst.set(entry.name[0], entries);
+  }
   const tokens: Token[] = [];
   let cursor = 0;
   function previousSignificant() {
@@ -252,9 +261,10 @@ export function tokenize(
       continue;
     }
     const combined =
-      previousSignificant()?.kind === "amount" && /^\d/u.test(rest)
+      !/[二三四五2345特]/u.test(rest[0]) ||
+      (previousSignificant()?.kind === "amount" && /^\d/u.test(rest))
         ? undefined
-        : /^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*)+[二三四五2345](?=\s*[鼠牛虎兔龙蛇马羊猴鸡狗猪])|^(?:[二三四五2345]\s*[有友]\s*[,、/]?\s*){2,}|^[二三四五2345](?:\s*[./、]?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
+        : /^(?:[二三四五2345]\s*[有友](?:\s*[,、/])?\s*)+[二三四五2345](?=\s*[鼠牛虎兔龙蛇马羊猴鸡狗猪])|^(?:[二三四五2345]\s*[有友](?:\s*[,、/])?\s*){2,}|^[二三四五2345](?:(?:\s*[./、])?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
             rest,
           )?.[0];
     if (combined && !playNames.includes(combined)) {
@@ -278,7 +288,7 @@ export function tokenize(
       cursor = end;
       continue;
     }
-    const exactSpaced = spaced.find((entry) => {
+    const exactSpaced = (spacedByFirst.get(rest[0]) ?? []).find((entry) => {
       const m = entry.pattern.exec(rest)?.[0];
       return (
         m &&

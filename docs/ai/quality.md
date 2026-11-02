@@ -4,16 +4,16 @@
 
 先查看工作区差异，保留已有改动。按[源码地图](codebase.md)找到调用方、被调用模块和对应测试，再修改共享原因。涉及多端契约时同时阅读 Rust 与 TypeScript 类型。不要根据函数名推断金额单位、客户身份或日期口径。
 
-| 修改边界       | 必须核对的行为                                                           | 验证位置                                                              |
-| -------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| 金额与规则     | 整数分、精度拒绝、溢出、复式展开、和局及历史费率                         | `backend/tests/rules.rs`                                              |
-| 业务写入       | 同标识重试、内容冲突、事务回滚、期次锁顺序、快照                         | `backend/tests/ledger.rs`                                             |
-| 身份与生命周期 | 账号隔离、失效请求、禁用与到期、恢复后的擦除约束                         | `backend/src/hosted/tests.rs`、`backend/test_support/`                |
-| 前端请求与回执 | 取消后禁止更新旧视图、存储损坏拒绝提交、响应丢失恢复                     | `frontend/tests/unit/state.test.ts`、`transport.test.ts`              |
-| 文本录注       | 选项、金额、分组、原文范围、歧义保留、合计核对                           | `frontend/tests/unit/text-entry-*.test.ts`、语料评估脚本              |
-| 对账导出       | 跨市场日期归属、独立本金与派彩核算、反水分档、和局退款、快照不完整时拒绝 | `backend/tests/reporting.rs`、`frontend/tests/unit/statement.test.ts` |
-| UI 与 UX       | 窄屏溢出、可访问名称、键盘与焦点、等待与失败状态、减少动画               | `frontend/tests/e2e/`                                                 |
-| 部署与脚本     | 文件摘要、路径与链接、备份预检、失败后状态、发布顺序                     | `scripts/tests/`、`scripts/verify_hosted.py`                          |
+| 修改边界       | 必须核对的行为                                                           | 验证位置                                                                                                |
+| -------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| 金额与规则     | 整数分、精度拒绝、溢出、复式展开、和局及历史费率                         | `backend/tests/domain_contracts.rs`                                                                     |
+| 业务写入       | 同标识重试、内容冲突、事务回滚、期次锁顺序、快照                         | `backend/tests/ledger_transactions.rs`                                                                  |
+| 身份与生命周期 | 账号隔离、失效请求、禁用与到期、恢复后的擦除约束                         | `backend/tests/support/hosted.rs`、`backend/tests/support/`                                             |
+| 前端请求与回执 | 取消后禁止更新旧视图、存储损坏拒绝提交、响应丢失恢复                     | `frontend/tests/contracts/workspace-state.test.ts`、`frontend/tests/contracts/request-recovery.test.ts` |
+| 文本录注       | 选项、金额、分组、原文范围、歧义保留、合计核对                           | `frontend/tests/contracts/text-entry-*.test.ts`、语料评估脚本                                           |
+| 对账导出       | 跨市场日期归属、独立本金与派彩核算、反水分档、和局退款、快照不完整时拒绝 | `backend/tests/daily_reporting.rs`、`frontend/tests/contracts/accounting-statements.test.ts`            |
+| UI 与 UX       | 窄屏溢出、可访问名称、键盘与焦点、等待与失败状态、减少动画               | `frontend/tests/scenarios/`                                                                             |
+| 部署与脚本     | 文件摘要、路径与链接、备份预检、失败后状态、发布顺序                     | `scripts/tests/`、`scripts/verify_hosted.py`                                                            |
 
 前端测试和 TypeScript 语料脚本本身也须通过 `bun run check:tests`；Bun 执行通过不代表 TypeScript 类型检查通过。
 
@@ -37,7 +37,7 @@ python3 -m coverage run -m unittest discover -s scripts/tests -v
 python3 -m coverage json
 
 # 在 frontend/ 中运行。
-bun test --coverage --coverage-reporter=lcov --coverage-dir=../test-results/coverage/frontend tests/unit
+bun test --coverage --coverage-reporter=lcov --coverage-dir=../test-results/coverage/frontend tests/contracts
 COVERAGE_DIR=../test-results/coverage/browser bun run test:e2e
 
 # 最后回到仓库根目录汇总。

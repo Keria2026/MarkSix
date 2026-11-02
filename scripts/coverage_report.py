@@ -45,7 +45,7 @@ def inventory(root):
         'shell': sorted((root / 'scripts').glob('*.sh')) + sorted((root / 'deploy/vps').glob('*.sh')),
     }
     return {name: [p.relative_to(root).as_posix() for p in paths
-                   if not p.name.endswith('.d.ts') and p != root / 'backend/src/hosted/tests.rs']
+                   if not p.name.endswith('.d.ts')]
             for name, paths in groups.items()}
 
 

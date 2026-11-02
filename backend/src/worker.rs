@@ -308,7 +308,7 @@ pub(crate) async fn settle_recorded(
 }
 
 #[cfg(test)]
-#[path = "../test_support/worker.rs"]
+#[path = "../tests/support/settlement.rs"]
 mod contract;
 
 fn hk_matches(p: &Period, draw: &Draw, now: chrono::NaiveDateTime) -> bool {

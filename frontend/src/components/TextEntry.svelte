@@ -735,7 +735,6 @@
                       inputmode="decimal"
                       aria-invalid={!row.excluded &&
                         entryCents(row.amount) === null}
-                      maxlength="15"
                       disabled={busy}
                     /></label
                   >

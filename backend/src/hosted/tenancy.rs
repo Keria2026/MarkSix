@@ -232,5 +232,5 @@ impl Registry {
 }
 
 #[cfg(test)]
-#[path = "../../test_support/tenancy.rs"]
+#[path = "../../tests/support/tenants.rs"]
 mod contract;

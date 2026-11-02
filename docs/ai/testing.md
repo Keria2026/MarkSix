@@ -2,16 +2,16 @@
 
 ## 分层
 
-| 层级           | 位置                                                   | 验证边界                                     |
-| -------------- | ------------------------------------------------------ | -------------------------------------------- |
-| Rust 纯规则    | `backend/tests/rules.rs`                               | 金额、规则、展开、结算、时间和默认配置       |
-| Rust 内部契约  | 模块内 `cfg(test)`                                     | 私有认证、开奖任务与结算恢复                 |
-| MySQL 事务     | `backend/tests/ledger.rs`、`reporting.rs`、hosted 测试 | 原子性、重试、快照、跨日汇总、隔离与生命周期 |
-| 生产入口       | `backend/tests/process.rs`                             | 双服务启动、内部转发、健康检查与优雅退出     |
-| 浏览器无关逻辑 | `frontend/tests/unit/`                                 | 解析、编译、请求作用域与提交恢复             |
-| 浏览器系统流程 | `frontend/tests/e2e/`                                  | 登录、录入确认、模块、刷新与可访问性         |
-| 运维           | `scripts/tests/`                                       | 配置、备份、发布顺序、工件验证及失败边界     |
-| 容器系统检查   | `scripts/verify_hosted.py`                             | 两端路由、TLS 和真实运行镜像                 |
+| 层级           | 位置                                                                                    | 验证边界                                     |
+| -------------- | --------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Rust 纯规则    | `backend/tests/domain_contracts.rs`                                                     | 金额、规则、展开、结算、时间和默认配置       |
+| Rust 内部契约  | `backend/tests/support/`，由模块内 `cfg(test)` 引用                                     | 私有认证、开奖任务与结算恢复                 |
+| MySQL 事务     | `backend/tests/ledger_transactions.rs`、`backend/tests/daily_reporting.rs`、hosted 测试 | 原子性、重试、快照、跨日汇总、隔离与生命周期 |
+| 生产入口       | `backend/tests/service_lifecycle.rs`                                                    | 双服务启动、内部转发、健康检查与优雅退出     |
+| 浏览器无关逻辑 | `frontend/tests/contracts/`                                                             | 解析、编译、请求作用域与提交恢复             |
+| 浏览器系统流程 | `frontend/tests/scenarios/`                                                             | 登录、录入确认、模块、刷新与可访问性         |
+| 运维           | `scripts/tests/`                                                                        | 配置、备份、发布顺序、工件验证及失败边界     |
+| 容器系统检查   | `scripts/verify_hosted.py`                                                              | 两端路由、TLS 和真实运行镜像                 |
 
 测试层级参考微软 [Unit vs Integration vs System vs E2E Testing](https://microsoft.github.io/code-with-engineering-playbook/automated-testing/e2e-testing/testing-comparison/)。纯规则尽量脱离浏览器；需要 SQL 事务的断言使用真实 MySQL；浏览器只承担页面和系统连接行为。
 
@@ -40,3 +40,24 @@ CI 的前端检查、Rust／Python 与浏览器集成、镜像构建验收分别
 合成语料与测试结果位于忽略的 `test-results/`，CI 的 `text-entry-corpus` 工件包含语料、清单和评估报告。生成候选词典后检查 Git 差异，确保生成物可重复。
 
 覆盖率的采集入口、分母口径、未测文件与严格目标检查见[质量验证与迭代入口](quality.md)。
+
+## 独立模型、文本生成与故障检查
+
+测试设计借鉴 [SQLite 的测试方法](https://sqlite.org/testing.html)：独立实现、边界与拒绝路径、确定性生成、差分比较、故障注入和定向变异。项目的行覆盖门槛不代表 SQLite 的分支／MC/DC 标准，也不代表没有缺陷。
+
+`frontend/tests/model/financial-oracle.ts` 独立使用整数分、索引组合枚举与费率算式。`text-slips.ts` 先生成业务意图，再渲染市场、选号方式、复式／拖／包肖、继承、多种金额位置和整单合计；禁止从解析结果反推标签。生成器统计尝试数、归一化文本数与基于实际基础注的语义数，排版变体不视为独立业务证明。
+
+```sh
+# 仓库根目录；增大 size 或更换 seed 可开展延长检查。
+bun scripts/check_text_entry_campaign.ts --seed 20261102 --size 3600
+python3 scripts/tests/run_mutation_campaign.py
+
+# 重建跨端固定向量，须审查默认规则或标签变化的原因。
+bun scripts/check_text_entry_campaign.ts --seed 52061 --size 360 --vectors backend/tests/fixtures/text-entry-vectors.json
+```
+
+`backend/tests/frontend_contracts.rs` 将实际 TypeScript 解析载荷交给 Rust，比较每条基础注的选项、本金、反水、派彩与风险敞口。MySQL 契约另外验证独立港澳映射、预览／提交一致性、同标识并发，以及第二条 INSERT 失败后没有部分账目。故障触发器仅在独立测试库创建并立即移除。
+
+定向变异在临时源码副本中破坏金额上限、重复项、未知符号、头号范围与备注保留规则。必须由业务断言检测到，编译错误不能计为检测成功；此检查不表示整个仓库的变异覆盖率。
+
+浏览器契约检查不同宽度下的点击区域、全号码选择和取消、键盘操作、控件相对位置与旧预览失效。自动可访问性与几何断言不能代替真实用户的长期使用评估。

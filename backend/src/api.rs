@@ -539,5 +539,5 @@ async fn update_mapping(
 }
 
 #[cfg(test)]
-#[path = "../test_support/api.rs"]
+#[path = "../tests/support/authentication.rs"]
 mod security_tests;

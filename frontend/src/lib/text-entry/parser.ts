@@ -82,29 +82,71 @@ function parseNormalizedText(
   const habits = learned.filter((h) =>
     active.some((p) => p.id === h.play_id && p.version === h.play_version),
   );
+  // Resolve repeated homophones once for this exact configuration snapshot.
+  const resolutions = new Map<string, ReturnType<typeof resolvePlay>>();
+  const resolvable = new Map<string, boolean>();
+  function resolve(label: string) {
+    let result = resolutions.get(label);
+    if (!result) {
+      result = resolvePlay(label, active, habits);
+      resolutions.set(label, result);
+    }
+    return { ...result };
+  }
+  function canResolve(label: string) {
+    if (!resolvable.has(label))
+      resolvable.set(
+        label,
+        resolve(label).id > 0 ||
+          playCandidates(label, active).some(
+            (candidate) => candidate.suggested,
+          ),
+      );
+    return resolvable.get(label)!;
+  }
   let { tokens, markers: markets } = tokenizeMarkets(
     raw,
     [...active.map((p) => p.rule.name), ...habits.map((h) => h.alias)],
-    (label) =>
-      resolvePlay(label, active, habits).id > 0 ||
-      playCandidates(label, active).some((c) => c.suggested),
+    canResolve,
   );
   // A standalone non-business heading stays in the source span, but does not
   // become a selection. Unknown text inside a bet remains an error.
   // Only leading standalone headings are remarks. Unknown text after a bet
   // remains financial input that must be corrected.
   const headings: { start: number; end: number }[] = [];
+  const carriesBetting = (parts: Token[]) =>
+    parts.some((token) =>
+      [
+        "play",
+        "plays",
+        "amount",
+        "currency",
+        "drag",
+        "compound",
+        "summary",
+      ].includes(token.kind),
+    ) ||
+    (parts.some((token) => token.kind === "object") &&
+      parts.some((token) => ["number", "money"].includes(token.kind))) ||
+    new Set(
+      parts
+        .filter((token) => token.kind === "object")
+        .map((token) => token.text),
+    ).size >= 2 ||
+    (parts[0]?.kind === "number" &&
+      Number(parts[0].text) >= 0 &&
+      Number(parts[0].text) <= 49);
+  let headingToken = 0;
   for (const line of raw.matchAll(/^[^\r\n]+/gmu)) {
-    const parts = tokens.filter(
-      (t) => t.start >= line.index! && t.end <= line.index! + line[0].length,
-    );
+    const end = line.index! + line[0].length;
+    while (tokens[headingToken]?.end <= line.index!) headingToken++;
+    let last = headingToken;
+    while (tokens[last]?.start < end) last++;
+    const parts = tokens
+      .slice(headingToken, last)
+      .filter((token) => token.start >= line.index! && token.end <= end);
     if (!parts.some((t) => t.kind === "unknown")) break;
-    if (
-      parts.some((t) =>
-        ["amount", "currency", "drag", "compound", "summary"].includes(t.kind),
-      )
-    )
-      break;
+    if (carriesBetting(parts)) break;
     if (
       /[鼠牛虎兔龙蛇马羊猴鸡狗猪]/u.test(line[0]) &&
       parts.some((t) => ["play", "plays", "number", "money"].includes(t.kind))
@@ -112,15 +154,24 @@ function parseNormalizedText(
       break;
     headings.push({ start: line.index!, end: line.index! + line[0].length });
   }
-  tokens = tokens.filter(
-    (t) => !headings.some((h) => t.start >= h.start && t.end <= h.end),
-  );
+  function withoutHeadings<T extends { start: number; end: number }>(
+    values: T[],
+  ) {
+    let index = 0;
+    return values.filter((token) => {
+      while (headings[index]?.end <= token.start) index++;
+      const heading = headings[index];
+      return !heading || token.start < heading.start || token.end > heading.end;
+    });
+  }
+  tokens = withoutHeadings(tokens);
   const nameEnd = tokens.findIndex(
     (t) => t.kind === "separator" && /[。.,，:：]/u.test(t.text),
   );
   if (
     nameEnd > 0 &&
     tokens.slice(0, nameEnd).some((t) => t.kind === "unknown") &&
+    !carriesBetting(tokens.slice(0, nameEnd)) &&
     !tokens
       .slice(0, nameEnd)
       .some((t) => ["amount", "currency", "drag", "compound"].includes(t.kind))
@@ -128,9 +179,7 @@ function parseNormalizedText(
     markets = markets.filter((t) => t.start >= tokens[nameEnd].end);
     tokens.splice(0, nameEnd + 1);
   }
-  markets = markets.filter(
-    (t) => !headings.some((h) => t.start >= h.start && t.end <= h.end),
-  );
+  markets = withoutHeadings(markets);
   const rows: TextRow[] = [];
   const ranges: MarketRange[] = [];
   let inherited = empty();
@@ -156,7 +205,7 @@ function parseNormalizedText(
       (t) => t.kind === "object" || t.kind === "number" || t.kind === "unknown",
     );
   function context(label: string): Context {
-    return resolvePlay(label, active, habits);
+    return resolve(label);
   }
   function infer(kind: "tail" | "wave" | "size" | "parity") {
     const current = active.find((p) => p.id === segment.context.id);

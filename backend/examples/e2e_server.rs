@@ -1,4 +1,4 @@
-#[path = "../test_support/database.rs"]
+#[path = "../tests/support/mysql.rs"]
 mod database;
 use marksix::{api, store};
 use std::sync::Arc;

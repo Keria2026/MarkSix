@@ -133,7 +133,6 @@
               aria-label={`组合单第${index + 1}项每注金额`}
               bind:value={item.amount}
               inputmode="decimal"
-              maxlength="15"
               disabled={busy}
             /></label
           >

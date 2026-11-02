@@ -10,6 +10,7 @@ export interface OracleItem {
   compound: boolean;
   amount: string;
   quantity: number;
+  order_sensitive?: boolean;
   package_zodiacs?: number[];
   drag?: { left: number[]; right: number[]; zodiac: boolean };
 }
@@ -47,8 +48,14 @@ export function semanticKey(
         .map((item) => ({
           ...item,
           market: item.market ?? "macau",
-          amount: Number(item.amount).toFixed(2),
-          selections: [...item.selections].sort((a, b) => a - b),
+          amount: (
+            BigInt(item.amount.split(".")[0]) * 100n +
+            BigInt((item.amount.split(".")[1] ?? "").padEnd(2, "0"))
+          ).toString(),
+          selections:
+            item.order_sensitive || item.play === "特碰"
+              ? [...item.selections]
+              : [...item.selections].sort((a, b) => a - b),
           package_zodiacs: item.package_zodiacs
             ? [...item.package_zodiacs].sort((a, b) => a - b)
             : undefined,
@@ -122,7 +129,11 @@ export function oracle(items: OracleItem[], mapping: CorpusRecord["mapping"]) {
     stake = 0;
   for (const item of items) {
     let count: number;
-    const cents = Math.round(Number(item.amount) * 100);
+    const [whole, fraction = ""] = item.amount.split(".");
+    const exact = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+    if (fraction.length > 2 || exact > BigInt(Number.MAX_SAFE_INTEGER))
+      throw Error("Oracle amount exceeds exact integer-cent range");
+    const cents = Number(exact);
     if (item.package_zodiacs) {
       count = mapping.zodiac.filter((z) =>
         item.package_zodiacs!.includes(z),
@@ -138,9 +149,9 @@ export function oracle(items: OracleItem[], mapping: CorpusRecord["mapping"]) {
           ? mapping.zodiac.filter((z) => d.right.includes(z)).length
           : d.right.length;
         count =
-          choose(left + right, item.quantity) -
-          choose(left, item.quantity) -
-          choose(right, item.quantity);
+          item.quantity === 2
+            ? left * right
+            : choose(right, item.quantity - left);
       } else
         count = item.compound
           ? choose(item.selections.length, item.quantity)
