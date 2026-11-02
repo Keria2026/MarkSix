@@ -1090,6 +1090,24 @@ for (const width of [390, 1440]) {
     await panel.screenshot({
       path: test.info().outputPath(`received-${width}.png`),
     });
+    await expect(
+      panel.getByRole("button", { name: "单行展示", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    const listBounds = await panel
+      .locator(".received-cell")
+      .evaluateAll((nodes) =>
+        nodes.slice(0, 2).map((n) => {
+          const r = n.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width };
+        }),
+      );
+    expect(listBounds[0].x).toBe(listBounds[1].x);
+    expect(listBounds[1].y).toBeGreaterThan(listBounds[0].y);
+    await panel.getByRole("button", { name: "三列网格", exact: true }).click();
+    await expect(
+      panel.getByRole("button", { name: "三列网格", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(panel.locator(".received-summary")).toContainText("¥ 98.00");
     const bounds = await panel.locator(".received-cell").evaluateAll((nodes) =>
       nodes.slice(0, 4).map((n) => {
         const r = n.getBoundingClientRect();
@@ -1107,11 +1125,26 @@ for (const width of [390, 1440]) {
     await expect(panel.getByRole("listitem")).toHaveCount(10);
     await expect(panel.getByRole("listitem").first()).toContainText("0尾");
     await expect(panel.getByRole("listitem").last()).toContainText("9尾");
+    await panel.getByRole("button", { name: "单行展示", exact: true }).click();
+    await expect(panel.locator(".received-grid")).toHaveClass(/received-list/);
+    await expect(panel.getByRole("listitem")).toHaveCount(10);
     await panel.getByRole("tab", { name: "尾中", exact: true }).press("Home");
     await expect(
       panel.getByRole("tab", { name: "特码", exact: true }),
     ).toBeFocused();
     await expect(panel.getByRole("listitem")).toHaveCount(49);
+    await expect(panel.locator(".received-grid")).toHaveClass(/received-list/);
+    const refreshed = page.waitForResponse(
+      (response) =>
+        response.url().includes("/received-distribution") && response.ok(),
+    );
+    await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+    await refreshed;
+    await expect(
+      panel.getByRole("button", { name: "单行展示", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await accessible(page);
+    await panel.getByRole("button", { name: "三列网格", exact: true }).click();
     await accessible(page);
     await navigate(page, "本期统计");
     await navigate(page, "投注记录");
