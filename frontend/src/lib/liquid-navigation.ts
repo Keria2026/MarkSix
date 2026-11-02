@@ -31,8 +31,12 @@ function displacementMap(width: number, height: number) {
 
 export function liquidNavigation(node: HTMLElement, selected: string) {
   const mobile = matchMedia("(max-width: 720px)");
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const lens = node.querySelector<HTMLElement>(".nav-glass-lens");
   let frame = 0;
   let mapSize = "";
+  let rebound: Animation | null = null;
+  let motionTarget: string | null = null;
   let gesture: {
     id: number;
     x: number;
@@ -49,11 +53,11 @@ export function liquidNavigation(node: HTMLElement, selected: string) {
   function place(button: HTMLElement, clientX?: number) {
     const dock = node.getBoundingClientRect();
     const box = button.getBoundingClientRect();
-    const width = box.width + 24;
-    const height = box.height + 14;
+    const width = box.width + 4;
+    const height = 56;
     const x =
       clientX === undefined
-        ? box.left - dock.left - 12
+        ? box.left - dock.left - 2
         : Math.max(
             -6,
             Math.min(dock.width - width + 6, clientX - dock.left - width / 2),
@@ -83,6 +87,45 @@ export function liquidNavigation(node: HTMLElement, selected: string) {
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(layout);
   }
+  function finishRebound() {
+    rebound?.cancel();
+    rebound = null;
+    motionTarget = null;
+    delete node.dataset.glassSettling;
+  }
+  function settle(button: HTMLElement) {
+    if (!lens || !mobile.matches || reducedMotion.matches) return;
+    const scale = getComputedStyle(lens).scale;
+    finishRebound();
+    motionTarget = button.dataset.navId ?? null;
+    node.dataset.glassSettling = "true";
+    const animation = lens.animate(
+      [
+        { scale, offset: 0, easing: "cubic-bezier(.2,.8,.2,1)" },
+        { scale: "1.2 1.4", offset: 0.22, easing: "ease-in-out" },
+        { scale: ".96 .96", offset: 0.68, easing: "ease-out" },
+        { scale: "1.025 1.025", offset: 0.86, easing: "ease-in-out" },
+        { scale: "1", offset: 1 },
+      ],
+      { duration: 560 },
+    );
+    rebound = animation;
+    void animation.finished.then(
+      () => {
+        if (rebound !== animation) return;
+        rebound = null;
+        motionTarget = null;
+        delete node.dataset.glassSettling;
+      },
+      () => {},
+    );
+  }
+  function clicked(event: MouseEvent) {
+    const button = (event.target as Element).closest<HTMLElement>(
+      ".nav-link[data-nav-id]",
+    );
+    if (button && button.dataset.navId !== selected) settle(button);
+  }
   function clearPreview() {
     for (const button of buttons()) delete button.dataset.glassPreview;
     delete node.dataset.glassPress;
@@ -98,6 +141,7 @@ export function liquidNavigation(node: HTMLElement, selected: string) {
     schedule();
   }
   function cancel() {
+    finishRebound();
     stop();
   }
   function move(event: PointerEvent) {
@@ -155,6 +199,7 @@ export function liquidNavigation(node: HTMLElement, selected: string) {
       ".nav-link[data-nav-id]",
     );
     if (!button || !node.contains(button)) return;
+    finishRebound();
     gesture = {
       id: event.pointerId,
       x: event.clientX,
@@ -181,20 +226,30 @@ export function liquidNavigation(node: HTMLElement, selected: string) {
     attributeFilter: ["aria-current"],
   });
   node.addEventListener("pointerdown", down);
-  mobile.addEventListener("change", schedule);
+  node.addEventListener("click", clicked);
+  mobile.addEventListener("change", cancel);
+  reducedMotion.addEventListener("change", cancel);
   schedule();
   return {
     update(value: string) {
+      const changed = selected !== value;
       selected = value;
+      if (changed && motionTarget !== value) {
+        const button = active();
+        if (button) settle(button);
+      }
       schedule();
     },
     destroy() {
+      finishRebound();
       stop();
       cancelAnimationFrame(frame);
       observer.disconnect();
       mutations.disconnect();
       node.removeEventListener("pointerdown", down);
-      mobile.removeEventListener("change", schedule);
+      node.removeEventListener("click", clicked);
+      mobile.removeEventListener("change", cancel);
+      reducedMotion.removeEventListener("change", cancel);
     },
   };
 }
