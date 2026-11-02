@@ -79,3 +79,18 @@ test("shared notation retains incomplete groups, invalid selectors and unknown w
     expect(result(raw).compiled.some((r) => !!r.error)).toBe(true);
   }
 });
+
+test("spaces within zodiac groups preserve punctuation boundaries", () => {
+  const items = valid("三有鼠 牛 虎，兔 龙 蛇各20");
+  expect(items.map((i) => i.selections)).toEqual([
+    [0, 1, 2],
+    [3, 4, 5],
+  ]);
+  expect(
+    valid("三有鼠牛虎。兔龙蛇 马羊猴各20").map((i) => i.selections),
+  ).toEqual([
+    [0, 1, 2],
+    [3, 4, 5],
+    [6, 7, 8],
+  ]);
+});

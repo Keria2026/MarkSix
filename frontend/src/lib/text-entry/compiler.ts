@@ -256,8 +256,25 @@ export function compileRow(
         throw new Error("生肖金额有歧义：请选择每号金额或每肖包号金额");
       // Comma-separated full zodiac sets are separate lines of the same slip.
       const parts = body
-        .split(rule.kind === "zodiac" ? /[,，;；、/.。\s]+/u : /[;；]+/u)
-        .filter((s) => s.trim());
+        .split(rule.kind === "zodiac" ? /[,，;；、/.。]+/u : /[;；]+/u)
+        .filter((s) => s.trim())
+        .flatMap((part) => {
+          if (rule.kind !== "zodiac") return [part];
+          const words = part.trim().split(/\s+/u);
+          const complete =
+            words.length > 1 &&
+            words.every((word) => {
+              try {
+                const n = values(word, rule.kind, mapping).length;
+                return compound
+                  ? n >= rule.combination_size
+                  : n === rule.quantity;
+              } catch {
+                return false;
+              }
+            });
+          return complete ? words : [part];
+        });
       // Newlines can delimit complete groups even when the play and amount
       // follow the entire selection block. Never regroup an incomplete line.
       const lines = body.split(/\r?\n/u).filter((s) => s.trim());
