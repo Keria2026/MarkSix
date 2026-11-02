@@ -564,3 +564,49 @@ test("per-group point prices inherit the number-play heading without merging poo
     ),
   ).toBe(true);
 });
+
+test("number head selections preview and submit explicit numbers at each-number prices", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  const previews: unknown[] = [];
+  await page.route("**/api/slips/preview", async (route) => {
+    previews.push(route.request().postDataJSON().items);
+    await route.fulfill({
+      json: {
+        valid: true,
+        units: 10,
+        stake: 80000,
+        error: null,
+        items: [{ units: 10, stake: 80000, error: null }],
+      },
+    });
+  });
+  await page.getByLabel("投注原文").fill("特码 三头 各80");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await expect(modal.locator(".text-entry-rows > li")).toHaveCount(1);
+  await modal.getByPlaceholder("填写投注人").fill("合成头数投注人");
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const body = writes[0] as { items: unknown[] };
+  expect(body.items).toEqual([
+    {
+      play_id: plays.find((p) => p.rule.name === "特码")!.id,
+      play_version: 1,
+      selections: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
+      amount: "80",
+      compound: false,
+    },
+  ]);
+  expect(previews.length).toBeGreaterThan(0);
+  expect(
+    previews.every(
+      (items) => JSON.stringify(items) === JSON.stringify(body.items),
+    ),
+  ).toBe(true);
+});

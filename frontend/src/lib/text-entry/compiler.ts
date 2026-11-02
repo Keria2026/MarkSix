@@ -12,13 +12,16 @@ function values(body: string, kind: Play["rule"]["kind"]): number[] {
     body = body.replace(/-/gu, " ");
   if (kind === "number")
     body = body.replace(
-      /(?<![\d.])([0-9])\s*尾/gu,
-      (_, tail: string) =>
-        " " +
-        Array.from({ length: 49 }, (_, i) => i + 1)
-          .filter((n) => n % 10 === Number(tail))
-          .join(" ") +
-        " ",
+      /(?<![\d.])([0-9])\s*([尾头頭])/gu,
+      (_, digit: string, unit: string) => {
+        const value = Number(digit);
+        if (unit !== "尾" && value > 4)
+          throw new Error("头数须为0—4，号码范围为01—49");
+        const pool = Array.from({ length: 49 }, (_, i) => i + 1).filter(
+          (n) => (unit === "尾" ? n % 10 : Math.floor(n / 10)) === value,
+        );
+        return " " + pool.join(" ") + " ";
+      },
     );
   if (body.includes("-"))
     throw new Error("横线可能表示范围或负数，请改为明确的选项列表");

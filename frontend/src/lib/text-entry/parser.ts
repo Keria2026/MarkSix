@@ -302,7 +302,9 @@ function parseNormalizedText(
   function followedByListAmount(index: number) {
     // An explicit trailing amount takes precedence over dot-amount shorthand.
     // Keep newlines as record boundaries when looking beyond another number.
-    let i = nextSignificant(index + 1);
+    let i = index + 1;
+    while (tokens[i]?.kind === "separator" && !/[\r\n]/u.test(tokens[i].text))
+      i++;
     while (tokens[i]?.kind === "number") {
       i++;
       while (tokens[i]?.kind === "separator" && !/[\r\n]/u.test(tokens[i].text))
@@ -698,14 +700,17 @@ function parseNormalizedText(
         meaningful.at(-1)?.kind === "group-close" && Number(token.text) > 49;
       const bareAfterZodiac =
         previous?.kind === "object" &&
-        /[鼠牛虎兔龙蛇马羊猴鸡狗猪红蓝绿大小单双尾波]/u.test(previous.text);
+        /[鼠牛虎兔龙蛇马羊猴鸡狗猪红蓝绿大小单双尾波头頭]/u.test(previous.text);
       const money = readAmount(i);
       const currency = money && tokens[money.last].kind === "currency";
       if (
         money &&
         !segment.amount &&
-        !["尾", "尾数", "尾數"].includes(tokens[next]?.text) &&
-        (bareAfterZodiac ||
+        !["尾", "尾数", "尾數", "头", "頭"].includes(tokens[next]?.text) &&
+        ((bareAfterZodiac &&
+          (!/[头頭]/u.test(previous.text) ||
+            money.perGroup ||
+            !followedByListAmount(i))) ||
           afterGroup ||
           currency ||
           ["单平", "4头不中", "四头不中"].includes(segment.context.label) ||
