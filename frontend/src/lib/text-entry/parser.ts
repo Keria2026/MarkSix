@@ -766,12 +766,14 @@ function parseNormalizedText(
           ["单平", "4头不中", "四头不中"].includes(segment.context.label) ||
           (segment.explicitPlay &&
             active.find((p) => p.id === segment.context.id)?.rule.kind ===
-              "zodiac_count") ||
+              "zodiac_count" &&
+            !followedByListAmount(i)) ||
           (Number(token.text) > 49 &&
             hasObjects() &&
             followsAmountDot(i) &&
             !followedByListAmount(i)) ||
           (hasObjects() &&
+            !followedByListAmount(i) &&
             ["play", "connector"].includes(previousSignificant(i)?.kind ?? "")))
       ) {
         applyAmount(money);

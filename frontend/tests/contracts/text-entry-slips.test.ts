@@ -35,12 +35,8 @@ test("enumeration and slash amount have distinct roles", () => {
   const [item] = valid("17-37-07三中三/6米");
   expect(item.selections).toEqual([17, 37, 7]);
   expect(item.amount).toBe("6");
-  for (const raw of [
-    "17-37三中三/6",
-    "-17-37-07三中三/6",
-    "17-17-07三中三/6",
-    "17-50-07三中三/6",
-  ])
+  expect(valid("-17-37-07三中三/6")[0].selections).toEqual([17, 37, 7]);
+  for (const raw of ["17-37三中三/6", "17-17-07三中三/6", "17-50-07三中三/6"])
     expect(compile(raw).result.some((r) => r.error)).toBe(true);
 });
 test("tail pools expand in number plays and mixed drag, flat tails keep their meaning", () => {
@@ -195,9 +191,11 @@ test("special-tail prices distinguish per-number money, totals, and flat-tail pl
   expect(flat.play_id).toBe(plays.find((p) => p.rule.name === "尾中")!.id);
   expect(flat.selections).toEqual([2, 8]);
   expect(flat.amount).toBe("700.0");
+  expect(valid("特2尾2尾共1400")[0].selections).toEqual([
+    2, 12, 22, 32, 42, 2, 12, 22, 32, 42,
+  ]);
+  expect(valid("特2尾12共600")[0].selections).toEqual([2, 12, 22, 32, 42, 12]);
   for (const raw of [
-    "特2尾2尾共1400",
-    "特2尾12共1400",
     "特10尾共1400",
     "特2尾8尾共1400.05",
     "特2尾8尾共1400未明要求",

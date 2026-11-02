@@ -1888,3 +1888,102 @@ async fn empty_hk_period_preview_matches_roll_forward_without_mutating_it() {
     assert_eq!(detail["totals"]["units"], preview["units"]);
     assert_eq!(detail["totals"]["stake"], preview["stake"]);
 }
+
+#[tokio::test]
+#[ignore = "requires isolated marksix_test database"]
+async fn repeated_bets_survive_preview_retry_correction_settlement_and_export() {
+    let pool = database::reset().await.unwrap();
+    let mut state = store::AppState::new(pool.clone()).unwrap();
+    let date = chrono::NaiveDate::from_ymd_opt(2040, 1, 1).unwrap();
+    state.clock = Arc::new(move || date.and_hms_opt(12, 0, 0).unwrap());
+    let app = api::router(state.clone());
+    let (_, _, cookie) = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"username":"test-admin","password":std::env::var("TEST_ADMIN_PASSWORD").unwrap()}),
+        "",
+    )
+    .await;
+    let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let play = boot["plays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["rule"]["name"] == "特码")
+        .unwrap();
+    let period = boot["today"]["id"].as_str().unwrap();
+    let numbers = vec![9, 21, 33, 45, 39, 10, 46, 14, 9, 45, 14, 9, 7, 33, 34];
+    let body = json!({"period":period,"bettor":"synthetic-repeat","request_id":uuid::Uuid::new_v4().to_string(),"entry_mode":"text","items":[{"play_id":play["id"],"play_version":play["version"],"selections":numbers,"compound":false,"amount":"100"}]});
+    let preview = ok(
+        &app,
+        "POST",
+        "/api/slips/preview",
+        json!({"period":period,"bettor":"synthetic-repeat","items":body["items"]}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(preview["stake"], 150_000);
+    assert_eq!(preview["units"], 15);
+    let first = ok(&app, "POST", "/api/slips", body.clone(), &cookie).await;
+    let retry = ok(&app, "POST", "/api/slips", body.clone(), &cookie).await;
+    assert_eq!(first["id"], retry["id"]);
+    let mut changed = body.clone();
+    changed["items"][0]["selections"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert_eq!(
+        call(&app, "POST", "/api/slips", changed, &cookie).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let id: String = sqlx::query_scalar("SELECT id FROM bets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let atoms: sqlx::types::Json<Vec<Atom>> = sqlx::query_scalar("SELECT atoms FROM bets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(atoms.len(), 15);
+    assert_eq!(atoms.iter().filter(|a| a.options == [9]).count(), 3);
+    ok(&app,"PUT",&format!("/api/bets/{id}/amount"),json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":1,"amount":"120","receiver":null}),&cookie).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT stake FROM bets")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        180_000
+    );
+    let mut draw = Draw::predicted([1, 2, 3, 4, 5, 6, 9], &Mapping::default());
+    draw.expect = period.into();
+    draw.open_time = date.and_hms_opt(21, 34, 0).unwrap();
+    worker::accept_draw(&state, &draw, &json!({}))
+        .await
+        .unwrap();
+    worker::accept_draw(&state, &draw, &json!({}))
+        .await
+        .unwrap();
+    let export = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{period}/bettor-export"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    let bettor = &export["bettors"][0];
+    assert_eq!(bettor["totals"]["units"], 15);
+    assert_eq!(bettor["totals"]["stake"], 180_000);
+    assert_eq!(bettor["totals"]["payout"], 1_584_000);
+    assert_eq!(bettor["totals"]["rebate"], 18_000);
+    assert_eq!(bettor["totals"]["net"], -1_422_000);
+    assert_eq!(bettor["bets"][0]["atoms"].as_array().unwrap().len(), 15);
+}

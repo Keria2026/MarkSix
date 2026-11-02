@@ -398,14 +398,20 @@ export function basicCount(
 ): number {
   if (
     rule.kind === "zodiac_count" &&
-    (selections.length !== 1 || selections[0] !== rule.zodiac_count)
+    selections.some((n) => n !== rule.zodiac_count)
   )
     return 0;
   const n = selections.length;
   if (
+    (compound ? rule.combination_size : rule.quantity) > 1 &&
+    new Set(selections).size !== n
+  )
+    return 0;
+  if (
     !n ||
     (compound && !rule.compound_enabled) ||
-    (rule.selection_limit != null && n > rule.selection_limit)
+    (rule.selection_limit != null &&
+      new Set(selections).size > rule.selection_limit)
   )
     return 0;
   const accepts = (v: number) =>
@@ -436,7 +442,15 @@ export function selectionBoundary(
   compound: boolean,
 ): string | null {
   const n = selections.length;
-  if (rule.selection_limit != null && n > rule.selection_limit)
+  if (
+    (compound ? rule.combination_size : rule.quantity) > 1 &&
+    new Set(selections).size !== n
+  )
+    return "一条组合注内须选择不同对象；重复投注请重复填写完整投注组";
+  if (
+    rule.selection_limit != null &&
+    new Set(selections).size > rule.selection_limit
+  )
     return `此玩法最多选择 ${rule.selection_limit} 项`;
   if (
     !compound &&

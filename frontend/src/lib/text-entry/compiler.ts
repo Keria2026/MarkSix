@@ -12,7 +12,7 @@ function zodiacNumbers(selected: number[], mapping: Mapping): number[] {
   )
     throw new Error("当期生肖映射不完整，请刷新期次");
   return mapping.zodiac.flatMap((z, i) =>
-    selected.includes(z) ? [i + 1] : [],
+    selected.filter((value) => value === z).map(() => i + 1),
   );
 }
 
@@ -21,10 +21,6 @@ function values(
   kind: Play["rule"]["kind"],
   mapping: Mapping,
 ): number[] {
-  // Three or more explicitly enumerated numbers are a list, not a range.
-  // Two endpoints and signed numbers remain ambiguous and must be corrected.
-  if (/^\s*\d{1,2}(?:\s*-\s*\d{1,2}){2,}\s*$/u.test(body))
-    body = body.replace(/-/gu, " ");
   if (kind === "number")
     body = body.replace(
       /[鼠牛虎兔龙蛇马羊猴鸡狗猪]|(?<![\d.])([0-9])\s*([尾头頭])/gu,
@@ -49,17 +45,18 @@ function values(
         return " " + pool.join(" ") + " ";
       },
     );
-  if (body.includes("-"))
-    throw new Error("横线可能表示范围或负数，请改为明确的选项列表");
   body = body.replace(/(?<=\d)号/gu, "");
-  const clean = body.replace(/[\s,，、;；:：.。/\[\]【】{}()（）-]/gu, "");
+  const clean = body.replace(
+    /[\s,，、;；:：.。/\[\]【】{}()（）‐‑‒–—―−-]/gu,
+    "",
+  );
   let result: number[];
   if (kind === "zodiac") {
     result = [...clean].map((c) => zodiacs.indexOf(c));
   } else if (kind === "number" || kind === "tail" || kind === "zodiac_count") {
     const tokens = body
       .replace(/[尾]/gu, kind === "tail" ? " " : "尾")
-      .split(/[\s,，、;；:：.。/\[\]【】{}()（）-]+/u)
+      .split(/[\s,，、;；:：.。/\[\]【】{}()（）‐‑‒–—―−-]+/u)
       .filter(Boolean);
     const split = tokens.flatMap((token) => {
       if (!/^\d+$/u.test(token)) return [token];
@@ -88,8 +85,6 @@ function values(
   }
   if (!result.length || result.some((v) => v < 0))
     throw new Error("存在未识别的投注项，请修正，不能忽略");
-  if (new Set(result).size !== result.length)
-    throw new Error("同一组存在重复选项，请确认是重复投注还是笔误");
   return result;
 }
 
@@ -139,7 +134,11 @@ function lineUnits(item: SlipLine, rule: Rule, mapping: Mapping): number {
     return preview.units;
   }
   return item.package_zodiacs?.length
-    ? mapping.zodiac.filter((z) => item.package_zodiacs!.includes(z)).length
+    ? item.package_zodiacs.reduce(
+        (sum, selected) =>
+          sum + mapping.zodiac.filter((z) => z === selected).length,
+        0,
+      )
     : basicCount(rule, item.selections, item.compound);
 }
 
@@ -202,7 +201,7 @@ export function compileRow(
       const halves = body.split("拖");
       if (halves.length !== 2) throw new Error("拖投注须有明确的左右两组");
       const zodiacOnly = (part: string) =>
-        /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s,，、;；:：.。/]+$/u.test(part);
+        /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s,，、;；:：.。/‐‑‒–—―−-]+$/u.test(part);
       const zodiac = rule.kind === "number" && halves.every(zodiacOnly);
       function dragValues(part: string): number[] {
         // Number selectors share the same expansion in ordinary, compound and
@@ -221,7 +220,7 @@ export function compileRow(
       rule.quantity === 1 &&
       /[鼠牛虎兔龙蛇马羊猴鸡狗猪]/u.test(body) &&
       (packageIntent ||
-        /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s,，、;；:：.。/\[\]【】{}()（）]+$/u.test(
+        /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s,，、;；:：.。/\[\]【】{}()（）‐‑‒–—―−-]+$/u.test(
           body,
         ))
     ) {
@@ -258,7 +257,9 @@ export function compileRow(
         lines.length > 1 &&
         lines.every((line) => {
           try {
-            const n = values(line, rule.kind, mapping).length;
+            const selected = values(line, rule.kind, mapping);
+            if (new Set(selected).size !== selected.length) return false;
+            const n = selected.length;
             return compound ? n >= rule.combination_size : n === rule.quantity;
           } catch {
             return false;
@@ -299,6 +300,13 @@ export function compileRow(
               : [body];
       items = groups.map((group) => {
         const selections = values(group, rule.kind, mapping);
+        if (
+          (compound ? rule.combination_size : rule.quantity) > 1 &&
+          new Set(selections).size !== selections.length
+        )
+          throw new Error(
+            "一条组合注内须选择不同对象；重复投注请重复填写完整投注组",
+          );
         if (
           !compound &&
           rule.quantity > 1 &&

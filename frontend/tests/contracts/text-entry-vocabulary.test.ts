@@ -116,7 +116,11 @@ test("bare numbers, leading zeros and fixed two-digit chunks use confirmed conve
       (i) => plays.find((p) => p.id === i.play_id)!.rule.name === "特码",
     ),
   ).toBe(true);
-  for (const raw of ["123各40", "0150各40", "0000各40", "2323各40"])
+  expect(
+    compileText(parseText("2323各40", plays), plays, mapping)[0].items[0]
+      .selections,
+  ).toEqual([23, 23]);
+  for (const raw of ["123各40", "0150各40", "0000各40"])
     expect(
       compileText(parseText(raw, plays), plays, mapping).some((r) => r.error),
     ).toBe(true);

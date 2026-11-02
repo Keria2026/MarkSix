@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGETS = ["selection-integrity", "text-entry-retention", "text-entry-number-heads"]
 MUTANTS = [
     ("money-limit", "lib/types.ts", "cents <= 9_000_000_000_000_000n", "cents <= 99_000_000_000_000_000n"),
-    ("duplicate-choice", "lib/selection.ts", "if (values.includes(value))", "if (false && values.includes(value))"),
-    ("unknown-operator-loss", "lib/selection.ts", r".split(/[\s,，、;；:：.。/\[\]【】{}()（）]+/u)", r".split(/[\s\p{P}\p{S}]+/u)"),
+    ("duplicate-choice", "lib/selection.ts", "values.push(value);", "if (!values.includes(value)) values.push(value);"),
+    ("unknown-operator-loss", "lib/selection.ts", r".split(/[\s,，、;；:：.。/\[\]【】{}()（）‐‑‒–—―−-]+/u)", r".split(/[\s\p{P}\p{S}]+/u)"),
     ("head-pool", "lib/text-entry/compiler.ts", "Math.floor(n / 10)", "Math.ceil(n / 10)"),
     ("financial-heading-loss", "lib/text-entry/parser.ts", "if (carriesBetting(parts)) break;", "if (false && carriesBetting(parts)) break;"),
 ]
