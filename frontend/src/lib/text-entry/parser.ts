@@ -516,6 +516,9 @@ function parseNormalizedText(
     if (token.kind === "summary") {
       if (segment.explicitPlay || hasObjects() || segment.amount)
         emit(token.start);
+      const inline =
+        rows.length > 0 &&
+        !/[\r\n]/u.test(raw.slice(rows.at(-1)!.end, token.start));
       rows.push({
         key: `${start}:${token.end}:summary`,
         source: raw.slice(start, token.end),
@@ -529,6 +532,7 @@ function parseNormalizedText(
         mode: "auto",
         customAlias: false,
         summary: true,
+        summaryScope: inline ? "section" : undefined,
       });
       start = token.end;
       segment = fresh();

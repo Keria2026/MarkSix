@@ -11,7 +11,7 @@ export const summaryPattern = new RegExp(
 );
 export function readSummary(body: string) {
   const text = body.normalize("NFKC").trim();
-  const amountOnly = /^(?:共|合计)\s*(.*?)\s*(?:元|米|斤|块)?$/u.exec(text);
+  const amountOnly = /^(?:共|合计|总)\s*(.*?)\s*(?:元|米|斤|块)?$/u.exec(text);
   if (amountOnly) {
     const amount = monetaryLiteral(amountOnly[1]);
     return amount

@@ -23,6 +23,15 @@ function values(
 ): number[] {
   if (kind === "number")
     body = body.replace(
+      /(?<![\d.])([0-9](?:\s*[.,，、‐‑‒–—―−-]\s*[0-9])+)\s*尾/gu,
+      (_, digits: string) =>
+        digits
+          .match(/[0-9]/gu)!
+          .map((n) => n + "尾")
+          .join(" "),
+    );
+  if (kind === "number")
+    body = body.replace(
       /[鼠牛虎兔龙蛇马羊猴鸡狗猪]|(?<![\d.])([0-9])\s*([尾头頭])/gu,
       (
         selection: string,
@@ -247,7 +256,7 @@ export function compileRow(
         throw new Error("生肖金额有歧义：请选择每号金额或每肖包号金额");
       // Comma-separated full zodiac sets are separate lines of the same slip.
       const parts = body
-        .split(rule.kind === "zodiac" ? /[,，;；、/\r\n]+/u : /[;；]+/u)
+        .split(rule.kind === "zodiac" ? /[,，;；、/.。\s]+/u : /[;；]+/u)
         .filter((s) => s.trim());
       // Newlines can delimit complete groups even when the play and amount
       // follow the entire selection block. Never regroup an incomplete line.
