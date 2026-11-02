@@ -1375,37 +1375,28 @@ details[open] > summary svg {
 .play-settings-grid {
   padding: 0 24px 20px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 1359px) {
+  .play-settings-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
 }
 .play-setting {
   text-align: left;
   border: 1px solid #dfe7f3;
   background: linear-gradient(135deg, #ffffffba, #f6f9ff94);
-  border-radius: 12px;
-  padding: 20px;
+  border-radius: 10px;
+  padding: 12px;
+  height: 100%;
   transition:
-    transform 0.2s,
-    box-shadow 0.2s;
+    box-shadow 0.2s,
+    border-color 0.2s;
 }
 .play-setting:hover {
-  transform: translateY(-2px);
   box-shadow: 0 5px 16px #566f9f10;
   border-color: #c2d1eb;
-}
-.play-setting > div:first-child {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.play-symbol {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  background: #eaf0ff;
-  border-radius: 11px;
-  color: #42567e;
 }
 .version-chip {
   font-size: 12px;
@@ -1413,8 +1404,12 @@ details[open] > summary svg {
   color: #515c6a;
 }
 .play-setting h3 {
-  font-size: 15px;
-  margin-top: 18px;
+  display: grid;
+  align-content: center;
+  min-height: 44px;
+  font-size: 14px;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 .play-setting h3 small {
   font-size: 12px;
@@ -1423,41 +1418,37 @@ details[open] > summary svg {
 .play-setting p {
   font-size: 12px;
   color: #4d5769;
-  margin-top: 8px;
-  line-height: 1.8;
+  margin-top: 6px;
+  line-height: 1.5;
 }
 .play-rate {
-  display: flex;
-  gap: 25px;
-  margin-top: 20px;
-  padding-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
 }
 .play-rate > span {
+  min-width: 0;
   font-size: 12px;
   color: #4e5766;
 }
 .play-rate strong {
   display: block;
-  font-size: 22px;
-  letter-spacing: -0.6px;
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: -0.3px;
   color: #364764;
   font-weight: 580;
-  margin-top: 7px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 .play-rate small {
   font-size: 12px;
   font-weight: 450;
   color: #515c6c;
   margin-left: 3px;
-}
-.play-rate .edit-link {
-  display: flex;
-  gap: 3px;
-  align-items: flex-end;
-  margin-left: auto;
-  color: #43587e;
-  font-size: 12px;
 }
 .disabled-play {
   opacity: 0.6;
@@ -2263,14 +2254,8 @@ details[open] > summary svg {
     font-size: 13px;
   }
   .play-settings-grid {
-    gap: 10px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     padding: 0 18px 18px;
-  }
-  .play-setting {
-    padding: 15px;
-  }
-  .play-rate {
-    gap: 17px;
   }
   .settings-grid {
     gap: 16px;
@@ -2662,15 +2647,6 @@ details[open] > summary svg {
   .play-settings-grid {
     grid-template-columns: 1fr;
     padding: 0 17px 17px;
-  }
-  .play-setting {
-    padding: 17px;
-  }
-  .play-setting h3 {
-    margin-top: 13px;
-  }
-  .play-setting .play-rate {
-    margin-top: 15px;
   }
   .plays-panel .panel-note {
     padding: 13px 17px;
@@ -3538,11 +3514,11 @@ body {
 }
 .play-select {
   position: absolute;
-  top: 14px;
-  right: 14px;
+  top: 8px;
+  right: 8px;
   z-index: 1;
   min-height: 44px;
-  padding: 8px 12px;
+  padding: 8px;
   margin: 0;
   border: 1px solid #c8d5e9;
   border-radius: 12px;
@@ -3589,7 +3565,7 @@ body {
   background: #f0f6ffdf;
 }
 .play-management-item h3 {
-  padding-right: 55px;
+  padding-right: 64px;
 }
 .modal {
   overscroll-behavior: contain;
