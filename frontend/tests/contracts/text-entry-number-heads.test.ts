@@ -89,15 +89,12 @@ test("head pools use the same number expansion in compound, drag and miss plays"
     40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
   ]);
 });
-test("heads reject invalid ranges, overlap, unknown text and incompatible plays", () => {
+test("heads reject invalid ranges, unknown text and incompatible plays", () => {
   for (const raw of [
     "特码5头各80",
     "特码5头1头各80",
     "特码12头各80",
     "特码00头各80",
-    "特码1头1头各80",
-    "特码1头15各80",
-    "特码1头3尾各80",
     "特码1头各80.55",
     "特码0头共1000",
     "特码1头未知各80",

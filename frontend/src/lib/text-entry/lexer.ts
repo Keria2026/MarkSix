@@ -347,7 +347,7 @@ export function tokenize(
           ? "group-open"
           : /[\]】)}]/u.test(text)
             ? "group-close"
-            : /[\s,，、;；:：.。]/u.test(text)
+            : /[\s,，、;；:：.。‐‑‒–—―−-]/u.test(text)
               ? "separator"
               : "unknown";
     }

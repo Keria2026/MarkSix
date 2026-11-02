@@ -392,3 +392,85 @@ test("manual Hong Kong entry retains its market without requesting risk predicti
   expect(predictionRequests).toEqual([]);
   await expect(page.getByText("投注者收益预览")).toHaveCount(0);
 });
+
+for (const width of [390, 1440]) {
+  test(`repeated bets and hyphen lists keep their units through manual and text submission at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await signIn(page);
+    await page.request.put("/api/settings/entry-mode", {
+      headers: { "X-Marksix": "1" },
+      data: { entry_mode: "manual" },
+    });
+    await page.reload();
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: "录入投注", exact: true })
+      .click();
+    await page.getByLabel("搜索玩法名称").fill("特码");
+    await page
+      .locator(".play-picker button")
+      .filter({ has: page.locator("span", { hasText: /^特码$/ }) })
+      .click();
+    await page.getByLabel("输入投注项").fill("09-21-09-33-21-09");
+    await expect(page.getByLabel("输入投注项")).toHaveAttribute(
+      "aria-invalid",
+      "false",
+    );
+    await expect(
+      page
+        .locator(".bet-summary .ledger-row")
+        .filter({ hasText: "基础注数量" }),
+    ).toContainText("6 注");
+    const manual = `synthetic-repeated-manual-${width}-${Date.now()}`;
+    await page.getByPlaceholder("手工填写姓名或代号").fill(manual);
+    await page
+      .getByRole("textbox", { name: "每注金额", exact: true })
+      .fill("100");
+    const sent = page.waitForResponse(
+      (r) => r.request().method() === "POST" && /\/api\/bets$/.test(r.url()),
+    );
+    await page
+      .getByRole("button", { name: "确认录入投注", exact: true })
+      .click();
+    const response = await sent;
+    expect(response.ok()).toBe(true);
+    expect(response.request().postDataJSON().selections).toEqual([
+      9, 9, 9, 21, 21, 33,
+    ]);
+    await textMode(page);
+    const bettor = `synthetic-repeated-text-${width}-${Date.now()}`;
+    const modal = await check(
+      page,
+      "09.21.33.45.39.10.46.14.09.45.14.09.07.33.34各100\n1-2-3-4-5-6各100\n21注共2100",
+      bettor,
+    );
+    const slip = page.waitForResponse(
+      (r) => r.request().method() === "POST" && /\/api\/slips$/.test(r.url()),
+    );
+    await modal.getByRole("button", { name: "确认录入", exact: true }).click();
+    expect((await slip).ok()).toBe(true);
+    await expect(modal).toBeHidden();
+    const boot = await (await page.request.get("/api/bootstrap")).json();
+    for (const [name, units, stake] of [
+      [manual, 6, 60000],
+      [bettor, 21, 210000],
+    ] as const) {
+      const records = await page.request.post("/api/records/search", {
+        headers: { "X-Marksix": "1" },
+        data: { period: boot.today.id, bettors: [name] },
+      });
+      expect(records.ok()).toBe(true);
+      const data = await records.json();
+      expect(data.items).toHaveLength(1);
+      expect(data.items[0].unit_count).toBe(units);
+      expect(data.items[0].stake).toBe(stake);
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  });
+}

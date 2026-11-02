@@ -110,7 +110,9 @@ export function atomSets(
 ): number[][] {
   if (line.package_zodiacs?.length)
     return mapping.zodiac.flatMap((z, i) =>
-      line.package_zodiacs!.includes(z) ? [[i + 1]] : [],
+      line
+        .package_zodiacs!.filter((selected) => selected === z)
+        .map(() => [i + 1]),
     );
   if (line.drag) {
     const expand = (choices: number[]) =>

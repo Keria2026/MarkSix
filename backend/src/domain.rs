@@ -499,13 +499,14 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
         }
         let mut zodiacs = input.package_zodiacs.clone();
         zodiacs.sort_unstable();
-        if zodiacs.iter().any(|z| *z >= 12) || zodiacs.windows(2).any(|w| w[0] == w[1]) {
-            return Err("包肖生肖重复或不合法".into());
+        if zodiacs.iter().any(|z| *z >= 12) {
+            return Err("包肖生肖不合法".into());
         }
         let mut regular = input.clone();
         regular.package_zodiacs.clear();
-        regular.selections = (1..=49)
-            .filter(|n| zodiacs.contains(&mapping.zodiac[*n as usize - 1]))
+        regular.selections = zodiacs
+            .iter()
+            .flat_map(|z| (1..=49).filter(move |n| mapping.zodiac[*n as usize - 1] == *z))
             .collect();
         let mut planned = plan(rule, &regular, mapping)?;
         price_package(&mut planned.atoms, &zodiacs, mapping, amount)?;
@@ -525,10 +526,6 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
             return Err("特碰请依次选择一个特码、一个平码，位置不可互换".into());
         }
         if options.is_empty()
-            || options
-                .iter()
-                .enumerate()
-                .any(|(i, n)| options[..i].contains(n))
             || options.iter().any(|n| {
                 if rule.kind == Kind::Number {
                     !(1..=49).contains(n)
@@ -539,19 +536,35 @@ pub fn plan(rule: &Rule, input: &BetInput, mapping: &Mapping) -> RuleResult<BetP
                 }
             })
         {
-            return Err("投注选项为空、重复或不合法".into());
+            return Err("投注选项为空或不合法".into());
         }
-        if rule
-            .selection_limit
-            .is_some_and(|n| options.len() > n as usize)
-        {
+        if rule.selection_limit.is_some_and(|n| {
+            options
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                > n as usize
+        }) {
             return Err(format!(
                 "此玩法最多选择 {} 项",
                 rule.selection_limit.unwrap()
             ));
         }
-        if rule.kind == Kind::ZodiacCount && options.as_slice() != [rule.zodiac_count.unwrap()] {
+        if rule.kind == Kind::ZodiacCount && options.iter().any(|n| Some(*n) != rule.zodiac_count) {
             return Err("请选择该玩法配置的目标生肖种数".into());
+        }
+        if (if input.compound {
+            rule.combination_size
+        } else {
+            rule.quantity
+        }) > 1
+            && options
+                .iter()
+                .enumerate()
+                .any(|(i, n)| options[..i].contains(n))
+        {
+            return Err("一条组合注内须选择不同对象；重复投注请重复填写完整投注组".into());
         }
         let k = if input.compound {
             rule.combination_size as usize
@@ -670,23 +683,35 @@ pub fn price_package(
     mapping: &Mapping,
     amount: i64,
 ) -> RuleResult<()> {
-    for zodiac in packages {
-        let mut indices: Vec<usize> = atoms
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| mapping.zodiac[a.options[0] as usize - 1] == *zodiac)
-            .map(|(i, _)| i)
+    // Each package occurrence buys its own complete number pool. Keep identical
+    // numbers as separate atoms and apply the same cent allocation to each copy.
+    for zodiac in packages
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let numbers: Vec<u8> = (1..=49)
+            .filter(|n| mapping.zodiac[*n as usize - 1] == zodiac)
             .collect();
-        indices.sort_unstable_by_key(|i| atoms[*i].options[0]);
-        if indices.is_empty() || amount < indices.len() as i64 {
+        let copies = packages.iter().filter(|z| **z == zodiac).count();
+        if numbers.is_empty() || amount < numbers.len() as i64 {
             return Err("包肖分配后每个号码至少一分钱".into());
         }
-        for (position, index) in indices.iter().enumerate() {
-            price_atom(
-                &mut atoms[*index],
-                amount / indices.len() as i64
-                    + i64::from((position as i64) < amount % indices.len() as i64),
-            )?;
+        for (position, number) in numbers.iter().enumerate() {
+            let indices: Vec<usize> = atoms
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.options.as_slice() == [*number])
+                .map(|(i, _)| i)
+                .collect();
+            if indices.len() != copies {
+                return Err("包肖基础注与生肖次数不一致".into());
+            }
+            let stake = amount / numbers.len() as i64
+                + i64::from((position as i64) < amount % numbers.len() as i64);
+            for index in indices {
+                price_atom(&mut atoms[index], stake)?;
+            }
         }
     }
     Ok(())

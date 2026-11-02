@@ -950,3 +950,111 @@ test.describe("liquid glass touch motion", () => {
       .toBeCloseTo(25, 0);
   });
 });
+
+for (const width of [390, 1440]) {
+  test(
+    "Excel exports the five-column ledger without font downloads at " +
+      width +
+      "px",
+    async ({ page }) => {
+      await page.setViewportSize({ width, height: 1080 });
+      const data = exportSnapshot();
+      data.settled = true;
+      for (const bettor of data.bettors) {
+        bettor.totals.payout = bettor.name === "张三" ? 20000 : 0;
+        bettor.totals.net =
+          bettor.totals.stake - bettor.totals.rebate - bettor.totals.payout;
+        for (const [index, bet] of bettor.bets.entries()) {
+          bet.record.status = "settled";
+          bet.record.payout = index === 0 ? bettor.totals.payout : 0;
+          bet.results = [
+            {
+              payout: bet.record.payout,
+              rebate: bet.record.rebate,
+              voided: false,
+            } as import("../../src/lib/types").AtomResult,
+          ];
+        }
+      }
+      let fonts = 0;
+      await page.route("**/*.ttf*", async (route) => {
+        if (route.request().resourceType() === "fetch") {
+          fonts++;
+          await route.abort();
+        } else await route.continue();
+      });
+      await workspace(page, data);
+      await navigate(page, "本期统计");
+      await navigate(page, "投注人分类统计");
+      await page.route("**/bettor-export?combined=true", (route) =>
+        route.fulfill({ json: data }),
+      );
+      await page
+        .getByRole("combobox", { name: "账单导出格式" })
+        .selectOption("xlsx");
+      const individual = page.getByRole("button", {
+        name: "导出账单（张三）",
+        exact: true,
+      });
+      await individual.scrollIntoViewIfNeeded();
+      const geometry = await exportGeometry(page);
+      const downloaded = page.waitForEvent("download");
+      await individual.click();
+      const file = await downloaded;
+      expect(file.suggestedFilename()).toBe("张三.xlsx");
+      const parts = unzipSync(await downloadBytes(file));
+      const xml = new TextDecoder().decode(parts["xl/worksheets/sheet1.xml"]);
+      const cells = await page.evaluate((xml) => {
+        const document = new DOMParser().parseFromString(
+          xml,
+          "application/xml",
+        );
+        if (document.querySelector("parsererror"))
+          throw Error("Invalid worksheet XML");
+        return Object.fromEntries(
+          [...document.getElementsByTagName("c")].map((cell) => [
+            cell.getAttribute("r"),
+            cell.querySelector("v,t")?.textContent,
+          ]),
+        );
+      }, xml);
+      expect(cells).toMatchObject({
+        A1: "序号",
+        B1: "总单",
+        C1: "水",
+        D1: "中",
+        E1: "结账",
+        A2: "1",
+        B2: "125",
+        C2: "2.5",
+        D2: "200",
+        E2: "-77.5",
+        A3: "总数",
+        B3: "125",
+        C3: "2.5",
+        D3: "200",
+        E3: "-77.5",
+      });
+      expect(xml).not.toContain("张三丰");
+      await expect(page.getByRole("status")).toContainText(
+        "已导出「张三」 Excel 账单",
+      );
+      expect(await exportGeometry(page)).toEqual(geometry);
+      const archiveEvent = page.waitForEvent("download");
+      await page
+        .getByRole("button", { name: "导出账单（全部投注人）" })
+        .click();
+      const archive = await archiveEvent;
+      expect(archive.suggestedFilename()).toBe(
+        "2026-11-01-投注人对账单-xlsx.zip",
+      );
+      const files = unzipSync(await downloadBytes(archive));
+      expect(Object.keys(files).sort()).toEqual(["张三.xlsx", "张三丰.xlsx"]);
+      expect(Object.keys(unzipSync(files["张三丰.xlsx"]))).toContain(
+        "xl/worksheets/sheet1.xml",
+      );
+      expect(fonts).toBe(0);
+      await accessible(page);
+    },
+  );
+}

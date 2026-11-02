@@ -1351,10 +1351,7 @@
                   class="play-setting"
                   class:disabled-play={!play.enabled}
                   onclick={() => openEditor(play)}
-                  ><div>
-                    <span class="play-symbol"><Layers3 size={21} /></span>
-                  </div>
-                  <h3>
+                  ><h3>
                     {play.rule.name}
                     {#if !play.enabled}<small>已停用</small>{/if}
                   </h3>
@@ -1371,8 +1368,6 @@
                       >反水<strong
                         >{play.rule.rebate_percent}<small>%</small></strong
                       ></span
-                    ><span class="edit-link"
-                      >编辑 <ArrowUpRight size={15} /></span
                     >
                   </div></button
                 >

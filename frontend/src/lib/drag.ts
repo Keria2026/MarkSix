@@ -41,8 +41,10 @@ export function dragPreview(rule: Rule, draft: DragDraft, mapping: Mapping) {
     const right = parseSelections(kind, draft.right);
     if (!left.length || !right.length)
       return { ...empty, error: "请填写拖的两边选项" };
-    if (left.some((v) => right.includes(v)))
-      throw new Error("拖的两边不能有重叠选项");
+    if (new Set([...left, ...right]).size !== left.length + right.length)
+      throw new Error(
+        "拖的候选池内不能重复或重叠；重复投注请重复填写完整投注组",
+      );
     const expand = (values: number[]) =>
       draft.zodiac
         ? mapping.zodiac.flatMap((z, i) => (values.includes(z) ? [i + 1] : []))

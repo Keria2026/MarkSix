@@ -118,7 +118,7 @@ fn single_compound_drag_and_package_have_distinct_units() {
 }
 #[test]
 fn selections_and_rule_constraints_fail_closed() {
-    for selection in [vec![], vec![0], vec![50], vec![1, 1]] {
+    for selection in [vec![], vec![0], vec![50]] {
         assert!(plan(&rule("特码"), &input(&selection), &Mapping::default()).is_err());
     }
     let mut r = rule("三有");
@@ -497,4 +497,102 @@ fn hk_source_issue_is_not_a_day_ordinal_and_year_reset_uses_source() {
         value["expect"] = serde_json::json!(expect);
         assert!(parse_market_draw(&value, Market::Hk).is_err());
     }
+}
+
+#[test]
+fn repeated_single_selections_keep_each_stake_payout_and_rebate() {
+    for (name, selected) in [
+        ("特码", 7),
+        ("平码", 1),
+        ("一肖中", 2),
+        ("尾中", 7),
+        ("波色", 0),
+        ("四肖量", 4),
+    ] {
+        let r = rule(name);
+        let once = plan(&r, &input(&[selected]), &Mapping::default()).unwrap();
+        let repeated = plan(
+            &r,
+            &input(&[selected, selected, selected]),
+            &Mapping::default(),
+        )
+        .unwrap();
+        assert_eq!(repeated.atoms.len(), 3, "{name}");
+        assert_eq!(repeated.stake, once.stake * 3, "{name}");
+        assert_eq!(repeated.rebate, once.rebate * 3, "{name}");
+        assert_eq!(repeated.exposure, once.exposure * 3, "{name}");
+        let draw = Draw::predicted([1, 2, 3, 4, 5, 6, 7], &Mapping::default());
+        let results = settle(&repeated.atoms, &draw);
+        assert_eq!(results.len(), 3);
+        assert_eq!(
+            results.iter().map(|s| s.payout).sum::<i64>(),
+            settle(&once.atoms, &draw)[0].payout * 3
+        );
+    }
+    let repeated = planned("特码", &[9, 21, 9, 33, 21, 9]);
+    assert_eq!(repeated.atoms.len(), 6);
+    assert_eq!(repeated.stake, 60_000);
+    assert_eq!(
+        repeated
+            .atoms
+            .iter()
+            .map(|a| a.options[0])
+            .collect::<Vec<_>>(),
+        vec![9, 9, 9, 21, 21, 33]
+    );
+    assert_eq!(planned("特码", &vec![7; 1000]).atoms.len(), 1000);
+    assert!(plan(&rule("特码"), &input(&vec![7; 1001]), &Mapping::default()).is_err());
+    for name in ["二中二", "三中三", "三有", "二尾连"] {
+        let r = rule(name);
+        let mut i = input(&vec![1; r.quantity as usize]);
+        assert!(plan(&r, &i, &Mapping::default()).is_err(), "{name}");
+        i.compound = true;
+        assert!(plan(&r, &i, &Mapping::default()).is_err(), "{name}");
+    }
+}
+#[test]
+fn repeated_packages_preserve_per_copy_cent_allocation_when_repriced() {
+    let mapping = Mapping::default();
+    let mut i = input(&[]);
+    i.package_zodiacs = vec![1, 6, 1];
+    i.amount = "100.1".into();
+    let mut p = plan(&rule("特码"), &i, &mapping).unwrap();
+    assert_eq!(p.atoms.len(), 13);
+    assert_eq!(p.stake, 30_030);
+    for (z, count, total) in [(1, 8, 20_020), (6, 5, 10_010)] {
+        let a: Vec<_> = p
+            .atoms
+            .iter()
+            .filter(|a| mapping.zodiac[a.options[0] as usize - 1] == z)
+            .collect();
+        assert_eq!(a.len(), count);
+        assert_eq!(a.iter().map(|a| a.stake).sum::<i64>(), total);
+    }
+    let per_number: Vec<_> = p
+        .atoms
+        .iter()
+        .filter(|a| a.options == [6])
+        .map(|a| a.stake)
+        .collect();
+    assert_eq!(per_number, vec![2503, 2503]);
+    price_package(&mut p.atoms, &i.package_zodiacs, &mapping, 10_030).unwrap();
+    assert_eq!(p.atoms.iter().map(|a| a.stake).sum::<i64>(), 30_090);
+}
+
+#[test]
+fn repeated_choices_follow_basic_bet_size_for_custom_combination_rules() {
+    let mut r = rule("特码");
+    r.relation = Relation::Ge;
+    r.combination_size = 2;
+    r.compound_enabled = true;
+    let mut i = input(&[1, 1, 2]);
+    i.compound = true;
+    assert!(plan(&r, &i, &Mapping::default()).is_err());
+    i.selections = vec![1, 2];
+    assert_eq!(plan(&r, &i, &Mapping::default()).unwrap().atoms.len(), 1);
+    r.quantity = 2;
+    r.relation = Relation::Le;
+    r.combination_size = 1;
+    i.selections = vec![1, 1, 2];
+    assert_eq!(plan(&r, &i, &Mapping::default()).unwrap().atoms.len(), 3);
 }

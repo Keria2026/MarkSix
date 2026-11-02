@@ -63,7 +63,6 @@ test("compound and drag preserve grouping", () => {
 });
 for (const raw of [
   "尾中10尾各100",
-  "特码01 01各100",
   "特码0150各100",
   "二中二{01 02各100",
   "二中二【】各100",

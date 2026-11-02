@@ -83,8 +83,8 @@
   function boundary(values: number[]) {
     if (!currentPlay) return null;
     const selected = draft.packageMode
-      ? entryMapping.zodiac.flatMap((z, i) =>
-          values.includes(z) ? [i + 1] : [],
+      ? values.flatMap((value) =>
+          entryMapping.zodiac.flatMap((z, i) => (z === value ? [i + 1] : [])),
         )
       : values;
     return selectionBoundary(currentPlay.rule, selected, draft.compound);
@@ -146,8 +146,8 @@
     currentPlay?.rule.kind === "number" && currentPlay.rule.quantity === 1,
   );
   const packageNumbers = $derived(
-    entryMapping.zodiac.flatMap((z, i) =>
-      draft.selections.includes(z) ? [i + 1] : [],
+    draft.selections.flatMap((value) =>
+      entryMapping.zodiac.flatMap((z, i) => (z === value ? [i + 1] : [])),
     ),
   );
   $effect(() => {
@@ -479,6 +479,14 @@
                 : "输入选项，以空格或标点分隔"}
           /></label
         >
+
+        <p class="field-help">
+          {(draft.compound
+            ? currentPlay.rule.combination_size
+            : currentPlay.rule.quantity) === 1
+            ? "重复项目按出现次数计注，横线与点、顿号均可分隔选号。"
+            : "每条组合注内选择不同对象，可将相同完整投注组多次加入组合单。"}
+        </p>
 
         <div
           class="option-grid"
