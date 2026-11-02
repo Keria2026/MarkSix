@@ -50,6 +50,7 @@
   import { newTextDraft } from "./lib/text-entry";
   import StatisticsPanel from "./components/Statistics.svelte";
   import DrawPanel from "./components/DrawPanel.svelte";
+  import ReceivedDistribution from "./components/ReceivedDistribution.svelte";
   import Modal from "./components/Modal.svelte";
   import {
     money,
@@ -429,13 +430,12 @@
         if (selectedDay?.id === id) selectedDay = updated;
       }
       if (
-        tab === "overview" ||
         tab === "bet" ||
         (tab === "statistics" && statisticsCategory === "records") ||
         (tab === "history" && selectedDay)
       )
         await loadRecords(records.page);
-      if (active)
+      if (active && tab !== "overview")
         await loadStatistics(
           report?.period === active.id ? report.layoffs_page : 1,
         );
@@ -482,7 +482,7 @@
     globalError = "";
     try {
       if (next === "history") await loadHistory();
-      else if (next !== "settings") {
+      else if (next !== "settings" && next !== "overview") {
         await loadRecords();
         if (active) await loadStatistics();
       }
@@ -1049,29 +1049,37 @@
               >飞出受注统计</button
             >{/if}
         </div>{/if}
-      {#if report && report.period === active.id}<StatisticsPanel
-          {layoffsEnabled}
-          {report}
+      {#if !selectedDay}
+        <ReceivedDistribution
           {api}
-          compact={!selectedDay}
-          category={selectedDay ? historyCategory : "bettors"}
-          onbettor={filterBettor}
-          onpage={loadStatistics}
-        />{/if}
-      <RecordsTable
-        {records}
-        {recordChoices}
-        historical={!!selectedDay}
-        bind:selectedBettors
-        bind:selectedPlays
-        bind:minAmount
-        bind:maxAmount
-        bind:recordOrder
-        onload={loadRecords}
-        showDetail={showRecord}
-        {canEnter}
-        onbet={() => navigate("bet")}
-      />
+          period={active.id}
+          revision={active.totals}
+        />
+      {:else}
+        {#if report && report.period === active.id}<StatisticsPanel
+            {layoffsEnabled}
+            {report}
+            {api}
+            compact={!selectedDay}
+            category={selectedDay ? historyCategory : "bettors"}
+            onbettor={filterBettor}
+            onpage={loadStatistics}
+          />{/if}
+        <RecordsTable
+          {records}
+          {recordChoices}
+          historical={!!selectedDay}
+          bind:selectedBettors
+          bind:selectedPlays
+          bind:minAmount
+          bind:maxAmount
+          bind:recordOrder
+          onload={loadRecords}
+          showDetail={showRecord}
+          {canEnter}
+          onbet={() => navigate("bet")}
+        />
+      {/if}
     {:else if tab === "bet" && canEnter}
       <section class="page-heading">
         <div>

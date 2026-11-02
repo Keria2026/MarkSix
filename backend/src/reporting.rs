@@ -169,3 +169,69 @@ pub(crate) async fn days(
         json!({"items":items,"total":count,"page":page,"page_size":20}),
     ))
 }
+
+#[derive(Serialize)]
+pub(crate) struct ReceivedDistribution {
+    special: Vec<i64>,
+    zodiac: Vec<i64>,
+    tail: Vec<i64>,
+}
+impl ReceivedDistribution {
+    fn empty() -> Self {
+        Self {
+            special: vec![0; 49],
+            zodiac: vec![0; 12],
+            tail: vec![0; 10],
+        }
+    }
+    fn add(&mut self, atom: &Atom) -> RuleResult<()> {
+        if atom.options.len() != 1 || atom.condition != Condition::All {
+            return Ok(());
+        }
+        let option = atom.options[0] as usize;
+        let bucket = match (atom.kind, atom.scope) {
+            (Kind::Number, crate::domain::Scope::Special) if (1..=49).contains(&option) => {
+                &mut self.special[option - 1]
+            }
+            (Kind::Zodiac, crate::domain::Scope::All) if option < 12 => &mut self.zodiac[option],
+            (Kind::Tail, crate::domain::Scope::All) if option < 10 => &mut self.tail[option],
+            _ => return Ok(()),
+        };
+        *bucket = checked_sum([*bucket, atom.stake])?;
+        Ok(())
+    }
+}
+pub(crate) async fn received_distribution(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ReportQuery>,
+) -> ApiResult<Json<ReceivedDistribution>> {
+    let mut tx = state.pool.begin().await?;
+    let scope = scope(&mut tx, &id, query.combined).await?;
+    let rows: Vec<(String, sqlx::types::Json<Vec<Atom>>)> = sqlx::query_as(&format!(
+        "SELECT period_id,atoms FROM bets WHERE {} AND status<>'cancelled' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind')) IN ('number','zodiac','tail') AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.condition'))='all'",scope.bets()
+    )).bind(&scope.key).fetch_all(&mut *tx).await?;
+    let mut distribution = ReceivedDistribution::empty();
+    for (period_id, atoms) in rows {
+        let draw = scope
+            .periods
+            .iter()
+            .find(|p| p.id == period_id)
+            .and_then(|p| p.draw.as_ref());
+        for atom in &atoms.0 {
+            if !draw.is_some_and(|d| is_void(atom, d)) {
+                distribution.add(atom)?;
+            }
+        }
+    }
+    // The response remains within the same exact integer range as ledger money.
+    checked_sum(distribution.special.iter().copied())?;
+    checked_sum(distribution.zodiac.iter().copied())?;
+    checked_sum(distribution.tail.iter().copied())?;
+    tx.commit().await?;
+    Ok(Json(distribution))
+}
+
+#[cfg(test)]
+#[path = "../tests/support/received.rs"]
+mod received_contracts;
