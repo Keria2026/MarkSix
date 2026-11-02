@@ -1,6 +1,5 @@
 import { PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
-import { zipSync } from "fflate";
 import { pngEncoder } from "./png";
 import { money, marketName } from "./types";
 import { statementFilename, statementRows, statementTotals } from "./statement";
@@ -358,47 +357,14 @@ async function paintPng(
   }
 }
 
-export async function createBettorArchive(
-  data: BettorStatement,
-  fontBytes: Uint8Array,
-  signal: AbortSignal,
-  progress: (done: number, total: number) => void,
-  format: StatementFormat,
-): Promise<Uint8Array> {
-  return zipSync(
-    await createBettorFiles(data, fontBytes, signal, progress, format),
-    { level: 0 },
-  );
-}
+export { createBettorArchive, createBettorFile } from "./statement-export";
 
-export async function createBettorFile(
-  data: BettorStatement,
-  name: string,
-  fontBytes: Uint8Array,
-  signal: AbortSignal,
-  progress: (done: number, total: number) => void,
-  format: StatementFormat,
-): Promise<{ name: string; bytes: Uint8Array }> {
-  const bettors = data.bettors.filter((bettor) => bettor.name === name);
-  if (bettors.length !== 1)
-    throw new Error("未找到该投注人的完整账单，请刷新统计后重试");
-  const files = await createBettorFiles(
-    { ...data, bettors },
-    fontBytes,
-    signal,
-    progress,
-    format,
-  );
-  const [filename, bytes] = Object.entries(files)[0];
-  return { name: filename, bytes };
-}
-
-async function createBettorFiles(
+export async function createBettorFiles(
   data: BettorStatement,
   fontBytes: Uint8Array,
   signal: AbortSignal,
   progress: (done: number, total: number) => void,
-  format: StatementFormat,
+  format: Exclude<StatementFormat, "xlsx">,
 ): Promise<Record<string, Uint8Array>> {
   const files: Record<string, Uint8Array> = Object.create(null),
     used = new Set<string>();

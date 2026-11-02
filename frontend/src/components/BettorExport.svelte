@@ -3,10 +3,7 @@
   import fontUrl from "../assets/NotoSansSC-Regular.ttf?url";
   import { Download, LoaderCircle, X } from "lucide-svelte";
   import type { api as Api } from "../lib/types";
-  import type {
-    BettorStatement,
-    StatementFormat,
-  } from "../lib/bettor-statement";
+  import type { BettorStatement, StatementFormat } from "../lib/statement";
   import { createRequestScope } from "../lib/requests";
   let {
     period,
@@ -46,6 +43,8 @@
     const signal = controller.signal;
     const requestedPeriod = period;
     const requestedFormat = format;
+    const formatLabel =
+      requestedFormat === "xlsx" ? "Excel" : requestedFormat.toUpperCase();
     busy = true;
     error = "";
     status = "正在读取账单…";
@@ -55,16 +54,22 @@
         { signal },
       );
       if (!data.bettors.length) throw new Error("本期暂无投注人记录");
-      status = "正在准备中文对账单…";
+      status =
+        requestedFormat === "xlsx"
+          ? "正在准备 Excel 账单…"
+          : "正在准备中文对账单…";
       const { createBettorArchive, createBettorFile } = await import(
-        "../lib/bettor-statement"
+        "../lib/statement-export"
       );
       signal.throwIfAborted();
-      const font = await fetch(fontUrl, { signal });
-      if (!font.ok) throw new Error("中文字体加载失败，请重试");
-      const bytes = new Uint8Array(await font.arrayBuffer());
+      let bytes = new Uint8Array();
+      if (requestedFormat !== "xlsx") {
+        const font = await fetch(fontUrl, { signal });
+        if (!font.ok) throw new Error("中文字体加载失败，请重试");
+        bytes = new Uint8Array(await font.arrayBuffer());
+      }
       const progress = (done: number, total: number) => {
-        status = `正在生成 ${requestedFormat.toUpperCase()}：${done} / ${total}`;
+        status = `正在生成 ${formatLabel}：${done} / ${total}`;
       };
       const file =
         bettor === undefined
@@ -94,7 +99,9 @@
               ? "application/zip"
               : requestedFormat === "pdf"
                 ? "application/pdf"
-                : "image/png",
+                : requestedFormat === "xlsx"
+                  ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  : "image/png",
         }),
       );
       const link = document.createElement("a");
@@ -102,7 +109,7 @@
       link.download = file.name;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      status = `已导出${bettor === undefined ? "全部投注人" : `「${bettor}」`} ${requestedFormat.toUpperCase()} 账单`;
+      status = `已导出${bettor === undefined ? "全部投注人" : `「${bettor}」`} ${formatLabel} 账单`;
     } catch (e) {
       if (!signal.aborted)
         error = e instanceof Error ? e.message : "账单导出失败";
@@ -118,6 +125,7 @@
     <select aria-label="账单导出格式" bind:value={format} disabled={busy}>
       <option value="pdf">PDF 文档</option>
       <option value="png">PNG 图片</option>
+      <option value="xlsx">Excel 表格</option>
     </select>
   </label>
   <button

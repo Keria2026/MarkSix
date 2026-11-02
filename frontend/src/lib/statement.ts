@@ -16,7 +16,7 @@ export interface BettorStatement {
   }[];
 }
 
-export type StatementFormat = "pdf" | "png";
+export type StatementFormat = "pdf" | "png" | "xlsx";
 export function statementFilename(
   name: string,
   used: Set<string>,
