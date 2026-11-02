@@ -677,3 +677,54 @@ test("head tail and zodiac selectors retain the chosen number play through confi
     ),
   ).toBe(true);
 });
+
+for (const width of [390, 1440]) {
+  test(`complete each-number wording previews and submits every number at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const writes = await openText(page);
+    const previews: object[] = [];
+    await page.route("**/api/slips/preview", async (route) => {
+      previews.push(route.request().postDataJSON());
+      await route.fulfill({
+        json: {
+          valid: true,
+          items: [{ units: 7, stake: 42000, error: null }],
+          units: 7,
+          stake: 42000,
+          error: null,
+        },
+      });
+    });
+    await page
+      .getByLabel("投注原文")
+      .fill("03-15-27-39-04-16-28 个数字60\n7注共420");
+    await page.getByRole("button", { name: "校验", exact: true }).click();
+    const modal = page.getByRole("dialog", { name: "确认投注单" });
+    await modal.getByPlaceholder("填写投注人").fill("synthetic-number-wording");
+    await expect(modal.locator(".text-entry-rows > li")).toHaveCount(2);
+    await expect(
+      modal.getByText("7 注 · 本金 ¥ 420.00", { exact: true }),
+    ).toBeVisible();
+    await expect(modal.getByLabel("第1项金额", { exact: true })).toHaveValue(
+      "60",
+    );
+    const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+    await expect(submit).toBeEnabled();
+    expect(previews.length).toBeGreaterThan(0);
+    expect(writes).toHaveLength(0);
+    await submit.click();
+    await expect(modal).toBeHidden();
+    expect(writes).toHaveLength(1);
+    const { items } = writes[0] as {
+      items: { play_id: number; selections: number[]; amount: string }[];
+    };
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      play_id: plays.find((p) => p.rule.name === "特码")!.id,
+      selections: [3, 15, 27, 39, 4, 16, 28],
+      amount: "60",
+    });
+  });
+}

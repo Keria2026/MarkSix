@@ -23,6 +23,15 @@ function values(
 ): number[] {
   if (kind === "number")
     body = body.replace(
+      /(?<![\d.])([0-9](?:\s*[.,，、‐‑‒–—―−-]\s*[0-9])+)\s*尾/gu,
+      (_, digits: string) =>
+        digits
+          .match(/[0-9]/gu)!
+          .map((n) => n + "尾")
+          .join(" "),
+    );
+  if (kind === "number")
+    body = body.replace(
       /[鼠牛虎兔龙蛇马羊猴鸡狗猪]|(?<![\d.])([0-9])\s*([尾头頭])/gu,
       (
         selection: string,
@@ -247,8 +256,25 @@ export function compileRow(
         throw new Error("生肖金额有歧义：请选择每号金额或每肖包号金额");
       // Comma-separated full zodiac sets are separate lines of the same slip.
       const parts = body
-        .split(rule.kind === "zodiac" ? /[,，;；、/\r\n]+/u : /[;；]+/u)
-        .filter((s) => s.trim());
+        .split(rule.kind === "zodiac" ? /[,，;；、/.。]+/u : /[;；]+/u)
+        .filter((s) => s.trim())
+        .flatMap((part) => {
+          if (rule.kind !== "zodiac") return [part];
+          const words = part.trim().split(/\s+/u);
+          const complete =
+            words.length > 1 &&
+            words.every((word) => {
+              try {
+                const n = values(word, rule.kind, mapping).length;
+                return compound
+                  ? n >= rule.combination_size
+                  : n === rule.quantity;
+              } catch {
+                return false;
+              }
+            });
+          return complete ? words : [part];
+        });
       // Newlines can delimit complete groups even when the play and amount
       // follow the entire selection block. Never regroup an incomplete line.
       const lines = body.split(/\r?\n/u).filter((s) => s.trim());

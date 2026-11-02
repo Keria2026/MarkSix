@@ -89,6 +89,16 @@ async fn daily_reports_keep_markets_together_without_moving_hk_bets_across_dates
     )
     .await;
     assert_eq!(first["totals"]["stake"], 30000);
+    let distribution = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{day1}/received-distribution?combined=true"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(distribution["special"][6], 10000);
+    assert_eq!(distribution["special"][30], 20000);
     assert_eq!(first["periods"].as_array().unwrap().len(), 2);
     let filters = ok(
         &app,
@@ -149,6 +159,23 @@ async fn daily_reports_keep_markets_together_without_moving_hk_bets_across_dates
         .await
         .unwrap();
     for (day, stake, records) in [(day1, 32500, 3), (day2, 7500, 1)] {
+        let distribution = ok(
+            &app,
+            "GET",
+            &format!("/api/periods/{day}/received-distribution?combined=true"),
+            json!({}),
+            &cookie,
+        )
+        .await;
+        assert_eq!(
+            distribution["special"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_i64().unwrap())
+                .sum::<i64>(),
+            stake
+        );
         let summary = ok(&app, "GET", &format!("/api/days/{day}"), json!({}), &cookie).await;
         assert_eq!(summary["totals"]["stake"], stake);
         assert_eq!(summary["totals"]["records"], records);
@@ -352,4 +379,71 @@ async fn daily_reports_keep_markets_together_without_moving_hk_bets_across_dates
         StatusCode::INTERNAL_SERVER_ERROR
     );
     pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated marksix_test database"]
+async fn received_distribution_sums_both_markets_and_tracks_corrections_and_cancellation() {
+    let pool = database::reset().await.unwrap();
+    let mut state = store::AppState::new(pool.clone()).unwrap();
+    state.clock = Arc::new(|| {
+        chrono::NaiveDate::from_ymd_opt(2040, 1, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    });
+    let app = api::router(state);
+    let (_, _, cookie) = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"username":"test-admin","password":std::env::var("TEST_ADMIN_PASSWORD").unwrap()}),
+        "",
+    )
+    .await;
+    let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let id = boot["today"]["id"].as_str().unwrap();
+    let endpoint = format!("/api/periods/{id}/received-distribution?combined=true");
+    assert_eq!(
+        call(&app, "GET", &endpoint, json!({}), "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let empty = ok(&app, "GET", &endpoint, json!({}), &cookie).await;
+    assert_eq!(empty["special"].as_array().unwrap().len(), 49);
+    let line = |name: &str, market: &str, options: Value, amount: &str| {
+        let p = boot["plays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["rule"]["name"] == name)
+            .unwrap();
+        json!({"play_id":p["id"],"play_version":p["version"],"market":market,"selections":options,"amount":amount,"compound":false})
+    };
+    ok(&app,"POST","/api/slips",json!({"period":id,"bettor":"synthetic-received-a","request_id":uuid::Uuid::new_v4().to_string(),"items":[line("特码","macau",json!([7,7,49]),"100"),line("特码45倍","hk",json!([7]),"200"),line("一肖中","macau",json!([0,11]),"10"),line("尾中","hk",json!([0,9]),"20"),line("一肖不中","macau",json!([0]),"300")]}),&cookie).await;
+    ok(&app,"POST","/api/slips",json!({"period":id,"bettor":"synthetic-received-b","request_id":uuid::Uuid::new_v4().to_string(),"items":[line("特码","macau",json!([7]),"50")]}),&cookie).await;
+    let d = ok(&app, "GET", &endpoint, json!({}), &cookie).await;
+    assert_eq!(d["special"][6], 45000);
+    assert_eq!(d["special"][48], 10000);
+    assert_eq!(d["zodiac"][0], 1000);
+    assert_eq!(d["zodiac"][11], 1000);
+    assert_eq!(d["tail"][0], 2000);
+    assert_eq!(d["tail"][9], 2000);
+    let bet: String=sqlx::query_scalar("SELECT id FROM bets WHERE market='hk' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind'))='number'").fetch_one(&pool).await.unwrap();
+    ok(&app,"PUT",&format!("/api/bets/{bet}/amount"),json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":1,"amount":"120","receiver":null}),&cookie).await;
+    assert_eq!(
+        ok(&app, "GET", &endpoint, json!({}), &cookie).await["special"][6],
+        37000
+    );
+    ok(
+        &app,
+        "POST",
+        &format!("/api/bets/{bet}/cancel"),
+        json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":2}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        ok(&app, "GET", &endpoint, json!({}), &cookie).await["special"][6],
+        25000
+    );
 }

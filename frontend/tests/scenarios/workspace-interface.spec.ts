@@ -97,7 +97,18 @@ async function workspace(page: Page, statement?: BettorStatement) {
     else if (path === "/api/license") json = { active: true, permanent: true };
     else if (path === "/api/bootstrap") json = boot;
     else if (path.endsWith("/statistics")) json = report;
-    else if (path.endsWith("/bet-filters"))
+    else if (path.endsWith("/received-distribution")) {
+      const special = Array(49).fill(0),
+        zodiac = Array(12).fill(0),
+        tail = Array(10).fill(0);
+      special[0] = 4900;
+      special[48] = 4900;
+      zodiac[0] = 1200;
+      zodiac[11] = 1200;
+      tail[0] = 1000;
+      tail[9] = 1000;
+      json = { special, zodiac, tail };
+    } else if (path.endsWith("/bet-filters"))
       json = {
         bettors: [
           "张三",
@@ -173,7 +184,7 @@ for (const width of [320, 390, 768, 1440, 1920, 2560, 3440]) {
     page.on("pageerror", (e) => errors.push(e.message));
     await workspace(page);
     if (width >= 1440) {
-      for (const selector of [".topbar", ".stats-grid", ".records-panel"]) {
+      for (const selector of [".topbar", ".stats-grid", ".received-panel"]) {
         const box = await page.locator(selector).first().boundingBox();
         expect(box).not.toBeNull();
         expect(width - box!.x - box!.width).toBeLessThanOrEqual(48);
@@ -1058,3 +1069,88 @@ for (const width of [390, 1440]) {
     },
   );
 }
+
+for (const width of [390, 1440]) {
+  test(`home received distribution switches three grids without old tables at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { queries } = await workspace(page);
+    const panel = page.getByRole("region", { name: "受注金额分布" });
+    await expect(panel).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "投注人分类统计", exact: true }),
+    ).toBeHidden();
+    await expect(page.getByRole("form", { name: "筛选投注记录" })).toBeHidden();
+    expect(queries).toHaveLength(0);
+    await expect(panel.getByRole("listitem")).toHaveCount(49);
+    await expect(panel.locator(".received-summary")).toContainText("¥ 98.00");
+    await expect(panel.locator(".received-summary")).toContainText("¥ 2.00");
+    await expect(panel.locator(".received-cell.above")).toHaveCount(2);
+    await panel.screenshot({
+      path: test.info().outputPath(`received-${width}.png`),
+    });
+    const bounds = await panel.locator(".received-cell").evaluateAll((nodes) =>
+      nodes.slice(0, 4).map((n) => {
+        const r = n.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width };
+      }),
+    );
+    expect(bounds[0].y).toBe(bounds[1].y);
+    expect(bounds[1].y).toBe(bounds[2].y);
+    expect(bounds[3].y).toBeGreaterThan(bounds[0].y);
+    await panel.getByRole("tab", { name: "一肖中", exact: true }).click();
+    await expect(panel.getByRole("listitem")).toHaveCount(12);
+    await expect(panel.getByRole("listitem").first()).toContainText("鼠");
+    await expect(panel.getByRole("listitem").last()).toContainText("猪");
+    await panel.getByRole("tab", { name: "尾中", exact: true }).click();
+    await expect(panel.getByRole("listitem")).toHaveCount(10);
+    await expect(panel.getByRole("listitem").first()).toContainText("0尾");
+    await expect(panel.getByRole("listitem").last()).toContainText("9尾");
+    await panel.getByRole("tab", { name: "尾中", exact: true }).press("Home");
+    await expect(
+      panel.getByRole("tab", { name: "特码", exact: true }),
+    ).toBeFocused();
+    await expect(panel.getByRole("listitem")).toHaveCount(49);
+    await accessible(page);
+    await navigate(page, "本期统计");
+    await navigate(page, "投注记录");
+    await expect(
+      page.getByRole("form", { name: "筛选投注记录" }),
+    ).toBeVisible();
+  });
+}
+test("received distribution failure stays visible and retries without fabricating zeros", async ({
+  page,
+}) => {
+  await page.route(
+    "**/api/periods/*/received-distribution?combined=true",
+    (route) =>
+      route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
+  );
+  // Newer routes take precedence; override the synthetic workspace handler after opening.
+  await workspace(page);
+  await page.route(
+    "**/api/periods/*/received-distribution?combined=true",
+    (route) =>
+      route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
+  );
+  await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+  const panel = page.getByRole("region", { name: "受注金额分布" });
+  await expect(panel.getByRole("alert")).toContainText("统计暂时不可用");
+  await expect(panel.getByRole("list")).toBeHidden();
+  await page.route(
+    "**/api/periods/*/received-distribution?combined=true",
+    (route) =>
+      route.fulfill({
+        json: {
+          special: Array(49).fill(0),
+          zodiac: Array(12).fill(0),
+          tail: Array(10).fill(0),
+        },
+      }),
+  );
+  await panel.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(panel.getByRole("listitem")).toHaveCount(49);
+  await expect(panel).toContainText("本日暂无该类受注");
+});
