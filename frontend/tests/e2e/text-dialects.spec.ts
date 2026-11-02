@@ -610,3 +610,70 @@ test("number head selections preview and submit explicit numbers at each-number 
     ),
   ).toBe(true);
 });
+
+test("head tail and zodiac selectors retain the chosen number play through confirmation", async ({
+  page,
+}) => {
+  const writes = await openText(page);
+  const previews: unknown[] = [];
+  await page.route("**/api/slips/preview", async (route) => {
+    previews.push(route.request().postDataJSON().items);
+    await route.fulfill({
+      json: {
+        valid: true,
+        units: 29,
+        stake: 90000,
+        error: null,
+        items: [
+          { units: 10, stake: 30000, error: null },
+          { units: 5, stake: 20000, error: null },
+          { units: 4, stake: 20000, error: null },
+          { units: 10, stake: 20000, error: null },
+        ],
+      },
+    });
+  });
+  await page
+    .getByLabel("投注原文")
+    .fill("平码1头各30；2尾各40；蛇各数50；二中二复式蛇40各组20");
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "确认投注单" });
+  await expect(modal.locator(".text-entry-rows > li")).toHaveCount(4);
+  await modal.getByPlaceholder("填写投注人").fill("合成选号投注人");
+  const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+  await expect(submit).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await submit.click();
+  await expect(modal).toBeHidden();
+  expect(writes).toHaveLength(1);
+  const body = writes[0] as {
+    items: {
+      play_id: number;
+      selections: number[];
+      amount: string;
+      compound: boolean;
+    }[];
+  };
+  expect(
+    body.items.map((i) => plays.find((p) => p.id === i.play_id)!.rule.name),
+  ).toEqual(["平码", "平码", "平码", "二中二"]);
+  expect(body.items.map((i) => i.selections)).toEqual([
+    [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    [2, 12, 22, 32, 42],
+    [2, 14, 26, 38],
+    [2, 14, 26, 38, 40],
+  ]);
+  expect(body.items.map((i) => i.amount)).toEqual(["30", "40", "50", "20"]);
+  expect(body.items.map((i) => i.compound)).toEqual([
+    false,
+    false,
+    false,
+    true,
+  ]);
+  expect(previews.length).toBeGreaterThan(0);
+  expect(
+    previews.every(
+      (items) => JSON.stringify(items) === JSON.stringify(body.items),
+    ),
+  ).toBe(true);
+});

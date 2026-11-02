@@ -67,9 +67,10 @@ test("amount aliases preserve explicit plays, per-zodiac packages and per-group 
   );
   expect(
     items.map((i) => plays.find((p) => p.id === i.play_id)!.rule.name),
-  ).toEqual(["一肖中", "特码", "三有", "二有"]);
+  ).toEqual(["一肖中", "一肖中", "三有", "二有"]);
   expect(items[0].selections).toEqual([1, 6]);
-  expect(items[1].package_zodiacs).toEqual([1, 6]);
+  expect(items[1].selections).toEqual([1, 6]);
+  expect(items[1].package_zodiacs).toBeUndefined();
   expect(items[2].selections).toEqual([0, 1, 2]);
   expect(items.map((i) => i.amount)).toEqual(["70", "90", "40", "30"]);
 });

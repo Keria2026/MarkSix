@@ -11,6 +11,7 @@ interface Context {
   id: number;
   mode: TextPreference["amount_mode"];
   compound?: boolean;
+  defaultSpecial?: boolean;
 }
 interface Segment {
   context: Context;
@@ -185,10 +186,12 @@ function parseNormalizedText(
       .replace(/(?:复式[\s,，]*){2,}/gu, "复式 ")
       .replace(/^[\s:：,，;；.。]+|[\s,，;；.。]+$/gu, "");
     const implicitSpecial =
-      ["各肖", "各数"].includes(segment.marker) && !segment.explicitPlay;
+      ["各肖", "各数"].includes(segment.marker) &&
+      !segment.explicitPlay &&
+      (!segment.context.label || segment.context.defaultSpecial === true);
     if (segment.explicitPlay || hasSelections || segment.amount) {
       if (implicitSpecial) {
-        segment.context = context("特码");
+        segment.context = { ...context("特码"), defaultSpecial: true };
         segment.contexts = [];
         segment.compound = false;
       }
@@ -538,6 +541,7 @@ function parseNormalizedText(
       ) {
         if (
           !segment.explicitPlay &&
+          selected?.rule.kind !== "number" &&
           !segment.content.some((t) => t.kind === "drag")
         )
           infer("tail");
@@ -707,10 +711,7 @@ function parseNormalizedText(
         money &&
         !segment.amount &&
         !["尾", "尾数", "尾數", "头", "頭"].includes(tokens[next]?.text) &&
-        ((bareAfterZodiac &&
-          (!/[头頭]/u.test(previous.text) ||
-            money.perGroup ||
-            !followedByListAmount(i))) ||
+        ((bareAfterZodiac && (money.perGroup || !followedByListAmount(i))) ||
           afterGroup ||
           currency ||
           ["单平", "4头不中", "四头不中"].includes(segment.context.label) ||
