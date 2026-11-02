@@ -795,7 +795,8 @@ type NavigationFrame = {
   icon: number;
 };
 type RecordedNavigation = HTMLElement & {
-  motionFrames?: Promise<NavigationFrame[]>;
+  motionAnimations?: Animation[];
+  motionObserver?: MutationObserver;
 };
 
 test.describe("liquid glass touch motion", () => {
@@ -818,33 +819,28 @@ test.describe("liquid glass touch motion", () => {
     const destination = (await target.boundingBox())!;
     await nav.evaluate((node) => {
       const element = node as RecordedNavigation;
-      const lens = element.querySelector<HTMLElement>(".nav-glass-lens")!;
-      // Install the recorder synchronously, then sample from the actual click.
-      // WebKit must not wait on an evaluation promise before delivering input.
-      element.motionFrames = new Promise<NavigationFrame[]>((resolve) => {
-        element.addEventListener(
-          "click",
-          () => {
-            const samples: NavigationFrame[] = [];
-            const start = performance.now();
-            function frame() {
-              const box = lens.getBoundingClientRect();
-              const icon = element
-                .querySelector(".nav-link.active > svg")!
-                .getBoundingClientRect();
-              samples.push({
-                time: performance.now() - start,
-                x: box.x + box.width / 2,
-                height: box.height,
-                icon: icon.height,
-              });
-              if (performance.now() - start < 950) requestAnimationFrame(frame);
-              else resolve(samples);
-            }
-            frame();
-          },
-          { once: true, capture: true },
-        );
+      element.motionAnimations = [];
+      // Pause actual browser animations at creation. Wall-clock sampling can
+      // miss an entire peak when a headless renderer skips a 190ms frame.
+      // Definitions, easing, gesture delivery and rendered geometry stay real.
+      element.motionObserver = new MutationObserver(() => {
+        for (const animation of element.getAnimations({ subtree: true })) {
+          if (element.motionAnimations!.includes(animation)) continue;
+          element.motionAnimations!.push(animation);
+          animation.pause();
+          animation.currentTime = 0;
+        }
+      });
+      element.motionObserver.observe(element, {
+        attributes: true,
+        subtree: true,
+        attributeFilter: [
+          "style",
+          "class",
+          "aria-current",
+          "data-glass-press",
+          "data-glass-settling",
+        ],
       });
     });
     await page.touchscreen.tap(
@@ -852,9 +848,38 @@ test.describe("liquid glass touch motion", () => {
       destination.y + destination.height / 2,
     );
     await expect(target).toHaveAttribute("aria-current", "page");
-    const samples = await nav.evaluate(
-      (node) => (node as RecordedNavigation).motionFrames!,
-    );
+    const samples = await nav.evaluate(async (node) => {
+      const element = node as RecordedNavigation;
+      element.motionObserver!.disconnect();
+      const animations = element.motionAnimations!;
+      const lens = element.querySelector<HTMLElement>(".nav-glass-lens")!;
+      const samples: NavigationFrame[] = [];
+      for (const time of [0, 40, 90, 123, 200, 320, 430, 480, 560]) {
+        for (const animation of animations) {
+          if (animation.playState === "idle") continue;
+          const duration = Number(
+            animation.effect!.getComputedTiming().endTime,
+          );
+          animation.currentTime = Math.min(time, duration);
+        }
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+        const box = lens.getBoundingClientRect();
+        const icon = element
+          .querySelector(".nav-link.active > svg")!
+          .getBoundingClientRect();
+        samples.push({
+          time,
+          x: box.x + box.width / 2,
+          height: box.height,
+          icon: icon.height,
+        });
+      }
+      for (const animation of animations)
+        if (animation.playState !== "idle") animation.finish();
+      return samples;
+    });
     await test.info().attach("tap-animation-frames", {
       body: JSON.stringify(samples),
       contentType: "application/json",
