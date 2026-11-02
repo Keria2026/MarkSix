@@ -13,21 +13,28 @@ export function normalizeLanguage(raw: string) {
     render: string | ((match: RegExpExecArray) => string),
   ) {
     const matches = [...text.matchAll(pattern)];
-    for (const match of matches.reverse()) {
+    if (!matches.length) return;
+    const pieces: string[] = [];
+    const mapped: typeof spans = [];
+    let cursor = 0;
+    for (const match of matches) {
       const start = match.index!,
         end = start + match[0].length;
       const next = typeof render === "string" ? render : render(match);
+      if (next === match[0]) continue;
+      pieces.push(text.slice(cursor, start), next);
+      for (let i = cursor; i < start; i++) mapped.push(spans[i]);
       const range = {
         start: spans[start]?.start ?? raw.length,
         end: spans[end - 1]?.end ?? raw.length,
       };
-      text = text.slice(0, start) + next + text.slice(end);
-      spans.splice(
-        start,
-        end - start,
-        ...Array.from({ length: next.length }, () => range),
-      );
+      for (let i = 0; i < next.length; i++) mapped.push(range);
+      cursor = end;
     }
+    pieces.push(text.slice(cursor));
+    for (let i = cursor; i < spans.length; i++) mapped.push(spans[i]);
+    text = pieces.join("");
+    spans = mapped;
   }
   // Corrections, cancellations and unresolved historical references are not noise.
   if (
@@ -102,15 +109,16 @@ export function normalizeLanguage(raw: string) {
     /一共([零〇一二两三四五六七八九十百千万\d]+)注([零〇一二两三四五六七八九十百千万\d]+)(元|米|块)/gu,
     (m) => m[1] + "组共" + m[2] + m[3],
   );
-  replace(
-    /([0-9、，,\s]+)[，,]\s*特码[，,]\s*(?:一共|总共|共)([0-9]+)(元|米|块)[，,]([零〇一二两三四五六七八九十\d]+)号码平均分[。.]?/gu,
-    (m) => {
-      const n = m[1].split(/[、，,\s]+/u).filter(Boolean).length;
-      return n === Number(monetaryLiteral(m[4]))
-        ? m[1] + "特码共" + m[2] + m[3]
-        : m[0];
-    },
-  );
+  if (text.includes("号码平均分"))
+    replace(
+      /([0-9、，,\s]+)[，,]\s*特码[，,]\s*(?:一共|总共|共)([0-9]+)(元|米|块)[，,]([零〇一二两三四五六七八九十\d]+)号码平均分[。.]?/gu,
+      (m) => {
+        const n = m[1].split(/[、，,\s]+/u).filter(Boolean).length;
+        return n === Number(monetaryLiteral(m[4]))
+          ? m[1] + "特码共" + m[2] + m[3]
+          : m[0];
+      },
+    );
   const latin: [string, string][] = [
     ["er\\s+zhong\\s+er\\s+(?:dai\\s+te)", "二中二含特"],
     ["er\\s+zhong\\s+er", "二中二"],
@@ -252,9 +260,38 @@ export function normalizeLanguage(raw: string) {
     /(?<=[0-9零〇一二两三四五六七八九十百千万号])\s*和\s*(?=[0-9零〇一二两三四五六七八九十百千万])/gu,
     "、",
   );
-  replace(/([^。！？\n]+?)[，,]?都(?:要|做)(?:复式|复试)/gu, (m) =>
-    m[1].replace(/([二三四五2345](?:有|连肖|连))/gu, "$1复式"),
-  );
+  // Discover literal suffixes first so a missing suffix cannot retry every
+  // possible prefix. Each successful match retains its original source interval.
+  if (/都(?:要|做)(?:复式|复试)/u.test(text)) {
+    const regions: { start: number; end: number; next: string }[] = [];
+    let boundary = 0,
+      scanned = 0;
+    for (const marker of text.matchAll(/都(?:要|做)(?:复式|复试)/gu)) {
+      for (; scanned < marker.index!; scanned++)
+        if (/[。！？\n]/u.test(text[scanned])) boundary = scanned + 1;
+      if (boundary === marker.index) continue;
+      const body = text.slice(boundary, marker.index).replace(/[，,]$/u, "");
+      regions.push({
+        start: boundary,
+        end: marker.index! + marker[0].length,
+        next: body.replace(/([二三四五2345](?:有|连肖|连))/gu, "$1复式"),
+      });
+      boundary = marker.index! + marker[0].length;
+      scanned = boundary;
+    }
+    for (const region of regions.reverse()) {
+      const range = {
+        start: spans[region.start].start,
+        end: spans[region.end - 1].end,
+      };
+      text = text.slice(0, region.start) + region.next + text.slice(region.end);
+      spans.splice(
+        region.start,
+        region.end - region.start,
+        ...Array.from({ length: region.next.length }, () => range),
+      );
+    }
+  }
   // Explicitly named group counts are checked before removing the redundant prose.
   replace(
     /([二三四五2345](?:有|友|连))\s*([鼠牛虎兔龙蛇马羊猴鸡狗猪、，,\s]+?)([一二三四五六七八九十\d]+)组/gu,

@@ -9,6 +9,7 @@ pub use management::serve as serve_management;
 pub use portal::serve as serve_portal;
 
 #[cfg(test)]
+#[path = "../../tests/support/hosted.rs"]
 mod tests;
 
 // Constructed only after central session/account validation; never from headers.

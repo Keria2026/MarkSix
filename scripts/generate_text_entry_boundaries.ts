@@ -667,7 +667,6 @@ export async function generateBoundaries(output: string) {
       ["unknown-heading", "清风笔记\n"],
       ["zodiac-heading", "龙先生\n"],
       ["numeric-heading", "清风88\n"],
-      ["play-heading", "平特笔记\n"],
       ["market", "新奥\n"],
       ["name-colon", "清风："],
     ])
@@ -677,11 +676,20 @@ export async function generateBoundaries(output: string) {
         [3, 4, 6, 7, 8, 10],
         heading + base + `各${money}`,
         [item("三有", z.slice(0, 3), 3)],
-        ["numeric-heading", "play-heading", "name-colon"].includes(variant)
+        ["numeric-heading", "name-colon"].includes(variant)
           ? "extension"
           : "confirmed",
         "合成昵称，不复制原始客户名称；冒号也可能是自定义玩法",
       );
+    add(
+      "heading",
+      "play-heading",
+      [3, 4, 6, 7, 8, 10],
+      "平特笔记\n" + base + `各${money}`,
+      [],
+      "clarification",
+      "首行包含明确玩法，不能假定为昵称后静默忽略；保留整段供确认",
+    );
     add(
       "unknown-suffix",
       "business-text",

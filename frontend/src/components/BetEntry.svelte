@@ -462,7 +462,6 @@
         <label class="play-search selection-input"
           >输入投注项<input
             type="text"
-            maxlength="2048"
             value={selectionText}
             aria-invalid={textInvalid}
             aria-describedby={selectionError ? "selection-error" : undefined}
@@ -583,12 +582,20 @@
       <label class="amount-input"
         ><span>¥</span><input
           aria-label={draft.packageMode ? "每肖金额" : "每注金额"}
+          aria-invalid={!validAmount}
+          aria-describedby={!validAmount ? "manual-amount-error" : undefined}
           inputmode="decimal"
           pattern="[0-9]+([.][0-9])?"
           bind:value={draft.amount}
-          maxlength="16"
         /><small>{draft.packageMode ? "元 / 肖" : "元 / 注"}</small></label
       >
+      {#if !validAmount}<p
+          id="manual-amount-error"
+          class="form-error"
+          role="alert"
+        >
+          金额须大于0，最多一位小数，且不超过90000000000000元。
+        </p>{/if}
       <div class="quick-amounts">
         {#each ["10", "50", "100", "500", "1000"] as value}<button
             class:active={draft.amount === value}

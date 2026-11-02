@@ -1,5 +1,5 @@
 // Exact labelled evaluation. Never train from validation/test or treat acceptance as accuracy.
-import { parseText, compileRow } from "../frontend/src/lib/text-entry";
+import { parseText, compileText } from "../frontend/src/lib/text-entry";
 import { basicCount, zodiacs } from "../frontend/src/lib/types";
 import { dragPreview } from "../frontend/src/lib/drag";
 import type { Play, SlipLine, Mapping } from "../frontend/src/lib/types";
@@ -94,7 +94,7 @@ for (const record of records) {
     amount_mode: a.amount_mode,
   }));
   const rows = parseText(record.raw_text, plays, habits);
-  const compiled = rows.map((row) => compileRow(row, plays, record.mapping));
+  const compiled = compileText(rows, plays, record.mapping);
   const ready = rows.length > 0 && compiled.every((row) => !row.error);
   const family = (families[record.family] ??= { records: 0, exact: 0 });
   family.records++;

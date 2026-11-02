@@ -55,7 +55,7 @@ cargo test --locked --manifest-path backend/Cargo.toml
 python3 -m unittest discover -s scripts/tests -v
 python3 scripts/check_docs.py
 cd frontend
-bun test tests/unit
+bun test tests/contracts
 bun run check
 bun run build
 ```

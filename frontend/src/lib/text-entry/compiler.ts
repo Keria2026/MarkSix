@@ -150,13 +150,16 @@ export function compileRow(
 ): CompiledRow {
   if (row.summary) return { items: [], error: "合计须与整单投注一起校验" };
   try {
+    if (row.body.length > 12000)
+      throw new Error("投注项过长，最多12,000字，请核对后缩短");
     if (row.marketConflict)
       throw new Error("同一条投注包含香港和澳门标记，请选择市场");
     const play = plays.find((p) => p.id === row.playId && p.enabled);
     if (!play)
       throw new Error(`请确认“${row.playLabel || "未注明玩法"}”对应的玩法`);
     const cents = entryCents(row.amount);
-    if (cents === null) throw new Error("请明确金额，须大于零且最多一位小数");
+    if (cents === null)
+      throw new Error("请明确金额，须大于零、最多一位小数且不超出允许范围");
     const { rule } = play;
     let body = tokenize(row.body, [])
       .map((token) => (token.kind === "compound" ? "复式" : token.text))

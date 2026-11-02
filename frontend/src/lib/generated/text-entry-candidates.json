@@ -1,7 +1,7 @@
 {
   "generated_by": "scripts/train_text_entry.ts",
   "schema": 2,
-  "source_sha256": "9d365fb50f97c668975cb168479cb0bf3ba4230aa2967c6acc28966d9e7fa9e5",
+  "source_sha256": "d3bb4fd23314428182852a043f6784dc0535faa19ef5679d748bb958efa47aab",
   "records": 21000,
   "training_split": "train",
   "labelled_examples": 5294,

@@ -100,14 +100,43 @@ pub(crate) async fn preview(
     }
     let mut tx = state.pool.begin().await?;
     crate::features::require_entry(&mut tx, crate::features::EntryMode::Text).await?;
-    // Bootstrap creates the period. Preview itself never creates or mutates rows.
-    let period: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR SHARE")
-        .bind(&input.period)
-        .fetch_optional(&mut *tx)
-        .await?
+    // Discover ids without locks, then acquire the same period-id order as
+    // submission before reading any play versions. Preview never creates rows.
+    let mut ids: BTreeSet<String> = sqlx::query_scalar(
+        "SELECT id FROM periods WHERE (market='macau' AND business_date=?) OR id=(SELECT id FROM periods WHERE market='hk' ORDER BY business_date DESC LIMIT 1)",
+    ).bind(business_date(received)).fetch_all(&mut *tx).await?.into_iter().collect();
+    ids.insert(input.period.clone());
+    let mut periods = Vec::new();
+    for id in ids {
+        let period: Period = sqlx::query_as("SELECT * FROM periods WHERE id=? FOR SHARE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| conflict("期次不存在，请刷新后重新预览"))?;
+        periods.push(period);
+    }
+    let period = periods
+        .iter()
+        .find(|p| p.id == input.period)
         .ok_or_else(|| conflict("期次不存在，请刷新后重新预览"))?;
-    if !crate::market::accepts(&period, received) {
+    if !crate::market::accepts(period, received) {
         return Err(conflict("期次已切换，请重新识别和预览"));
+    }
+    // The request period is an anchor, not the mapping for every market.
+    let macau = periods
+        .iter()
+        .find(|p| p.market == "macau" && p.business_date == business_date(received))
+        .ok_or_else(|| conflict("期次已切换，请刷新后重新预览"))?;
+    let hk = periods
+        .iter()
+        .filter(|p| p.market == "hk")
+        .max_by_key(|p| p.business_date)
+        .filter(|p| crate::market::accepts(p, received));
+    if period.id != macau.id
+        && !(input.items.iter().any(|line| !line.market.is_macau())
+            && hk.is_some_and(|p| p.id == period.id))
+    {
+        return Err(conflict("期次已切换，请刷新后重新预览"));
     }
     let mut plays = HashMap::new();
     for id in input
@@ -124,29 +153,42 @@ pub(crate) async fn preview(
         .await?;
         plays.insert(id, play);
     }
-    let hk: Option<Period> = sqlx::query_as(
-        "SELECT * FROM periods WHERE market='hk' ORDER BY business_date DESC LIMIT 1 FOR SHARE",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
+    // An empty HK period is moved to the current business date by submission.
+    let hk_mapping = if let Some(hk) = hk {
+        if hk.draw.is_none() && hk.business_date != business_date(received) {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM bets WHERE period_id=? AND status<>'cancelled'",
+            )
+            .bind(&hk.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if count == 0 {
+                &macau.mapping
+            } else {
+                &hk.mapping
+            }
+        } else {
+            &hk.mapping
+        }
+    } else {
+        &macau.mapping
+    };
     let mut results = Vec::new();
     let mut units = 0;
     let mut stake = 0_i64;
     let mut exposure = 0_i64;
     let mut valid = true;
     for line in &input.items {
-        let period = if line.market == crate::market::Market::Hk {
-            hk.as_ref()
-                .filter(|p| crate::market::accepts(p, received))
-                .unwrap_or(&period)
+        let mapping = if line.market.is_macau() {
+            &macau.mapping
         } else {
-            &period
+            hk_mapping
         };
         let result = match plays.get(&line.play_id).and_then(Option::as_ref) {
             Some(play) if play.enabled && play.version == line.play_version => plan(
                 &play.rule,
                 &line.as_bet_input(&input.period, &input.bettor, ""),
-                &period.mapping,
+                mapping,
             ),
             _ => Err("玩法已变更、删除或停用，请重新确认".to_owned()),
         };

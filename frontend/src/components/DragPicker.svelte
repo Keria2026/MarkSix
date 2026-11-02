@@ -52,7 +52,6 @@
         bind:value={draft.left}
         onfocus={() => (side = "left")}
         placeholder={kind === "zodiac" ? "鼠 牛" : "06 18"}
-        maxlength="2048"
       /></label
     >
     <label
@@ -61,7 +60,6 @@
         bind:value={draft.right}
         onfocus={() => (side = "right")}
         placeholder={kind === "zodiac" ? "龙 兔 狗" : "27 36"}
-        maxlength="2048"
       /></label
     >
   </div>
