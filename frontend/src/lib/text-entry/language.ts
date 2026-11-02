@@ -199,7 +199,6 @@ export function normalizeLanguage(raw: string) {
   );
   replace(/各消/gu, "各肖");
   replace(/(?:特号|特码号)/gu, "特码");
-  replace(/每号|各个号码|每个号码/gu, "各数");
   replace(/每个尾数|每个尾|各尾/gu, "每尾");
   replace(/每肖(?=[\s零〇一二两三四五六七八九十百千万\d])/gu, "各肖");
   replace(/一消中/gu, "一肖中");

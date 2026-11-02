@@ -43,8 +43,14 @@ export const marketLabels = [
 // Canonicalize only amount operators; ordinary words and configured play names
 // retain their spelling and source span.
 const amountAliases: Record<string, string> = {
+  ...Object.fromEntries(
+    ["个", "個", "各", "各个", "各個", "每个", "每個", "每"].flatMap((prefix) =>
+      ["数字", "數字", "号码", "號碼"].map((noun) => [prefix + noun, "各数"]),
+    ),
+  ),
   个: "各",
   個: "各",
+  每号: "各数",
   个数: "各数",
   各个数: "各数",
   個數: "各数",
