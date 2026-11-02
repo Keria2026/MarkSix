@@ -14,6 +14,7 @@
     { kind: "tail", title: "尾中" },
   ];
   let selected = $state<ReceivedKind>("special");
+  let layout = $state<"list" | "grid">("list");
   let data = $state<ReceivedDistribution | null>(null);
   let loadedPeriod = $state("");
   let busy = $state(false);
@@ -72,21 +73,39 @@
       <h2>受注金额分布</h2>
       <p>全部投注人 · 港澳合并 · 原受注本金</p>
     </div>
-    <div
-      class="segmented received-switch"
-      role="tablist"
-      aria-label="受注统计板块"
-    >
-      {#each categories as category, index}<button
-          id={`received-tab-${category.kind}`}
-          role="tab"
-          aria-controls="received-content"
-          aria-selected={selected === category.kind}
-          tabindex={selected === category.kind ? 0 : -1}
-          class:active={selected === category.kind}
-          onclick={() => (selected = category.kind)}
-          onkeydown={(event) => move(event, index)}>{category.title}</button
-        >{/each}
+    <div class="received-controls">
+      <div
+        class="segmented received-switch"
+        role="tablist"
+        aria-label="受注统计板块"
+      >
+        {#each categories as category, index}<button
+            id={`received-tab-${category.kind}`}
+            role="tab"
+            aria-controls="received-content"
+            aria-selected={selected === category.kind}
+            tabindex={selected === category.kind ? 0 : -1}
+            class:active={selected === category.kind}
+            onclick={() => (selected = category.kind)}
+            onkeydown={(event) => move(event, index)}>{category.title}</button
+          >{/each}
+      </div>
+      <div
+        class="segmented received-layout"
+        role="group"
+        aria-label="受注展示方式"
+      >
+        <button
+          class:active={layout === "list"}
+          aria-pressed={layout === "list"}
+          onclick={() => (layout = "list")}>单行展示</button
+        >
+        <button
+          class:active={layout === "grid"}
+          aria-pressed={layout === "grid"}
+          onclick={() => (layout = "grid")}>三列网格</button
+        >
+      </div>
     </div>
   </div>
   <div
@@ -126,6 +145,7 @@
       </p>
       <div
         class="received-grid"
+        class:received-list={layout === "list"}
         role="list"
         aria-label={`${title}逐项受注金额`}
       >
@@ -142,7 +162,9 @@
                 class="received-label"
                 data-wave={selected === "special" ? wave(index + 1) : undefined}
                 >{name}</span
-              >{#if cell.above}<span class="received-above">高于平均</span>{/if}
+              >{#if cell.above && layout === "grid"}<span class="received-above"
+                  >高于平均</span
+                >{/if}
             </div>
             <strong>{money(cell.amount)}</strong>
             {#if cell.above}<small
@@ -179,6 +201,15 @@
     margin: 8px 0 0;
     color: var(--muted);
     font-size: 13px;
+  }
+  .received-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .received-layout button {
+    min-width: 88px;
+    min-height: 44px;
   }
   .received-switch button {
     min-width: 88px;
@@ -269,12 +300,47 @@
   .received-cell.above small {
     color: #8c5200;
   }
+  .received-grid.received-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .received-list .received-cell {
+    display: grid;
+    grid-template-columns: minmax(48px, 1fr) minmax(0, 1.1fr) minmax(80px, 1fr);
+    align-items: center;
+    gap: 12px;
+  }
+  .received-list .received-cell strong {
+    margin: 0;
+    text-align: right;
+  }
+  .received-list .received-cell small {
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
   @media (max-width: 720px) {
     .received-panel {
       padding: 16px;
     }
     .received-heading {
       gap: 16px;
+    }
+    .received-controls,
+    .received-layout {
+      width: 100%;
+    }
+    .received-layout {
+      display: flex;
+    }
+    .received-layout button {
+      flex: 1;
+      min-width: 0;
+    }
+    .received-list .received-cell {
+      grid-template-columns: minmax(40px, 0.75fr) minmax(0, 1fr) minmax(
+          72px,
+          1fr
+        );
+      gap: 8px;
     }
     .received-switch {
       width: 100%;
