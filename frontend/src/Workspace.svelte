@@ -1258,6 +1258,7 @@
           {report}
           {api}
           category={statisticsCategory}
+          compact={statisticsCategory === "bettors"}
           onpage={loadStatistics}
         />{:else}<div class="empty-panel glass">正在加载本期统计…</div>{/if}
     {:else if tab === "settings"}
