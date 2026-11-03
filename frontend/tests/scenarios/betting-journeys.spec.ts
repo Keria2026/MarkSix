@@ -300,9 +300,7 @@ test("mixed markets share daily overview, statistics and export with per-entry l
   await expect(
     page.getByRole("button", { name: "本期统计", exact: true }),
   ).toHaveAttribute("aria-expanded", "true");
-  await page
-    .getByRole("button", { name: "投注人分类统计", exact: true })
-    .click();
+  await page.getByRole("button", { name: "全部受注统计", exact: true }).click();
   let releaseFont!: () => void;
   const fontGate = new Promise<void>((resolve) => {
     releaseFont = resolve;

@@ -7,7 +7,6 @@
   let {
     report,
     category = "all",
-    compact = false,
     layoffsEnabled = false,
     onbettor,
     onpage,
@@ -15,8 +14,7 @@
   }: {
     report: Report;
     api: typeof Api;
-    category?: "all" | "bettors" | "receivers";
-    compact?: boolean;
+    category?: "all" | "receivers";
     layoffsEnabled?: boolean;
     onbettor?: (name: string) => void;
     onpage?: (page: number) => void;
@@ -26,9 +24,6 @@
   let exporting = $state(false);
   const canExport = $derived(category !== "receivers");
   const periodId = $derived(report.period);
-  const bettorCount = $derived(
-    report.bettors.filter((group) => group.totals.units > 0).length,
-  );
   const receiverCount = $derived(
     report.receivers.filter((group) => group.totals.units > 0).length,
   );
@@ -43,110 +38,78 @@
   });
 </script>
 
-{#if !compact}
-  <div class="stats-grid ledger-stats" aria-label="分类统计摘要">
-    {#if category === "receivers"}
-      <article class="stat glass">
-        <div class="stat-label">飞出本金</div>
-        <strong class="stat-value">{money(report.outgoing.stake)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">飞出受注方</div>
-        <strong class="stat-value">{receiverCount} 人</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">有效飞出记录</div>
-        <strong class="stat-value">{report.outgoing.records} 条</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">本方飞出净盈亏</div>
-        <strong
-          class="stat-value"
-          class:positive={(report.outgoing.net ?? 0) > 0}
-          class:negative={(report.outgoing.net ?? 0) < 0}
-          >{signed(report.outgoing.net)}</strong
-        >
-      </article>
-    {:else if category === "bettors"}
-      <article class="stat glass">
-        <div class="stat-label">有效投注人数</div>
-        <strong class="stat-value">{bettorCount} 人</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">投注人总本金</div>
-        <strong class="stat-value">{money(report.incoming.stake)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">人均投注本金</div>
-        <strong class="stat-value"
-          >{money(
-            bettorCount ? Math.round(report.incoming.stake / bettorCount) : 0,
-          )}</strong
-        >
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">投注人总净输赢</div>
-        <strong
-          class="stat-value"
-          class:positive={report.incoming.net !== null &&
-            report.incoming.net < 0}
-          class:negative={report.incoming.net !== null &&
-            report.incoming.net > 0}
-          >{signed(
-            report.incoming.net === null ? null : -report.incoming.net,
-          )}</strong
-        >
-      </article>
-    {:else if layoffsEnabled}
-      <article class="stat glass">
-        <div class="stat-label">全部受注本金</div>
-        <strong class="stat-value">{money(report.incoming.stake)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">飞出本金</div>
-        <strong class="stat-value">{money(report.outgoing.stake)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">自留本金</div>
-        <strong class="stat-value">{money(report.retained.stake)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">自留净盈亏</div>
-        <strong
-          class="stat-value"
-          class:positive={(report.retained.net ?? 0) > 0}
-          class:negative={(report.retained.net ?? 0) < 0}
-          >{signed(report.retained.net)}</strong
-        >
-      </article>
-    {:else}
-      <article class="stat glass">
-        <div class="stat-label">全部受注本金</div>
-        <strong class="stat-value">{money(report.incoming.stake)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">总反水</div>
-        <strong class="stat-value">{money(report.incoming.rebate)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">中奖总返还</div>
-        <strong class="stat-value">{money(report.incoming.payout)}</strong>
-      </article>
-      <article class="stat glass">
-        <div class="stat-label">原受注净盈亏</div>
-        <strong
-          class="stat-value"
-          class:positive={(report.incoming.net ?? 0) >= 0}
-          class:negative={(report.incoming.net ?? 0) < 0}
-          >{signed(report.incoming.net)}</strong
-        >
-      </article>
-    {/if}
-  </div>
-{/if}
+<div class="stats-grid ledger-stats" aria-label="分类统计摘要">
+  {#if category === "receivers"}
+    <article class="stat glass">
+      <div class="stat-label">飞出本金</div>
+      <strong class="stat-value">{money(report.outgoing.stake)}</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">飞出受注方</div>
+      <strong class="stat-value">{receiverCount} 人</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">有效飞出记录</div>
+      <strong class="stat-value">{report.outgoing.records} 条</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">本方飞出净盈亏</div>
+      <strong
+        class="stat-value"
+        class:positive={(report.outgoing.net ?? 0) > 0}
+        class:negative={(report.outgoing.net ?? 0) < 0}
+        >{signed(report.outgoing.net)}</strong
+      >
+    </article>
+  {:else if layoffsEnabled}
+    <article class="stat glass">
+      <div class="stat-label">全部受注本金</div>
+      <strong class="stat-value">{money(report.incoming.stake)}</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">飞出本金</div>
+      <strong class="stat-value">{money(report.outgoing.stake)}</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">自留本金</div>
+      <strong class="stat-value">{money(report.retained.stake)}</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">自留净盈亏</div>
+      <strong
+        class="stat-value"
+        class:positive={(report.retained.net ?? 0) > 0}
+        class:negative={(report.retained.net ?? 0) < 0}
+        >{signed(report.retained.net)}</strong
+      >
+    </article>
+  {:else}
+    <article class="stat glass">
+      <div class="stat-label">全部受注本金</div>
+      <strong class="stat-value">{money(report.incoming.stake)}</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">总反水</div>
+      <strong class="stat-value">{money(report.incoming.rebate)}</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">中奖总返还</div>
+      <strong class="stat-value">{money(report.incoming.payout)}</strong>
+    </article>
+    <article class="stat glass">
+      <div class="stat-label">原受注净盈亏</div>
+      <strong
+        class="stat-value"
+        class:positive={(report.incoming.net ?? 0) >= 0}
+        class:negative={(report.incoming.net ?? 0) < 0}
+        >{signed(report.incoming.net)}</strong
+      >
+    </article>
+  {/if}
+</div>
 <section class="glass records-panel">
   <div class="section-head">
-    <h2>{category === "receivers" ? "飞出受注方统计" : "投注人分类统计"}</h2>
+    <h2>{category === "receivers" ? "飞出受注方统计" : "投注人受注明细"}</h2>
     <div class="statistics-actions">
       <span class="soft-chip">{groups.length} 人</span>
       {#if canExport}<BettorExport
@@ -164,16 +127,16 @@
     tabindex="0"
     aria-label={category === "receivers"
       ? "飞出受注方统计，可横向滚动"
-      : "投注人分类统计，可横向滚动"}
+      : "投注人受注明细，可横向滚动"}
   >
     <table class="ledger-table">
       <thead
         ><tr
           ><th>{category === "receivers" ? "受注方" : "投注人"}</th><th
             >有效本金</th
-          ><th>反水</th><th>含本返还</th><th
-            >{category === "receivers" ? "本方飞出净盈亏" : "投注人净盈亏"}</th
-          ><th
+          ><th>反水</th><th>含本返还</th>{#if category === "receivers"}<th
+              >本方飞出净盈亏</th
+            >{/if}<th
             >{category === "receivers" ? "受注方净盈亏" : "本方受注净盈亏"}</th
           >{#if canExport}<th class="ledger-export-cell">操作</th>{/if}</tr
         ></thead
@@ -190,15 +153,8 @@
               >{group.totals.net !== null
                 ? money(group.totals.payout)
                 : "待结算"}</td
-            ><td
-              >{signed(
-                group.totals.net === null
-                  ? null
-                  : category === "receivers"
-                    ? group.totals.net
-                    : -group.totals.net,
-              )}</td
-            ><td
+            >{#if category === "receivers"}<td>{signed(group.totals.net)}</td
+              >{/if}<td
               >{signed(
                 group.totals.net === null
                   ? null
@@ -237,7 +193,7 @@
       </div>
     </div>{/if}
 </section>
-{#if category === "all" && !compact}
+{#if category === "all"}
   <section class="glass records-panel">
     <div class="section-head">
       <h2>全部账目汇总</h2>
@@ -264,7 +220,7 @@
     </div>
   </section>
 {/if}
-{#if category === "receivers" && !compact}
+{#if category === "receivers"}
   <section class="glass records-panel">
     <div class="section-head"><h2>飞出记录</h2></div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable tables need keyboard focus; verified with Axe.) -->

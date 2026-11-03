@@ -247,10 +247,8 @@
         );
     target?.focus({ preventScroll: true });
   }
-  let historyCategory = $state<"all" | "bettors" | "receivers">("all");
-  let statisticsCategory = $state<"all" | "bettors" | "receivers" | "records">(
-    "all",
-  );
+  let historyCategory = $state<"all" | "receivers">("all");
+  let statisticsCategory = $state<"all" | "receivers" | "records">("all");
   let selectedBettors = $state<string[]>([]);
   let selectedPlays = $state<number[]>([]);
   let recordOrder = $state("newest");
@@ -864,7 +862,7 @@
               id="submenu-statistics"
               aria-label="本期统计分类"
             >
-              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "bettors", label: "投注人分类统计" }, { id: "records", label: "投注记录" }].filter((item) => item.id !== "receivers" || layoffsEnabled) as sub (sub.id)}<button
+              {#each [{ id: "all", label: "全部受注统计" }, { id: "receivers", label: "飞出受注统计" }, { id: "records", label: "投注记录" }].filter((item) => item.id !== "receivers" || layoffsEnabled) as sub (sub.id)}<button
                   class:active={tab === "statistics" &&
                     statisticsCategory === sub.id}
                   aria-current={tab === "statistics" &&
@@ -1091,10 +1089,6 @@
             class:active={historyCategory === "all"}
             onclick={() => (historyCategory = "all")}>全部受注统计</button
           >
-          <button
-            class:active={historyCategory === "bettors"}
-            onclick={() => (historyCategory = "bettors")}>投注人分类统计</button
-          >
           {#if layoffsEnabled}
             <button
               class:active={historyCategory === "receivers"}
@@ -1113,8 +1107,7 @@
             {layoffsEnabled}
             {report}
             {api}
-            compact={!selectedDay}
-            category={selectedDay ? historyCategory : "bettors"}
+            category={historyCategory}
             onbettor={filterBettor}
             onpage={loadStatistics}
           />{/if}
@@ -1154,9 +1147,6 @@
                 onclick={() => selectEntryMode("text")}>文本录注</button
               >{/if}
           </div>
-          <button class="button secondary" onclick={() => navigate("overview")}
-            ><LayoutDashboard size={16} /> 本期概览</button
-          >
         </div>
       </section>
       {#if entryMode !== "text"}
@@ -1283,11 +1273,9 @@
             <strong>{active?.business_date ?? today.business_date}</strong> · {statisticsCategory ===
             "receivers"
               ? "飞出受注统计"
-              : statisticsCategory === "bettors"
-                ? "投注人分类统计"
-                : statisticsCategory === "records"
-                  ? "投注记录"
-                  : "全部受注统计"}
+              : statisticsCategory === "records"
+                ? "投注记录"
+                : "全部受注统计"}
           </p>
         </div>
       </section>
@@ -1311,7 +1299,6 @@
           {report}
           {api}
           category={statisticsCategory}
-          compact={statisticsCategory === "bettors"}
           onpage={loadStatistics}
         />{:else}<div class="empty-panel glass">正在加载本期统计…</div>{/if}
     {:else if tab === "settings"}
