@@ -4,7 +4,7 @@ import { plays } from "../contracts/fixtures";
 import { annualMapping } from "../../src/lib/types";
 
 // Interface contract only. Database and financial API behavior have separate tests.
-async function openText(page: Page) {
+async function openText(page: Page, configured = plays) {
   const writes: object[] = [];
   const totals = Object.fromEntries(
     [
@@ -47,7 +47,7 @@ async function openText(page: Page) {
     else if (path === "/api/bootstrap")
       json = {
         features,
-        plays,
+        plays: configured,
         zodiacs: [],
         day: {
           id: "2040001",
@@ -87,7 +87,7 @@ async function openText(page: Page) {
           amount: string;
           package_zodiacs?: number[];
         }) => {
-          const name = plays.find((p) => p.id === item.play_id)!.rule.name;
+          const name = configured.find((p) => p.id === item.play_id)!.rule.name;
           const units =
             name === "三有"
               ? 10
@@ -805,5 +805,58 @@ for (const width of [390, 1440]) {
           JSON.stringify(items),
       ),
     ).toBe(true);
+  });
+}
+
+for (const account of ["A", "B"] as const) {
+  test(`collaborator ${account} confirms and submits only their own configured play`, async ({
+    page,
+  }) => {
+    const offset = account === "A" ? 1000 : 2000;
+    const configured = plays.map((play) => ({
+      ...play,
+      id: play.id + offset,
+      rule: {
+        ...play.rule,
+        odds:
+          play.rule.name === "特码"
+            ? account === "A"
+              ? "44"
+              : "48"
+            : play.rule.odds,
+      },
+    }));
+    const writes = await openText(page, configured);
+    await page.getByLabel("投注原文").fill("特码03 15各10");
+    await page.getByRole("button", { name: "校验", exact: true }).click();
+    const modal = page.getByRole("dialog", { name: "确认投注单" });
+    await modal
+      .getByPlaceholder("填写投注人")
+      .fill(`synthetic-personal-${account}`);
+    const own = configured.find((play) => play.rule.name === "特码")!;
+    const rate = modal.getByRole("combobox", { name: "特码费率", exact: true });
+    await expect(rate).toHaveValue(String(own.id));
+    const optionValues = await rate
+      .locator("option")
+      .evaluateAll((options) =>
+        options
+          .map((option) => Number((option as HTMLOptionElement).value))
+          .filter((id) => id > 0),
+      );
+    expect(
+      optionValues.every((id) => configured.some((play) => play.id === id)),
+    ).toBe(true);
+    await modal.getByRole("button", { name: "确认录入", exact: true }).click();
+    await expect(modal).toBeHidden();
+    expect(writes).toHaveLength(1);
+    const { items } = writes[0] as {
+      items: { play_id: number; selections: number[]; amount: string }[];
+    };
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      play_id: own.id,
+      selections: [3, 15],
+      amount: "10",
+    });
   });
 }

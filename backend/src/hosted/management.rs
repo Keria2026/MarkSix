@@ -92,6 +92,18 @@ pub async fn serve(pool: MySqlPool, address: &str) -> anyhow::Result<()> {
         .await?;
         let pool = super::tenancy::pool(&workspace.database(&member), 2).await?;
         crate::store::MIGRATOR.run(&pool).await?;
+        let members: Vec<Account> =
+            sqlx::query_as("SELECT * FROM hosted_accounts WHERE workspace_id=? ORDER BY id")
+                .bind(&workspace.id)
+                .fetch_all(&control.pool)
+                .await?;
+        for member in members {
+            let private = super::tenancy::pool(&member, 1).await?;
+            let result =
+                super::workspaces::initialize_account_plays(&pool, &private, &member.id).await;
+            private.close().await;
+            result?;
+        }
         pool.close().await;
     }
     axum::serve(

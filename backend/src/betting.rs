@@ -216,8 +216,8 @@ async fn submit(
     let ids: BTreeSet<i64> = input.items.iter().map(|line| line.play_id).collect();
     let mut plays = HashMap::new();
     for id in ids {
-        let play: Play = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-            .bind(id).fetch_optional(&mut *tx).await?.ok_or_else(|| conflict("玩法已删除，请刷新后重新选择"))?;
+        let play: Play = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL AND owner_account_id <=> ? FOR UPDATE")
+            .bind(id).bind(state.play_owner()).fetch_optional(&mut *tx).await?.ok_or_else(|| conflict("玩法已删除，请刷新后重新选择"))?;
         plays.insert(id, play);
     }
     let mut plans = Vec::with_capacity(input.items.len());
@@ -322,12 +322,25 @@ async fn submit(
         )
         .await?;
     }
-    crate::text_entry::learn(&mut tx, &input.text_preferences, &input.items).await?;
+    crate::text_entry::learn(
+        &mut tx,
+        state.preference_owner(),
+        &input.text_preferences,
+        &input.items,
+    )
+    .await?;
     if let Some(preference) = &input.bettor_preference {
         if input.entry_mode != crate::features::EntryMode::Text {
             return Err("投注人费率习惯只用于文本录注".to_owned().into());
         }
-        crate::text_entry::learn_bettor(&mut tx, &input.bettor, preference, &input.items).await?;
+        crate::text_entry::learn_bettor(
+            &mut tx,
+            state.preference_owner(),
+            &input.bettor,
+            preference,
+            &input.items,
+        )
+        .await?;
     }
     for period in targets.values() {
         ledger::invalidate(&mut tx, &period.id).await?;
