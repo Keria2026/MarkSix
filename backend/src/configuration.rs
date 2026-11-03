@@ -54,8 +54,8 @@ pub async fn export(
     State(state): State<AppState>,
     Query(query): Query<ExportQuery>,
 ) -> ApiResult<Json<PlayFile>> {
-    let rows: Vec<Play> = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND (? IS NULL OR id=?) ORDER BY sort_order,id")
-        .bind(query.id).bind(query.id).fetch_all(&state.pool).await?;
+    let rows: Vec<Play> = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND owner_account_id <=> ? AND (? IS NULL OR id=?) ORDER BY sort_order,id")
+        .bind(state.play_owner()).bind(query.id).bind(query.id).fetch_all(&state.pool).await?;
     if query.id.is_some() && rows.is_empty() {
         return Err(missing());
     }
@@ -82,8 +82,9 @@ pub async fn import(
         .fetch_one(&mut *tx)
         .await?;
     let existing: Vec<Play> = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY id FOR UPDATE",
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND owner_account_id <=> ? ORDER BY id FOR UPDATE",
     )
+    .bind(state.play_owner())
     .fetch_all(&mut *tx)
     .await?;
     let mut by_name: HashMap<String, Vec<&Play>> = HashMap::new();
@@ -131,11 +132,14 @@ pub async fn import(
             ids.push(play.id);
             updated += 1;
         } else {
-            let result = sqlx::query("INSERT INTO plays(version,rule,enabled) VALUES(1,?,?)")
-                .bind(DbJson(&p.rule))
-                .bind(p.enabled)
-                .execute(&mut *tx)
-                .await?;
+            let result = sqlx::query(
+                "INSERT INTO plays(version,rule,enabled,owner_account_id) VALUES(1,?,?,?)",
+            )
+            .bind(DbJson(&p.rule))
+            .bind(p.enabled)
+            .bind(state.play_owner())
+            .execute(&mut *tx)
+            .await?;
             let id = result.last_insert_id() as i64;
             sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,1,?)")
                 .bind(id)
@@ -193,8 +197,9 @@ pub async fn reorder(
         .fetch_one(&mut *tx)
         .await?;
     let existing: Vec<Play> = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY id FOR UPDATE",
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND owner_account_id <=> ? ORDER BY id FOR UPDATE",
     )
+    .bind(state.play_owner())
     .fetch_all(&mut *tx)
     .await?;
     if existing.len() != input.plays.len()
@@ -290,8 +295,8 @@ pub async fn batch(
         .fetch_one(&mut *tx)
         .await?;
     for target in &targets {
-        let mut play: Play = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-            .bind(target.id).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
+        let mut play: Play = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL AND owner_account_id <=> ? FOR UPDATE")
+            .bind(target.id).bind(state.play_owner()).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
         if play.version != target.version {
             return Err(conflict("所选玩法已变化，请刷新后重新选择；整批尚未保存"));
         }
@@ -364,9 +369,10 @@ pub async fn delete(
 ) -> ApiResult<Json<Value>> {
     let mut tx = state.pool.begin().await?;
     let play: Play = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE",
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL AND owner_account_id <=> ? FOR UPDATE",
     )
     .bind(id)
+    .bind(state.play_owner())
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(missing)?;

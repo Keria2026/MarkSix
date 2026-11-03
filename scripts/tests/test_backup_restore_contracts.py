@@ -163,6 +163,7 @@ class Operations(unittest.TestCase):
                     ops.restore_data(root, root / "manifest")
                 sql = "\n".join(call.args[1] for call in execute.call_args_list)
                 self.assertIn("DROP TABLE hosted_workspaces", sql)
+                self.assertIn("DROP TABLE IF EXISTS account_play_initializations", sql)
                 if deleted:
                     self.assertIn("DELETE FROM hosted_workspaces", sql)
                     self.assertNotIn("CREATE DATABASE", sql)

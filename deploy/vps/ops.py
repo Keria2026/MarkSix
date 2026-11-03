@@ -325,10 +325,10 @@ def restore_data(shared, manifest):
             shared,
             f"DROP DATABASE IF EXISTS `{database}`; DROP USER IF EXISTS '{user}'@'%';",
         )
-    # An older control dump has no workspace table/migration. Do not leave a
-    # newer table behind for the restored migrator to mistake for applied DDL.
+    # Older control dumps omit newer migration-owned tables. Remove them before
+    # importing so the restored migrator can safely introduce them again.
     if has_workspaces(shared):
-        mysql(shared, "SET FOREIGN_KEY_CHECKS=0; DROP TABLE hosted_workspaces; SET FOREIGN_KEY_CHECKS=1;")
+        mysql(shared, "SET FOREIGN_KEY_CHECKS=0; DROP TABLE IF EXISTS account_play_initializations; DROP TABLE hosted_workspaces; SET FOREIGN_KEY_CHECKS=1;")
     load(control, "marksix_control")
     restored = account_list(shared)
     workspace_ids = set(mysql(shared, "SELECT id FROM hosted_workspaces;")) if has_workspaces(shared) else set()

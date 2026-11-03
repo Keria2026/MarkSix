@@ -86,6 +86,15 @@ impl AppState {
     pub(crate) fn visible_bets(&self) -> String {
         creator_predicate(self.visible_creator)
     }
+    pub(crate) fn play_owner(&self) -> Option<&str> {
+        self.hosted
+            .as_ref()
+            .filter(|p| p.workspace_id.is_some())
+            .map(|p| p.account_id.as_str())
+    }
+    pub(crate) fn preference_owner(&self) -> &str {
+        self.play_owner().unwrap_or("")
+    }
 }
 pub(crate) fn creator_predicate(creator: Option<uuid::Uuid>) -> String {
     // Only a typed UUID obtained from the authenticated account reaches SQL.

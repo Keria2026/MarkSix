@@ -50,6 +50,172 @@ fn slip(boot: &Value, amount: &str, number: u8) -> Value {
         .unwrap();
     json!({"period":boot["today"]["id"],"bettor":"synthetic-collaborator","request_id":uuid::Uuid::new_v4().to_string(),"items":[{"play_id":play["id"],"play_version":play["version"],"selections":[number],"compound":false,"amount":amount}]})
 }
+async fn own_configuration_contract(app: &Router, a: &str, b: &str) {
+    let boot_a = ok(app, "GET", "/api/bootstrap", json!({}), a).await;
+    let boot_b = ok(app, "GET", "/api/bootstrap", json!({}), b).await;
+    let source = boot_a["plays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["rule"]["name"] == "特码")
+        .unwrap();
+    let mut rule = source["rule"].clone();
+    rule["name"] = json!("合成个人专用");
+    let custom_a = ok(app, "POST", "/api/plays", rule.clone(), a).await;
+    let custom_b = ok(app, "POST", "/api/plays", rule.clone(), b).await;
+    assert_ne!(custom_a["id"], custom_b["id"]);
+    assert_eq!(
+        call(
+            app,
+            "GET",
+            &format!("/api/plays/export?id={}", custom_a["id"]),
+            json!({}),
+            b
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    for (method, path, body) in [
+        (
+            "DELETE",
+            format!("/api/plays/{}", custom_a["id"]),
+            json!({"version":1}),
+        ),
+        (
+            "POST",
+            "/api/plays/batch".into(),
+            json!({"targets":[{"id":custom_a["id"],"version":1}],"action":"delete"}),
+        ),
+    ] {
+        assert_eq!(
+            call(app, method, &path, body, b).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(call(app,"POST","/api/plays/batch",json!({"targets":[{"id":custom_a["id"],"version":1},{"id":custom_b["id"],"version":1}],"action":"update","odds":"11"}),a).await.0,StatusCode::NOT_FOUND);
+    assert_eq!(
+        ok(
+            app,
+            "GET",
+            &format!("/api/plays/export?id={}", custom_a["id"]),
+            json!({}),
+            a
+        )
+        .await["plays"][0]["rule"],
+        rule
+    );
+    let mut imported = rule.clone();
+    imported["odds"] = json!("12");
+    ok(app,"POST","/api/plays/import",json!({"format":"marksix-play-rules","schema":1,"plays":[{"rule":imported,"enabled":true}]}),b).await;
+    assert_eq!(
+        ok(
+            app,
+            "GET",
+            &format!("/api/plays/export?id={}", custom_a["id"]),
+            json!({}),
+            a
+        )
+        .await["plays"][0]["rule"],
+        rule
+    );
+    let b_boot = ok(app, "GET", "/api/bootstrap", json!({}), b).await;
+    let ids_a: Vec<_> = ok(app, "GET", "/api/bootstrap", json!({}), a).await["plays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| json!({"id":p["id"],"version":p["version"]}))
+        .collect();
+    let mut forged = ids_a.clone();
+    forged[0] = json!({"id":custom_b["id"],"version":2});
+    assert_eq!(
+        call(app, "PUT", "/api/plays/order", json!({"plays":forged}), a)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    ok(
+        app,
+        "PUT",
+        "/api/plays/order",
+        json!({"plays":ids_a.into_iter().rev().collect::<Vec<_>>()}),
+        a,
+    )
+    .await;
+    assert_eq!(
+        ok(app, "GET", "/api/bootstrap", json!({}), b).await["plays"],
+        b_boot["plays"]
+    );
+    let foreign = slip(&boot_a, "1", 31);
+    let quote = ok(
+        app,
+        "POST",
+        "/api/slips/preview",
+        json!({"period":foreign["period"],"bettor":foreign["bettor"],"items":foreign["items"]}),
+        b,
+    )
+    .await;
+    assert_eq!(quote["valid"], false);
+    assert_eq!(
+        call(app, "POST", "/api/slips", foreign, b).await.0,
+        StatusCode::CONFLICT
+    );
+    for (cookie, boot, mode) in [(a, &boot_a, "each"), (b, &boot_b, "total")] {
+        let mut request = slip(boot, "1", 29);
+        let line = &request["items"][0];
+        let preference = json!({"play_id":line["play_id"],"play_version":line["play_version"],"amount_mode":mode});
+        let mut alias = preference.clone();
+        alias["alias"] = json!("本人简称");
+        request["entry_mode"] = json!("text");
+        request["text_preferences"] = json!([alias]);
+        request["bettor_preference"] = preference;
+        ok(app, "POST", "/api/slips", request, cookie).await;
+    }
+    let aliases_a = ok(app, "GET", "/api/text-entry/preferences", json!({}), a).await;
+    let aliases_b = ok(app, "GET", "/api/text-entry/preferences", json!({}), b).await;
+    let alias_a = aliases_a
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["alias"] == "本人简称")
+        .unwrap();
+    let alias_b = aliases_b
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["alias"] == "本人简称")
+        .unwrap();
+    assert_ne!(alias_a["play_id"], alias_b["play_id"]);
+    assert_eq!(alias_a["amount_mode"], "each");
+    assert_eq!(alias_b["amount_mode"], "total");
+    for (cookie, alias) in [(a, alias_a), (b, alias_b)] {
+        let preference = ok(
+            app,
+            "POST",
+            "/api/text-entry/bettor-preference",
+            json!({"bettor":"synthetic-collaborator"}),
+            cookie,
+        )
+        .await;
+        assert_eq!(preference["preference"]["play_id"], alias["play_id"]);
+        assert_eq!(
+            preference["preference"]["amount_mode"],
+            alias["amount_mode"]
+        );
+    }
+    ok(
+        app,
+        "DELETE",
+        "/api/text-entry/preferences/%E6%9C%AC%E4%BA%BA%E7%AE%80%E7%A7%B0",
+        json!({}),
+        a,
+    )
+    .await;
+    assert_eq!(
+        ok(app, "GET", "/api/text-entry/preferences", json!({}), b).await,
+        aliases_b
+    );
+}
 #[tokio::test]
 #[ignore = "requires isolated marksix_test and provision database identity"]
 async fn future_only_collaboration_ownership_shared_edits_configuration_and_lifecycle() {
@@ -113,7 +279,7 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
         cookies.push(cookie);
         boots.push(boot);
     }
-    // One differing rate must survive union; identical defaults collapse.
+    // Each member retains independent definitions, including identical names/settings.
     let changed = boots[1]["plays"]
         .as_array()
         .unwrap()
@@ -130,6 +296,13 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
         &cookies[1],
     )
     .await;
+    for account in &accounts[..2] {
+        let private = registry.lease(account).await.unwrap();
+        let (id,version): (i64,i64) = sqlx::query_as("SELECT id,version FROM plays WHERE JSON_UNQUOTE(JSON_EXTRACT(rule,'$.name'))='特码' LIMIT 1").fetch_one(&private.pool).await.unwrap();
+        sqlx::query("INSERT INTO text_entry_preferences(alias,play_id,play_version,amount_mode) VALUES('个人原简称',?,?, 'each')").bind(id).bind(version).execute(&private.pool).await.unwrap();
+        sqlx::query("INSERT INTO bettor_play_preferences(bettor,play_id,amount_mode) VALUES('synthetic-collaborator',?,?)")
+            .bind(id).bind(if account.id == accounts[0].id { "each" } else { "total" }).execute(&private.pool).await.unwrap();
+    }
     let path = format!("/api/accounts/{}/link", accounts[0].id);
     let link = json!({"account_id":accounts[1].id});
     assert_eq!(
@@ -200,19 +373,76 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
     assert!(!session.to_string().contains("database_password"));
     let boot = ok(&app, "GET", "/api/bootstrap", json!({}), a).await;
     assert_eq!(boot["day"]["totals"]["stake"], 0);
-    assert_eq!(
-        boot["plays"].as_array().unwrap().len(),
-        boots[0]["plays"].as_array().unwrap().len() + 1
-    );
-    assert_eq!(
-        boot["plays"]
+    let boot_b = ok(&app, "GET", "/api/bootstrap", json!({}), b).await;
+    for personal in [&boot, &boot_b] {
+        assert_eq!(
+            personal["plays"].as_array().unwrap().len(),
+            boots[0]["plays"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            personal["plays"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|p| p["rule"]["name"] == "特码")
+                .count(),
+            1
+        );
+    }
+    assert!(boot["plays"].as_array().unwrap().iter().all(|p| {
+        !boot_b["plays"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|p| p["rule"]["name"] == "特码")
-            .count(),
-        2
+            .any(|other| other["id"] == p["id"])
+    }));
+    assert_eq!(
+        boot_b["plays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["rule"]["name"] == "特码")
+            .unwrap()["rule"]["odds"],
+        "48"
     );
+    for (cookie, personal, mode) in [(a, &boot, "each"), (b, &boot_b, "total")] {
+        let preferences = ok(
+            &app,
+            "GET",
+            "/api/text-entry/preferences",
+            json!({}),
+            cookie,
+        )
+        .await;
+        assert_eq!(preferences.as_array().unwrap().len(), 1);
+        assert!(
+            personal["plays"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == preferences[0]["play_id"])
+        );
+        let rate = ok(
+            &app,
+            "POST",
+            "/api/text-entry/bettor-preference",
+            json!({"bettor":"synthetic-collaborator"}),
+            cookie,
+        )
+        .await;
+        assert_eq!(rate["preference"]["amount_mode"], mode);
+        assert!(
+            personal["plays"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == rate["preference"]["play_id"])
+        );
+        assert_eq!(
+            visible(&app, "GET", "/api/bootstrap", json!({}), cookie, "mine").await["plays"],
+            personal["plays"]
+        );
+    }
     let period = boot["today"]["id"].as_str().unwrap();
     for (index, cookie) in [a, b].iter().enumerate() {
         let history = visible(&app, "GET", "/api/bootstrap", json!({}), cookie, "history").await;
@@ -266,7 +496,8 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
         call(&app, "POST", "/api/slips", request_a, b).await.0,
         StatusCode::CONFLICT
     );
-    let created_b = visible(&app, "POST", "/api/slips", slip(&boot, "20", 15), b, "mine").await;
+    let request_b = slip(&boot_b, "20", 15);
+    let created_b = visible(&app, "POST", "/api/slips", request_b.clone(), b, "mine").await;
     for (cookie, view, stake, count) in [
         (a, "shared", 3000, 2),
         (b, "shared", 3000, 2),
@@ -406,20 +637,38 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
         ok(&app, "GET", &format!("/api/days/{period}"), json!({}), a).await["totals"]["stake"],
         2000
     );
-    // Shared configuration edits are immediately visible to the other account.
+    // Personal definitions may be changed only by their owner; shared records remain collaborative.
     let play = boot["plays"]
         .as_array()
         .unwrap()
         .iter()
         .find(|p| p["rule"]["name"] == "特码")
         .unwrap();
-    let mut updated_rule = play["rule"].clone();
+    let personal_b = boot_b["plays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["rule"]["name"] == "特码")
+        .unwrap();
+    let mut updated_rule = personal_b["rule"].clone();
     updated_rule["rebate_percent"] = json!("1.5");
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            &format!("/api/plays/{}", play["id"]),
+            json!({"version":play["version"],"rule":updated_rule,"enabled":true}),
+            b
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
     ok(
         &app,
         "PUT",
-        &format!("/api/plays/{}", play["id"]),
-        json!({"version":play["version"],"rule":updated_rule,"enabled":true}),
+        &format!("/api/plays/{}", personal_b["id"]),
+        json!({"version":personal_b["version"],"rule":updated_rule,"enabled":true}),
         b,
     )
     .await;
@@ -428,8 +677,121 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
             .as_array()
             .unwrap()
             .iter()
-            .any(|p| p["rule"]["rebate_percent"] == "1.5")
+            .all(|p| p["rule"]["rebate_percent"] != "1.5")
     );
+    // Upgrade an already-deployed shared configuration without rewriting receipts.
+    let migration_workspace = workspaces::get(&control, &reserved).await.unwrap();
+    let legacy = registry
+        .collaborative(&accounts[0], &migration_workspace)
+        .await
+        .unwrap();
+    let before = ok(
+        &app,
+        "GET",
+        &format!("/api/slips/{}", created_b["id"].as_str().unwrap()),
+        json!({}),
+        b,
+    )
+    .await;
+    sqlx::query("UPDATE plays SET owner_account_id=NULL")
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM account_play_initializations")
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM text_entry_preferences WHERE owner_account_id=?")
+        .bind(&accounts[1].id)
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE text_entry_preferences SET owner_account_id=''")
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+    // Legacy preferences were shared; ownership did not yet exist.
+    sqlx::query("DELETE FROM bettor_play_preferences WHERE owner_account_id=?")
+        .bind(&accounts[1].id)
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE bettor_play_preferences SET owner_account_id=''")
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+    let cold = Registry::new(control.clone()).unwrap();
+    assert_eq!(
+        cold.collaborative(&accounts[0], &migration_workspace)
+            .await
+            .err()
+            .unwrap()
+            .0,
+        StatusCode::CONFLICT
+    );
+    for account in &accounts[..2] {
+        let source = registry.lease(account).await.unwrap();
+        workspaces::initialize_account_plays(&legacy.pool, &source.pool, &account.id)
+            .await
+            .unwrap();
+        workspaces::initialize_account_plays(&legacy.pool, &source.pool, &account.id)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        ok(
+            &app,
+            "GET",
+            &format!("/api/slips/{}", created_b["id"].as_str().unwrap()),
+            json!({}),
+            a
+        )
+        .await,
+        before
+    );
+    assert_eq!(
+        ok(&app, "POST", "/api/slips", request_b.clone(), b).await["id"],
+        created_b["id"]
+    );
+    let mut fresh_old_request = request_b.clone();
+    fresh_old_request["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    assert_eq!(
+        call(&app, "POST", "/api/slips", fresh_old_request, b)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let after_a = ok(&app, "GET", "/api/bootstrap", json!({}), a).await;
+    let after_b = ok(&app, "GET", "/api/bootstrap", json!({}), b).await;
+    for personal in [&after_a, &after_b] {
+        assert_eq!(
+            personal["plays"].as_array().unwrap().len(),
+            boots[0]["plays"].as_array().unwrap().len()
+        );
+        assert!(
+            personal["plays"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|p| p["id"] != play["id"] && p["id"] != personal_b["id"])
+        );
+    }
+    assert_eq!(
+        after_b["plays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["rule"]["name"] == "特码")
+            .unwrap()["rule"]["rebate_percent"],
+        boots[1]["plays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["rule"]["name"] == "特码")
+            .unwrap()["rule"]["rebate_percent"]
+    );
+    drop(legacy);
+    own_configuration_contract(&app, a, b).await;
     // Private and collaborative principals cannot read each other's schemas.
     let workspace = workspaces::get(&control, &reserved).await.unwrap();
     let shared = registry

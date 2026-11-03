@@ -1,9 +1,6 @@
 //! Explicit, administrator-created collaboration. Private ledgers stay untouched.
 use super::{accounts::*, management, tenancy};
-use crate::{
-    api::{ApiResult, conflict, missing},
-    domain::{Rule, scaled},
-};
+use crate::api::{ApiResult, conflict, missing};
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -12,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{FromRow, types::Json as DbJson};
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 #[derive(Clone, FromRow)]
 pub(super) struct Workspace {
@@ -175,26 +172,6 @@ pub(super) async fn link(
     Ok(Json(json!({"ok":true,"workspace_id":workspace.id})))
 }
 
-// Compare complete typed settings. Numeric spelling alone is not a new rate.
-fn fingerprint(rule: &Rule, enabled: bool) -> anyhow::Result<String> {
-    rule.validate().map_err(anyhow::Error::msg)?;
-    let mut value = serde_json::to_value(rule)?;
-    for field in [
-        "odds",
-        "special_odds",
-        "zero_tail_odds",
-        "special_hit_odds",
-        "rebate_percent",
-        "special_rebate_percent",
-        "zero_tail_rebate_percent",
-    ] {
-        if let Some(text) = value[field].as_str() {
-            let digits = if field.contains("rebate") { 2 } else { 4 };
-            value[field] = json!(scaled(text, digits).map_err(anyhow::Error::msg)?);
-        }
-    }
-    Ok(json!({"rule":value,"enabled":enabled}).to_string())
-}
 async fn provision(
     c: &Control,
     workspace: &Workspace,
@@ -206,54 +183,96 @@ async fn provision(
     let target = tenancy::pool(&database, 1).await?;
     let first = tenancy::pool(primary, 1).await?;
     let second = tenancy::pool(secondary, 1).await?;
-    let result = copy_configuration(&target, &first, &second).await;
+    let result = copy_configuration(&target, &first, &second, &primary.id, &secondary.id).await;
     target.close().await;
     first.close().await;
     second.close().await;
     result
 }
+pub(super) async fn initialize_account_plays(
+    target: &sqlx::MySqlPool,
+    source: &sqlx::MySqlPool,
+    account_id: &str,
+) -> anyhow::Result<()> {
+    uuid::Uuid::parse_str(account_id)?;
+    let mut tx = target.begin().await?;
+    sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    let initialized: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_play_initializations WHERE account_id=?")
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if initialized != 0 {
+        return Ok(());
+    }
+    let plays: Vec<crate::store::Play> = sqlx::query_as("SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND owner_account_id IS NULL ORDER BY sort_order,id").fetch_all(source).await?;
+    let mut mapped = HashMap::new();
+    for (position, play) in plays.iter().enumerate() {
+        play.rule.validate().map_err(anyhow::Error::msg)?;
+        let result = sqlx::query(
+            "INSERT INTO plays(version,rule,enabled,sort_order,owner_account_id) VALUES(?,?,?,?,?)",
+        )
+        .bind(play.version)
+        .bind(&play.rule)
+        .bind(play.enabled)
+        .bind(position as i64)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+        let id = result.last_insert_id() as i64;
+        sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,?,?)")
+            .bind(id)
+            .bind(play.version)
+            .bind(&play.rule)
+            .execute(&mut *tx)
+            .await?;
+        mapped.insert(play.id, (id, play.version));
+    }
+    let preferences: Vec<crate::text_entry::Preference> = sqlx::query_as("SELECT CONVERT(alias USING utf8mb4) COLLATE utf8mb4_0900_as_cs AS alias,play_id,play_version,amount_mode FROM text_entry_preferences WHERE owner_account_id='' ORDER BY alias").fetch_all(source).await?;
+    for preference in preferences {
+        if let Some((id, version)) = mapped.get(&preference.play_id)
+            && *version == preference.play_version
+        {
+            sqlx::query("INSERT INTO text_entry_preferences(owner_account_id,alias,play_id,play_version,amount_mode) VALUES(?,?,?,?,?)")
+                .bind(account_id).bind(preference.alias).bind(id).bind(version).bind(preference.amount_mode).execute(&mut *tx).await?;
+        }
+    }
+    let preferences: Vec<(String,i64,String)> = sqlx::query_as("SELECT CONVERT(bettor USING utf8mb4) COLLATE utf8mb4_0900_as_cs AS bettor,play_id,amount_mode FROM bettor_play_preferences WHERE owner_account_id='' ORDER BY bettor").fetch_all(source).await?;
+    for (bettor, old, mode) in preferences {
+        if let Some((id, _)) = mapped.get(&old) {
+            sqlx::query("INSERT INTO bettor_play_preferences(owner_account_id,bettor,play_id,amount_mode) VALUES(?,?,?,?)")
+                .bind(account_id).bind(bettor).bind(id).bind(mode).execute(&mut *tx).await?;
+        }
+    }
+    sqlx::query("INSERT INTO account_play_initializations(account_id) VALUES(?)")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
 async fn copy_configuration(
     target: &sqlx::MySqlPool,
     first: &sqlx::MySqlPool,
     second: &sqlx::MySqlPool,
+    primary: &str,
+    secondary: &str,
 ) -> anyhow::Result<()> {
+    initialize_account_plays(target, first, primary).await?;
+    initialize_account_plays(target, second, secondary).await?;
     let mut tx = target.begin().await?;
-    // Safe to retry only while the workspace is not ready and has no entries.
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bets")
         .fetch_one(&mut *tx)
         .await?;
     anyhow::ensure!(count == 0, "Cannot reinitialize a populated collaboration");
-    sqlx::query("DELETE FROM play_versions")
+    // Only unused bootstrap definitions are removed. Upgraded ledgers keep old
+    // shared definitions and immutable bet snapshots outside new-entry matching.
+    sqlx::query("DELETE FROM play_versions WHERE play_id IN (SELECT id FROM plays WHERE owner_account_id IS NULL)").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM plays WHERE owner_account_id IS NULL")
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM plays").execute(&mut *tx).await?;
-    let mut seen = HashSet::new();
-    let mut order = 0_i64;
-    for source in [first, second] {
-        let plays: Vec<(DbJson<Rule>, bool)> = sqlx::query_as(
-            "SELECT rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY sort_order,id",
-        )
-        .fetch_all(source)
-        .await?;
-        for (rule, enabled) in plays {
-            if !seen.insert(fingerprint(&rule.0, enabled)?) {
-                continue;
-            }
-            order += 1;
-            let result =
-                sqlx::query("INSERT INTO plays(version,rule,enabled,sort_order) VALUES(1,?,?,?)")
-                    .bind(&rule)
-                    .bind(enabled)
-                    .bind(order)
-                    .execute(&mut *tx)
-                    .await?;
-            sqlx::query("INSERT INTO play_versions(play_id,version,rule) VALUES(?,1,?)")
-                .bind(result.last_insert_id() as i64)
-                .bind(&rule)
-                .execute(&mut *tx)
-                .await?;
-        }
-    }
     sqlx::query("DELETE FROM mapping_configs")
         .execute(&mut *tx)
         .await?;
@@ -285,40 +304,6 @@ async fn copy_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn duplicate_plays_compare_all_typed_settings_and_numeric_values() {
-        let rules = crate::configuration::bundled().unwrap().plays;
-        let original = rules.iter().find(|p| p.rule.name == "特码").unwrap();
-        let key = fingerprint(&original.rule, true).unwrap();
-        let mut same = original.rule.clone();
-        same.odds.push_str(".0");
-        same.rebate_percent.push_str(".0");
-        assert_eq!(fingerprint(&same, true).unwrap(), key);
-        assert_ne!(fingerprint(&original.rule, false).unwrap(), key);
-        for (field, value) in [
-            ("name", json!("其他名称")),
-            ("odds", json!("48")),
-            ("rebate_percent", json!("1.5")),
-            ("selection_limit", json!(20)),
-        ] {
-            let mut rule = serde_json::to_value(&original.rule).unwrap();
-            rule[field] = value;
-            let rule: Rule = serde_json::from_value(rule).unwrap();
-            assert_ne!(fingerprint(&rule, true).unwrap(), key, "{field}");
-        }
-        let tail = rules
-            .iter()
-            .find(|p| p.rule.kind == crate::domain::Kind::Tail && p.rule.quantity == 1)
-            .unwrap();
-        let mut rule = tail.rule.clone();
-        let key = fingerprint(&rule, true).unwrap();
-        rule.zero_tail_odds = Some("4".into());
-        rule.zero_tail_rebate_percent = Some("2".into());
-        assert_ne!(fingerprint(&rule, true).unwrap(), key);
-        let mut invalid_rule = original.rule.clone();
-        invalid_rule.odds = "invalid".into();
-        assert!(fingerprint(&invalid_rule, true).is_err());
-    }
     #[test]
     fn record_scope_is_a_closed_set_and_cannot_select_another_account() {
         let mut headers = HeaderMap::new();

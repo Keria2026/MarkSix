@@ -28,8 +28,8 @@ pub(crate) async fn preferences(State(state): State<AppState>) -> ApiResult<Json
     // Return stale entries too so the customer can remove them. Parsing only reuses
     // an entry when its bound play is enabled and the version still matches.
     let rows = sqlx::query_as::<_, Preference>(
-        "SELECT CONVERT(alias USING utf8mb4) COLLATE utf8mb4_0900_as_cs AS alias,play_id,play_version,amount_mode FROM text_entry_preferences ORDER BY alias",
-    ).fetch_all(&state.pool).await?;
+        "SELECT CONVERT(alias USING utf8mb4) COLLATE utf8mb4_0900_as_cs AS alias,play_id,play_version,amount_mode FROM text_entry_preferences WHERE owner_account_id=? ORDER BY alias",
+    ).bind(state.preference_owner()).fetch_all(&state.pool).await?;
     Ok(Json(rows))
 }
 
@@ -37,8 +37,9 @@ pub(crate) async fn forget(
     State(state): State<AppState>,
     Path(alias): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    sqlx::query("DELETE FROM text_entry_preferences WHERE alias=?")
+    sqlx::query("DELETE FROM text_entry_preferences WHERE alias=? AND owner_account_id=?")
         .bind(alias)
+        .bind(state.preference_owner())
         .execute(&state.pool)
         .await?;
     Ok(Json(json!({"ok":true})))
@@ -46,6 +47,7 @@ pub(crate) async fn forget(
 
 pub(crate) async fn learn(
     tx: &mut Transaction<'_, MySql>,
+    owner: &str,
     preferences: &[Preference],
     items: &[SlipLine],
 ) -> ApiResult<()> {
@@ -67,12 +69,14 @@ pub(crate) async fn learn(
                 .to_owned()
                 .into());
         }
-        sqlx::query("INSERT INTO text_entry_preferences(alias,play_id,play_version,amount_mode) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE play_id=VALUES(play_id),play_version=VALUES(play_version),amount_mode=VALUES(amount_mode)")
-            .bind(&p.alias).bind(p.play_id).bind(p.play_version).bind(&p.amount_mode).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO text_entry_preferences(alias,play_id,play_version,amount_mode,owner_account_id) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE play_id=VALUES(play_id),play_version=VALUES(play_version),amount_mode=VALUES(amount_mode)")
+            .bind(&p.alias).bind(p.play_id).bind(p.play_version).bind(&p.amount_mode).bind(owner).execute(&mut **tx).await?;
     }
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM text_entry_preferences")
-        .fetch_one(&mut **tx)
-        .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM text_entry_preferences WHERE owner_account_id=?")
+            .bind(owner)
+            .fetch_one(&mut **tx)
+            .await?;
     if count > 200 {
         return Err("最多记住 200 个词条，请先移除不再使用的习惯"
             .to_owned()
@@ -146,9 +150,10 @@ pub(crate) async fn preview(
         .collect::<BTreeSet<_>>()
     {
         let play: Option<Play> = sqlx::query_as(
-            "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR SHARE",
+            "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL AND owner_account_id <=> ? FOR SHARE",
         )
         .bind(id)
+        .bind(state.play_owner())
         .fetch_optional(&mut *tx)
         .await?;
         plays.insert(id, play);
@@ -241,8 +246,8 @@ pub(crate) async fn bettor_preference(
     Json(input): Json<BettorLookup>,
 ) -> ApiResult<Json<Value>> {
     let bettor = ledger::party(&input.bettor)?;
-    let row: Option<(i64,i64,sqlx::types::Json<Rule>,String)>=sqlx::query_as("SELECT p.id,p.version,p.rule,b.amount_mode FROM bettor_play_preferences b JOIN plays p ON p.id=b.play_id WHERE b.bettor=? AND p.enabled=true AND p.deleted_at IS NULL")
-        .bind(bettor).fetch_optional(&state.pool).await?;
+    let row: Option<(i64,i64,sqlx::types::Json<Rule>,String)>=sqlx::query_as("SELECT p.id,p.version,p.rule,b.amount_mode FROM bettor_play_preferences b JOIN plays p ON p.id=b.play_id WHERE b.bettor=? AND b.owner_account_id=? AND p.owner_account_id <=> ? AND p.enabled=true AND p.deleted_at IS NULL")
+        .bind(bettor).bind(state.preference_owner()).bind(state.play_owner()).fetch_optional(&state.pool).await?;
     let preference = row.and_then(|(play_id, play_version, rule, amount_mode)| {
         special_rate(&rule).then_some(BettorPreference {
             play_id,
@@ -254,6 +259,7 @@ pub(crate) async fn bettor_preference(
 }
 pub(crate) async fn learn_bettor(
     tx: &mut Transaction<'_, MySql>,
+    owner: &str,
     bettor: &str,
     preference: &BettorPreference,
     items: &[SlipLine],
@@ -268,15 +274,16 @@ pub(crate) async fn learn_bettor(
             .into());
     }
     let play: Play = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR SHARE",
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL AND owner_account_id <=> ? FOR SHARE",
     )
     .bind(preference.play_id)
+    .bind((!owner.is_empty()).then_some(owner))
     .fetch_one(&mut **tx)
     .await?;
     if !play.enabled || play.version != preference.play_version || !special_rate(&play.rule) {
         return Err("请选择当前可用的单号码特码玩法".to_owned().into());
     }
-    sqlx::query("INSERT INTO bettor_play_preferences(bettor,play_id,amount_mode) VALUES(?,?,?) ON DUPLICATE KEY UPDATE play_id=VALUES(play_id),amount_mode=VALUES(amount_mode)")
-        .bind(bettor).bind(preference.play_id).bind(&preference.amount_mode).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO bettor_play_preferences(bettor,play_id,amount_mode,owner_account_id) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE play_id=VALUES(play_id),amount_mode=VALUES(amount_mode)")
+        .bind(bettor).bind(preference.play_id).bind(&preference.amount_mode).bind(owner).execute(&mut **tx).await?;
     Ok(())
 }

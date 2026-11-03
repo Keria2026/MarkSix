@@ -177,6 +177,20 @@ impl Registry {
             old.state.pool.close().await;
         }
         let pool = pool(database, 2).await?;
+        if workspace.is_some() {
+            let initialized: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM account_play_initializations WHERE account_id=?",
+            )
+            .bind(&actor.id)
+            .fetch_one(&pool)
+            .await?;
+            if initialized == 0 {
+                pool.close().await;
+                return Err(crate::api::conflict(
+                    "个人玩法尚未初始化，请联系管理员完成升级",
+                ));
+            }
+        }
         // Tenant migrations are applied by the authority, never by customer requests.
         let mut state = AppState::with_client(pool, self.client.clone());
         state.clock = self.clock.clone();

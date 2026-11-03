@@ -336,8 +336,9 @@ async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<Value>> {
         None => None,
     };
     let plays: Vec<Play> = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL ORDER BY sort_order,id",
+        "SELECT id,version,rule,enabled FROM plays WHERE deleted_at IS NULL AND owner_account_id <=> ? ORDER BY sort_order,id",
     )
+    .bind(state.play_owner())
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(
@@ -432,17 +433,21 @@ async fn create_play(
     sqlx::query("SELECT id FROM administrators WHERE id=1 FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plays WHERE deleted_at IS NULL")
-        .fetch_one(&mut *tx)
-        .await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM plays WHERE deleted_at IS NULL AND owner_account_id <=> ?",
+    )
+    .bind(state.play_owner())
+    .fetch_one(&mut *tx)
+    .await?;
     if count >= 1000 {
         return Err(ApiError(
             StatusCode::UNPROCESSABLE_ENTITY,
             "玩法总数不能超过 1000 条".into(),
         ));
     }
-    let result = sqlx::query("INSERT INTO plays(version,rule) VALUES(1,?)")
+    let result = sqlx::query("INSERT INTO plays(version,rule,owner_account_id) VALUES(1,?,?)")
         .bind(DbJson(&rule))
+        .bind(state.play_owner())
         .execute(&mut *tx)
         .await?;
     let id = result.last_insert_id() as i64;
@@ -469,9 +474,10 @@ async fn update_play(
     input.rule.validate()?;
     let mut tx = state.pool.begin().await?;
     let play: Play = sqlx::query_as(
-        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL FOR UPDATE",
+        "SELECT id,version,rule,enabled FROM plays WHERE id=? AND deleted_at IS NULL AND owner_account_id <=> ? FOR UPDATE",
     )
     .bind(id)
+    .bind(state.play_owner())
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(missing)?;
