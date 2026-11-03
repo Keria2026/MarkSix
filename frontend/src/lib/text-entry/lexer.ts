@@ -318,7 +318,22 @@ export function tokenize(
           ])
         : match(rest);
     let text: string, kind: TokenKind;
-    if (word) [text, kind] = word;
+    let consumedLength = word?.[2];
+    const slashRun = /^\/(?:[ \t]*\/)+/u.exec(rest)?.[0];
+    const letterSeparator = /^(?:ll|ii)(?![a-z])/iu.exec(rest)?.[0];
+    if (word?.[1] !== "play" && slashRun) {
+      text = ";";
+      kind = "separator";
+      consumedLength = slashRun.length;
+    } else if (
+      word?.[1] !== "play" &&
+      letterSeparator &&
+      !/[a-z]/iu.test(normalized[cursor - 1] ?? "")
+    ) {
+      text = ";";
+      kind = "separator";
+      consumedLength = letterSeparator.length;
+    } else if (word) [text, kind] = word;
     else if (/^\d/u.test(rest)) {
       const candidate = /^\d+(?:\.\d+)?[十百千万]/u.exec(rest);
       // A number immediately before 十不中 is a selection, not a multiple of ten.
@@ -360,7 +375,7 @@ export function tokenize(
               ? "separator"
               : "unknown";
     }
-    const end = cursor + (word?.[2] ?? text.length);
+    const end = cursor + (consumedLength ?? text.length);
     tokens.push({
       kind,
       text:
