@@ -150,7 +150,7 @@ async function workspace(page: Page, statement?: BettorStatement) {
   await expect(
     page.getByRole("heading", { name: "本期概览", exact: true }),
   ).toBeVisible();
-  return { queries };
+  return { queries, day: boot.day! };
 }
 async function navigate(page: Page, name: string) {
   await page
@@ -207,13 +207,27 @@ for (const width of [320, 390, 768, 1440, 1920, 2560, 3440]) {
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
-    await navigate(page, "投注人分类统计");
+    await navigate(page, "全部受注统计");
+    await expect(
+      page.getByRole("button", { name: "投注人分类统计", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("columnheader", { name: "投注人净盈亏", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("columnheader", { name: "本方受注净盈亏", exact: true }),
+    ).toBeVisible();
     await accessible(page);
     await page.screenshot({
       path: test.info().outputPath(`statistics-${width}.png`),
       fullPage: true,
     });
     await navigate(page, "录入投注");
+    await expect(
+      page
+        .locator(".page-heading")
+        .getByRole("button", { name: "本期概览", exact: true }),
+    ).toHaveCount(0);
     await page.getByRole("radio", { name: "香港", exact: true }).check();
     await expect(page.locator(".summary-market")).toHaveText("香港");
     await expect(
@@ -284,6 +298,80 @@ function exportSnapshot(): BettorStatement {
   };
 }
 
+for (const width of [390, 1440]) {
+  test(`current and historical bettor details keep house profits and exports at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1080 });
+    const data = exportSnapshot();
+    data.bettors[0].totals.payout = 20000;
+    data.bettors[0].totals.net = -7750;
+    data.bettors[1].totals.net = 96790;
+    const { day } = await workspace(page, data);
+    await page.route("**/api/days?*", (route) =>
+      route.fulfill({
+        json: { items: [day], total: 1, page: 1, page_size: 25 },
+      }),
+    );
+    const details = page.getByRole("region", {
+      name: "投注人受注明细，可横向滚动",
+    });
+    const verifyDetails = async () => {
+      await expect(
+        page.getByRole("button", { name: "投注人分类统计", exact: true }),
+      ).toHaveCount(0);
+      await expect(details.getByRole("columnheader")).toHaveText([
+        "投注人",
+        "有效本金",
+        "反水",
+        "含本返还",
+        "本方受注净盈亏",
+        "操作",
+      ]);
+      await expect(
+        details
+          .getByRole("row")
+          .filter({ hasText: "张三丰" })
+          .getByRole("cell")
+          .nth(4),
+      ).toHaveText("+¥ 967.90");
+      await expect(
+        details
+          .getByRole("row")
+          .filter({
+            has: page.getByRole("cell", { name: "张三", exact: true }),
+          })
+          .getByRole("cell")
+          .nth(4),
+      ).toHaveText("−¥ 77.50");
+      await expect(page.getByLabel("账单导出格式")).toBeVisible();
+      await expect(
+        details.getByRole("button", { name: "导出账单（张三）", exact: true }),
+      ).toBeAttached();
+    };
+    await navigate(page, "本期统计");
+    await verifyDetails();
+    // An incomplete settlement must remain unknown rather than display zero.
+    data.bettors[0].totals.net = null;
+    await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+    await expect(
+      details
+        .getByRole("row")
+        .filter({ has: page.getByRole("cell", { name: "张三", exact: true }) })
+        .getByRole("cell")
+        .nth(4),
+    ).toHaveText("待结算");
+    data.bettors[0].totals.net = -7750;
+    await navigate(page, "历史统计");
+    await page.getByRole("button", { name: "查看", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "历史统计 · 2026-11-01", exact: true }),
+    ).toBeVisible();
+    await verifyDetails();
+    await accessible(page);
+  });
+}
+
 async function downloadBytes(file: Download) {
   const chunks: Buffer[] = [];
   for await (const chunk of (await file.createReadStream())!)
@@ -315,7 +403,7 @@ for (const width of [390, 2560]) {
     await page.setViewportSize({ width, height: 1080 });
     await workspace(page, data);
     await navigate(page, "本期统计");
-    await navigate(page, "投注人分类统计");
+    await navigate(page, "全部受注统计");
     await page.route("**/bettor-export?combined=true", (route) =>
       route.fulfill({ json: data }),
     );
@@ -400,7 +488,7 @@ test("export loading, cancellation and errors leave the table in place and allow
 }) => {
   await workspace(page, exportSnapshot());
   await navigate(page, "本期统计");
-  await navigate(page, "投注人分类统计");
+  await navigate(page, "全部受注统计");
   const before = await exportGeometry(page);
   const individual = page.getByRole("button", {
     name: "导出账单（张三）",
@@ -491,8 +579,10 @@ test("export stays with its table and exposes a recoverable failure", async ({
 }) => {
   await workspace(page);
   await navigate(page, "本期统计");
-  await navigate(page, "投注人分类统计");
-  const panel = page.locator(".records-panel");
+  await navigate(page, "全部受注统计");
+  const panel = page.locator(".records-panel").filter({
+    has: page.getByRole("heading", { name: "投注人受注明细", exact: true }),
+  });
   await expect(panel.getByLabel("账单导出格式")).toBeVisible();
   await panel.getByLabel("账单导出格式").selectOption("png");
   await panel.getByRole("button", { name: "导出账单（全部投注人）" }).click();
@@ -647,7 +737,7 @@ for (const width of [390, 1440]) {
       .getByRole("navigation", { name: "主要导航" })
       .getByRole("button", { name: "本期统计", exact: true });
     const category = page.getByRole("button", {
-      name: "投注人分类统计",
+      name: "全部受注统计",
       exact: true,
     });
     await expect(statistics).toHaveAttribute("aria-expanded", "false");
@@ -700,7 +790,7 @@ for (const width of [320, 390, 720]) {
     await stats.click();
     await expect(stats).toHaveAttribute("aria-current", "page");
     await expect(
-      page.getByRole("button", { name: "投注人分类统计", exact: true }),
+      page.getByRole("button", { name: "全部受注统计", exact: true }),
     ).toBeVisible();
     await expect.poll(centerError).toBeLessThan(1.5);
     await expect(nav).not.toHaveAttribute("data-glass-settling");
@@ -996,7 +1086,7 @@ for (const width of [390, 1440]) {
       });
       await workspace(page, data);
       await navigate(page, "本期统计");
-      await navigate(page, "投注人分类统计");
+      await navigate(page, "全部受注统计");
       await page.route("**/bettor-export?combined=true", (route) =>
         route.fulfill({ json: data }),
       );
@@ -1079,7 +1169,7 @@ for (const width of [390, 1440]) {
     const panel = page.getByRole("region", { name: "受注金额分布" });
     await expect(panel).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "投注人分类统计", exact: true }),
+      page.getByRole("heading", { name: "投注人受注明细", exact: true }),
     ).toBeHidden();
     await expect(page.getByRole("form", { name: "筛选投注记录" })).toBeHidden();
     expect(queries).toHaveLength(0);

@@ -240,9 +240,7 @@ test("account statement exports a real PNG archive and supports cancelling an ou
   await expect(
     page.getByRole("button", { name: "本期统计", exact: true }),
   ).toHaveAttribute("aria-expanded", "true");
-  await page
-    .getByRole("button", { name: "投注人分类统计", exact: true })
-    .click();
+  await page.getByRole("button", { name: "全部受注统计", exact: true }).click();
   const boot = await (await page.request.get("/api/bootstrap")).json();
   const play = boot.plays.find(
     (p: { rule: { name: string } }) => p.rule.name === "特码",
