@@ -22,21 +22,19 @@ pub(crate) struct Scope {
     pub key: String,
     pub combined: bool,
     pub periods: Vec<Period>,
+    pub creator: Option<uuid::Uuid>,
 }
 impl Scope {
-    pub fn bets(&self) -> &'static str {
-        if self.combined {
+    pub fn bets(&self) -> String {
+        let base = if self.combined {
             "entry_date=?"
         } else {
             "period_id=?"
-        }
+        };
+        format!("{base} AND {}", creator_predicate(self.creator))
     }
-    pub fn layoffs(&self) -> &'static str {
-        if self.combined {
-            "bet_id IN (SELECT id FROM bets WHERE entry_date=?)"
-        } else {
-            "period_id=?"
-        }
+    pub fn layoffs(&self) -> String {
+        format!("bet_id IN (SELECT id FROM bets WHERE {})", self.bets())
     }
     pub fn settled(&self, bets: &[BetSummary]) -> bool {
         let active: Vec<_> = bets.iter().filter(|b| b.status != "cancelled").collect();
@@ -63,6 +61,7 @@ pub(crate) async fn scope(
             key: id.into(),
             combined,
             periods: vec![anchor],
+            creator: None,
         });
     }
     if anchor.market != "macau" {
@@ -77,7 +76,18 @@ pub(crate) async fn scope(
         key: date.to_string(),
         combined,
         periods,
+        creator: None,
     })
+}
+pub(crate) async fn visible_scope(
+    state: &AppState,
+    tx: &mut Transaction<'_, MySql>,
+    id: &str,
+    combined: bool,
+) -> ApiResult<Scope> {
+    let mut value = scope(tx, id, combined).await?;
+    value.creator = state.visible_creator;
+    Ok(value)
 }
 #[derive(Serialize)]
 pub(crate) struct BusinessDay {
@@ -90,19 +100,30 @@ pub(crate) struct BusinessDay {
 }
 pub(crate) async fn view(state: &AppState, id: &str) -> ApiResult<BusinessDay> {
     let mut tx = state.pool.begin().await?;
-    let scope = scope(&mut tx, id, true).await?;
-    let pending: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM bets WHERE entry_date=? AND status='pending'")
-            .bind(&scope.key)
-            .fetch_one(&mut *tx)
-            .await?;
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM bets WHERE entry_date=? AND status<>'cancelled'")
-            .bind(&scope.key)
-            .fetch_one(&mut *tx)
-            .await?;
+    let scope = visible_scope(state, &mut tx, id, true).await?;
+    let pending: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM bets WHERE {} AND status='pending'",
+        scope.bets()
+    ))
+    .bind(&scope.key)
+    .fetch_one(&mut *tx)
+    .await?;
+    let count: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM bets WHERE {} AND status<>'cancelled'",
+        scope.bets()
+    ))
+    .bind(&scope.key)
+    .fetch_one(&mut *tx)
+    .await?;
     let settled = pending == 0 && (count > 0 || scope.periods.iter().all(|p| p.state == "settled"));
-    let totals = totals_where(&mut tx, scope.bets(), scope.layoffs(), &scope.key, settled).await?;
+    let totals = totals_where(
+        &mut tx,
+        &scope.bets(),
+        &scope.layoffs(),
+        &scope.key,
+        settled,
+    )
+    .await?;
     let date = scope.periods[0].business_date;
     let phase = if settled {
         "settled"
@@ -207,7 +228,7 @@ pub(crate) async fn received_distribution(
     Query(query): Query<ReportQuery>,
 ) -> ApiResult<Json<ReceivedDistribution>> {
     let mut tx = state.pool.begin().await?;
-    let scope = scope(&mut tx, &id, query.combined).await?;
+    let scope = visible_scope(&state, &mut tx, &id, query.combined).await?;
     let rows: Vec<(String, sqlx::types::Json<Vec<Atom>>)> = sqlx::query_as(&format!(
         "SELECT period_id,atoms FROM bets WHERE {} AND status<>'cancelled' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind')) IN ('number','zodiac','tail') AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.condition'))='all'",scope.bets()
     )).bind(&scope.key).fetch_all(&mut *tx).await?;

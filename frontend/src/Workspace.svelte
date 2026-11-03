@@ -79,6 +79,13 @@
   } from "./lib/types";
 
   import { createRequestScope } from "./lib/requests";
+  import AccountScope from "./components/AccountScope.svelte";
+  import {
+    recordTransport,
+    recordViews,
+    type Collaboration,
+    type RecordView,
+  } from "./lib/collaboration";
 
   let {
     username,
@@ -86,14 +93,26 @@
     onlogout,
     oninvalid,
     onrefreshlicense,
+    collaboration,
+    recordView = "shared",
+    onrecordview,
   }: {
     username: string;
     licenseStatus: LicenseStatus;
     onlogout: () => Promise<void>;
     oninvalid: (status: number) => void;
     onrefreshlicense: () => Promise<boolean>;
+    collaboration?: Collaboration | null;
+    recordView?: RecordView;
+    onrecordview?: (view: RecordView) => void;
   } = $props();
-  const requests = createRequestScope((status) => oninvalid(status));
+  function scopedRequest<T>(path: string, options?: RequestInit): Promise<T> {
+    return recordTransport(recordView)<T>(path, options);
+  }
+  const requests = createRequestScope(
+    (status) => oninvalid(status),
+    scopedRequest,
+  );
   const api = requests.api;
   onDestroy(requests.dispose);
 
@@ -104,7 +123,9 @@
   let entryModeSaving = $state(false);
   const features = $derived(boot?.features);
   const canEnter = $derived(
-    !!features && (features.manual_entry || features.text_entry),
+    recordView !== "history" &&
+      !!features &&
+      (features.manual_entry || features.text_entry),
   );
   const layoffsEnabled = $derived(features?.layoffs === true);
   function applyFeatures(value: ModuleFeatures) {
@@ -301,6 +322,7 @@
   let serverOffset = 0;
   const today = $derived(boot?.today ?? null);
   const editablePeriod = (id: string) =>
+    recordView !== "history" &&
     [boot?.today, boot?.hk].some((p) => p?.id === id && p.accepting_entries);
   const active = $derived(selectedDay ?? boot?.day ?? null);
   const nav = [
@@ -326,7 +348,11 @@
     },
   ];
   const visibleNav = $derived(
-    nav.filter((item) => item.id !== "bet" || canEnter),
+    nav.filter(
+      (item) =>
+        (item.id !== "bet" || canEnter) &&
+        (item.id !== "settings" || recordView !== "history"),
+    ),
   );
   const serverClock = $derived(
     new Intl.DateTimeFormat("zh-CN", {
@@ -885,8 +911,20 @@
     </nav>
     <div class="sidebar-bottom">
       <div class="account">
-        <span class="avatar">A</span>
-        <div><strong>{username}</strong><small>管理员</small></div>
+        {#if collaboration && onrecordview}<AccountScope
+            {username}
+            {collaboration}
+            view={recordView}
+            editing={tab === "bet"}
+            onchange={onrecordview}
+          />{:else}<span class="avatar">A</span>{/if}
+        <div>
+          <strong>{username}</strong><small
+            >{collaboration
+              ? recordViews.find((v) => v.id === recordView)?.label
+              : "管理员"}</small
+          >
+        </div>
         <button
           class="icon-button"
           aria-label="退出登录"
@@ -907,11 +945,20 @@
         >
       </div>
       <div class="topbar-right">
+        {#if collaboration && onrecordview}<div class="mobile-account-scope">
+            <AccountScope
+              {username}
+              {collaboration}
+              view={recordView}
+              editing={tab === "bet"}
+              onchange={onrecordview}
+            />
+          </div>{/if}
         <span class="connection"
           ><i></i>{globalError ? "连接异常" : "已连接"}</span
         ><span class="top-clock"
           ><Clock3 size={14} />{serverClock}<small>北京</small></span
-        >{#if features?.text_entry}<button
+        >{#if features?.text_entry && recordView !== "history"}<button
             class="icon-button"
             aria-label="读取剪切板投注"
             title="读取剪切板投注"
@@ -928,6 +975,12 @@
         >
       </div>
     </header>
+    {#if collaboration && recordView === "history"}<div
+        class="notice"
+        role="status"
+      >
+        关联前记录仅供查看；新投注请切换到协作记录。这里的旧账本仅当前账户可见。
+      </div>{/if}
     {#if globalError}<div class="notice error" role="alert">
         <AlertCircle size={18} /><span>{globalError}</span><button
           onclick={() => refresh()}>重试</button
@@ -1418,14 +1471,16 @@
         />
       {/if}
     {/if}
-    {#if licenseStatus.active && boot && today && features?.text_entry}
+    {#if licenseStatus.active && boot && today && features?.text_entry && recordView !== "history"}
       <TextEntry
         bind:draft={textDraft}
         {boot}
         {today}
         {api}
         {notify}
-        account={username}
+        account={collaboration
+          ? `${username}:workspace:${collaboration.id}`
+          : username}
         active={tab === "bet" && entryMode === "text"}
         {clipboardRequest}
         onactivate={() => {

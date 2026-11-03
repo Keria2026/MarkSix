@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import {
     Activity,
     AlertCircle,
@@ -15,6 +15,11 @@
   import Workspace from "./Workspace.svelte";
   import { ApiError } from "./lib/types";
   import { createRequestScope } from "./lib/requests";
+  import type {
+    Collaboration,
+    CustomerSession,
+    RecordView,
+  } from "./lib/collaboration";
 
   let username = $state(""),
     password = $state(""),
@@ -24,8 +29,20 @@
     busy = $state(false);
   let licenseStatus = $state<LicenseStatus | null>(null);
   let epoch = $state(0);
+  let collaboration = $state<Collaboration | null>(null);
+  let recordView = $state<RecordView>("shared");
   let requests = createRequestScope(invalid);
   let checking = false;
+  async function switchRecordView(value: RecordView) {
+    recordView = value;
+    await tick();
+    const buttons = document.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="切换记录范围"]',
+    );
+    Array.from(buttons)
+      .find((button) => button.getClientRects().length > 0)
+      ?.focus();
+  }
 
   function reset() {
     requests.dispose();
@@ -35,6 +52,8 @@
     licenseStatus = null;
     password = "";
     checking = false;
+    collaboration = null;
+    recordView = "shared";
   }
   function invalid(status: number) {
     if (status === 401 && loggedIn) {
@@ -79,6 +98,9 @@
       });
       if (attempt !== epoch) return;
       password = "";
+      const session = await requests.api<CustomerSession>("/session");
+      if (attempt !== epoch) return;
+      collaboration = session.collaboration ?? null;
       loggedIn = true;
       await refreshLicense();
     } catch (e) {
@@ -107,9 +129,10 @@
     const attempt = epoch;
     void (async () => {
       try {
-        const session = await requests.api<{ username: string }>("/session");
+        const session = await requests.api<CustomerSession>("/session");
         if (attempt !== epoch) return;
         username = session.username;
+        collaboration = session.collaboration ?? null;
         loggedIn = true;
         await refreshLicense();
       } catch (e) {
@@ -221,8 +244,11 @@
       oninvalid={invalid}
     />{/key}
 {:else}
-  {#key epoch}<Workspace
+  {#key `${epoch}:${recordView}`}<Workspace
       {username}
+      {collaboration}
+      {recordView}
+      onrecordview={switchRecordView}
       {licenseStatus}
       onlogout={signOut}
       oninvalid={invalid}

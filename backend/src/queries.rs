@@ -124,7 +124,10 @@ pub(crate) async fn search_bets(
     // JSON_CONTAINS is parameterized: names and IDs never become SQL text.
     let bettors_json = serde_json::to_string(&bettors).map_err(anyhow::Error::from)?;
     let plays_json = serde_json::to_string(&plays).map_err(anyhow::Error::from)?;
-    let predicate = "period_id=? AND (? IS NULL OR stake>=?) AND (? IS NULL OR stake<=?) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,JSON_QUOTE(bettor))) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,CAST(play_id AS JSON)))";
+    let predicate = format!(
+        "{} AND period_id=? AND (? IS NULL OR stake>=?) AND (? IS NULL OR stake<=?) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,JSON_QUOTE(bettor))) AND (JSON_LENGTH(?)=0 OR JSON_CONTAINS(?,CAST(play_id AS JSON)))",
+        state.visible_bets()
+    );
     let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM bets WHERE {predicate}"))
         .bind(&id)
         .bind(min)
@@ -162,7 +165,7 @@ pub(crate) async fn bet_filters(
     Query(q): Query<crate::reporting::ReportQuery>,
 ) -> ApiResult<Json<Value>> {
     let mut tx = state.pool.begin().await?;
-    let scope = crate::reporting::scope(&mut tx, &id, q.combined).await?;
+    let scope = crate::reporting::visible_scope(&state, &mut tx, &id, q.combined).await?;
     let predicate = scope.bets();
     let bettors: Vec<String> = sqlx::query_scalar(&format!(
         "SELECT DISTINCT bettor FROM bets WHERE {predicate} ORDER BY bettor"

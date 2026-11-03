@@ -33,6 +33,7 @@ async fn bounded_pools_pin_live_leases_evict_idle_entries_and_reap_deleted_tenan
             database_name: "marksix_test".into(),
             database_user: connection.username().into(),
             database_password: connection.password().unwrap().into(),
+            workspace_id: None,
         });
     }
     for a in &accounts[..12] {

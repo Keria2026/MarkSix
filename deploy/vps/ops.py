@@ -80,11 +80,15 @@ def lock(path):
         yield
 
 
+def has_workspaces(shared):
+    return mysql(shared, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='hosted_workspaces';") == ["1"]
+
+
 def account_list(shared):
-    rows = mysql(
-        shared,
-        "SELECT id,database_name,database_user,state FROM hosted_accounts ORDER BY id;",
-    )
+    source = "SELECT id,database_name,database_user,state FROM hosted_accounts"
+    if has_workspaces(shared):
+        source += " UNION ALL SELECT id,database_name,database_user,state FROM hosted_workspaces"
+    rows = mysql(shared, source + " ORDER BY id;")
     result = []
     for row in rows:
         account, database, user, state = row.split("\t")
@@ -321,8 +325,19 @@ def restore_data(shared, manifest):
             shared,
             f"DROP DATABASE IF EXISTS `{database}`; DROP USER IF EXISTS '{user}'@'%';",
         )
+    # An older control dump has no workspace table/migration. Do not leave a
+    # newer table behind for the restored migrator to mistake for applied DDL.
+    if has_workspaces(shared):
+        mysql(shared, "SET FOREIGN_KEY_CHECKS=0; DROP TABLE hosted_workspaces; SET FOREIGN_KEY_CHECKS=1;")
     load(control, "marksix_control")
     restored = account_list(shared)
+    workspace_ids = set(mysql(shared, "SELECT id FROM hosted_workspaces;")) if has_workspaces(shared) else set()
+    for account in deleted:
+        if not re.fullmatch(r"[0-9a-f-]{36}", account):
+            raise RuntimeError("Invalid deletion receipt")
+        mysql(shared, f"DELETE FROM authority_audit WHERE account_id='{account}'; DELETE FROM hosted_accounts WHERE id='{account}';")
+    for workspace in workspace_ids & deleted:
+        mysql(shared, f"DELETE FROM hosted_workspaces WHERE id='{workspace}';")
     # Recreate only principals from the restored control database. Passwords stay
     # inside mysql, never becoming command arguments or log output.
     for account, database, user, _ in restored:
@@ -336,9 +351,10 @@ def restore_data(shared, manifest):
         if str(path.relative_to(root)) not in data["files"]:
             raise RuntimeError("Missing tenant dump")
         grant_database = database.replace("_", "\\_")
+        credential_table = "hosted_workspaces" if account in workspace_ids else "hosted_accounts"
         mysql(
             shared,
-            f"CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci; SET @q=(SELECT CONCAT('CREATE USER IF NOT EXISTS ',QUOTE(database_user),'@',QUOTE('%'),' IDENTIFIED BY ',QUOTE(database_password)) FROM hosted_accounts WHERE id='{account}'); PREPARE s FROM @q; EXECUTE s; DEALLOCATE PREPARE s; GRANT ALL PRIVILEGES ON `{grant_database}`.* TO '{user}'@'%';",
+            f"CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci; SET @q=(SELECT CONCAT('CREATE USER IF NOT EXISTS ',QUOTE(database_user),'@',QUOTE('%'),' IDENTIFIED BY ',QUOTE(database_password)) FROM {credential_table} WHERE id='{account}'); PREPARE s FROM @q; EXECUTE s; DEALLOCATE PREPARE s; GRANT ALL PRIVILEGES ON `{grant_database}`.* TO '{user}'@'%';",
         )
         load(path, database)
     mysql(shared, "DELETE FROM hosted_sessions; DELETE FROM authority_sessions;")

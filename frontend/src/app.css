@@ -4778,3 +4778,12 @@ summary {
     position: static;
   }
 }
+.mobile-account-scope {
+  display: none;
+}
+@media (max-width: 720px) {
+  .mobile-account-scope {
+    display: flex;
+    align-items: center;
+  }
+}

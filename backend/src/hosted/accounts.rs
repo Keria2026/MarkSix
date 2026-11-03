@@ -111,6 +111,7 @@ pub(super) struct Account {
     pub database_name: String,
     pub database_user: String,
     pub database_password: String,
+    pub workspace_id: Option<String>,
 }
 impl Account {
     pub fn active(&self, date: NaiveDate) -> bool {
@@ -119,7 +120,7 @@ impl Account {
             && (self.permanent || self.authorized_through.is_some_and(|d| d >= date))
     }
     pub fn public(&self) -> Value {
-        json!({"id":self.id,"username":self.username,"permanent":self.permanent,"authorized_through":self.authorized_through,"disabled":self.disabled,"state":self.state,"active":self.active(today())})
+        json!({"id":self.id,"username":self.username,"permanent":self.permanent,"authorized_through":self.authorized_through,"disabled":self.disabled,"state":self.state,"active":self.active(today()),"workspace_id":self.workspace_id})
     }
 }
 pub(super) fn today() -> NaiveDate {

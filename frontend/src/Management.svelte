@@ -58,6 +58,8 @@
     disabled: boolean;
     state: string;
     active: boolean;
+    workspace_id?: string | null;
+    workspace_state?: string | null;
   }
   interface Code {
     id: string;
@@ -92,6 +94,7 @@
     events = $state<Audit[]>([]);
   let dialog = $state<
     | "create"
+    | "link"
     | "password"
     | "rename"
     | "code"
@@ -110,6 +113,7 @@
     action = $state(""),
     modalError = $state(""),
     issuedCode = $state("");
+  let linkedAccount = $state("");
   const tabs = [
     { id: "accounts" as const, label: "客户管理", icon: Users },
     { id: "codes" as const, label: "激活码", icon: KeyRound },
@@ -129,6 +133,7 @@
     revoke_code: "作废激活码",
     create_administrator: "创建管理员",
     permanent_delete_completed: "永久删除完成",
+    accounts_linked: "关联协作账户",
   };
   const filtered = $derived(
     customers.filter((c) =>
@@ -156,6 +161,11 @@
     nextAction = "",
   ) {
     target = c;
+    linkedAccount = c?.workspace_id
+      ? (customers.find(
+          (a) => a.id !== c.id && a.workspace_id === c.workspace_id,
+        )?.id ?? "")
+      : "";
     dialog = kind;
     newName = kind === "rename" ? (c?.username ?? "") : "";
     newPassword = "";
@@ -233,6 +243,11 @@
             password: newPassword,
             permanent,
           }),
+        });
+      if (dialog === "link" && target)
+        await api(`/accounts/${target.id}/link`, {
+          method: "POST",
+          body: JSON.stringify({ account_id: linkedAccount }),
         });
       if (dialog === "administrator")
         await api("/administrators", {
@@ -433,7 +448,27 @@
                     ? "永久授权"
                     : `授权至 ${c.authorized_through ?? "尚未激活"}`}
                 </p>
+                {#if c.workspace_id}<p class="owner-muted">
+                    协作账户：{customers
+                      .filter(
+                        (a) =>
+                          a.workspace_id === c.workspace_id && a.id !== c.id,
+                      )
+                      .map((a) => a.username)
+                      .join("、") ||
+                      "当前仅此账户"}{#if c.workspace_state !== "ready"}
+                      · 关联未完成，请重试{/if}
+                  </p>{/if}
                 <div class="owner-actions">
+                  <button
+                    class="button secondary"
+                    disabled={busy ||
+                      c.state !== "ready" ||
+                      c.disabled ||
+                      (c.workspace_id != null && c.workspace_state === "ready")}
+                    onclick={() => open("link", c)}
+                    >{c.workspace_id ? "重试关联" : "关联账户"}</button
+                  >
                   {#if c.state === "failed"}<button
                       class="button secondary"
                       disabled={busy}
@@ -556,19 +591,21 @@
 
 {#if dialog}<Modal
     dismissible={!busy}
-    title={dialog === "rename"
-      ? "修改客户账号"
-      : dialog === "create"
-        ? "新增客户"
-        : dialog === "administrator"
-          ? "新增后台管理员"
-          : dialog === "password"
-            ? "修改客户密码"
-            : dialog === "code"
-              ? "签发激活码"
-              : dialog === "delete"
-                ? "永久删除客户"
-                : "确认授权变更"}
+    title={dialog === "link"
+      ? "关联协作账户"
+      : dialog === "rename"
+        ? "修改客户账号"
+        : dialog === "create"
+          ? "新增客户"
+          : dialog === "administrator"
+            ? "新增后台管理员"
+            : dialog === "password"
+              ? "修改客户密码"
+              : dialog === "code"
+                ? "签发激活码"
+                : dialog === "delete"
+                  ? "永久删除客户"
+                  : "确认授权变更"}
     onclose={() => {
       if (!busy) {
         dialog = null;
@@ -604,6 +641,19 @@
       </div>
     {:else}<form class="owner-form" onsubmit={save}>
         {#if target}<p>客户：<strong>{target.username}</strong></p>{/if}
+        {#if dialog === "link"}<label
+            >关联账户<select bind:value={linkedAccount} required
+              ><option value="">请选择已有账户</option
+              >{#each customers.filter((a) => a.id !== target?.id && a.state === "ready" && !a.disabled && (!a.workspace_id || a.workspace_id === target?.workspace_id)) as account}<option
+                  value={account.id}>{account.username}</option
+                >{/each}</select
+            ></label
+          >
+          <p class="owner-muted">
+            仅共享关联后新录入的记录，原账本各自保留。双方可修改、撤销共享记录，并共用玩法配置。双方当前玩法合并，同名且全部设置相同的仅保留一份；生肖映射及功能设置沿用
+            {target?.username}。双方需要重新登录。
+          </p>
+        {/if}
         {#if dialog === "create" || dialog === "administrator" || dialog === "rename"}<label
             >账号<input
               bind:value={newName}
@@ -664,6 +714,9 @@
               size={19}
             />将永久删除账号、全部账本、玩法、激活码以及服务器管理的相关备份，无法撤销。服务器外由你另行保存的副本需要你自行删除。
           </div>
+          {#if target?.workspace_id}<p class="owner-muted">
+              个人账户及关联前账本会被删除。若仍有关联账户，共享账本由其继续保留；最后一个账户删除时才删除共享账本。
+            </p>{/if}
           <label
             >请输入“永久删除 {target?.username}”<input
               bind:value={confirmation}
@@ -688,6 +741,7 @@
             class:primary={dialog !== "delete"}
             class:owner-danger={dialog === "delete"}
             disabled={busy ||
+              (dialog === "link" && !linkedAccount) ||
               (dialog === "delete" &&
                 confirmation !== `永久删除 ${target?.username}`)}
             >{#if busy}<LoaderCircle class="spin" size={17} />{/if}{dialog ===

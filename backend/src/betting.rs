@@ -124,6 +124,13 @@ async fn submit(
     hash: String,
     grouped: bool,
 ) -> ApiResult<Value> {
+    let hash = if let Some(policy) = &state.hosted
+        && policy.workspace_id.is_some()
+    {
+        crate::api::digest(&json!({"actor":policy.account_id,"request":hash}).to_string())
+    } else {
+        hash
+    };
     uuid::Uuid::parse_str(&input.request_id).map_err(|_| {
         ApiError(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -292,11 +299,11 @@ async fn submit(
         } else {
             input.request_id.clone()
         };
-        sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor,slip_id,slip_position,package_zodiacs,drag,market,entry_date) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO bets(id,request_id,request_hash,period_id,play_id,play_version,rule,selections,compound,amount,unit_count,stake,rebate,exposure,natal,atoms,bettor,slip_id,slip_position,package_zodiacs,drag,market,entry_date,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&id).bind(request).bind(&hash).bind(&period.id).bind(play.id).bind(play.version).bind(&play.rule)
             .bind(DbJson(&line.selections)).bind(line.compound).bind(entry_amount(&line.amount)?).bind(planned.atoms.len() as i32)
             .bind(planned.stake).bind(planned.rebate).bind(planned.exposure).bind(period.mapping.natal as i8)
-            .bind(DbJson(&planned.atoms)).bind(&input.bettor).bind(&slip_id).bind(grouped.then_some(position as i32)).bind(DbJson(&line.package_zodiacs)).bind(line.drag.as_ref().map(DbJson)).bind(line.market.as_str()).bind(business_date(received)).execute(&mut *tx).await?;
+            .bind(DbJson(&planned.atoms)).bind(&input.bettor).bind(&slip_id).bind(grouped.then_some(position as i32)).bind(DbJson(&line.package_zodiacs)).bind(line.drag.as_ref().map(DbJson)).bind(line.market.as_str()).bind(business_date(received)).bind(state.hosted.as_ref().map(|p| &p.account_id)).execute(&mut *tx).await?;
         audit(
             &mut tx,
             Some(&period.id),

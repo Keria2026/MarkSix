@@ -372,7 +372,7 @@ pub async fn statistics(
 ) -> ApiResult<Json<Value>> {
     let page = query.page.unwrap_or(1).clamp(1, 100000);
     let mut tx = state.pool.begin().await?;
-    let scope = crate::reporting::scope(&mut tx, &id, query.combined).await?;
+    let scope = crate::reporting::visible_scope(&state, &mut tx, &id, query.combined).await?;
     let bet_predicate = scope.bets();
     let layoff_predicate = scope.layoffs();
     let bets: Vec<BetSummary> = sqlx::query_as(&format!(
@@ -461,13 +461,14 @@ pub async fn statistics(
     ))
 }
 pub async fn parties(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    let bettors: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT bettor FROM bets WHERE bettor<>'' ORDER BY bettor LIMIT 1000",
-    )
+    let bettors: Vec<String> = sqlx::query_scalar(&format!(
+        "SELECT DISTINCT bettor FROM bets WHERE {} AND bettor<>'' ORDER BY bettor LIMIT 1000",
+        state.visible_bets()
+    ))
     .fetch_all(&state.pool)
     .await?;
     let receivers: Vec<String> =
-        sqlx::query_scalar("SELECT DISTINCT receiver FROM layoffs ORDER BY receiver LIMIT 1000")
+        sqlx::query_scalar(&format!("SELECT DISTINCT receiver FROM layoffs WHERE bet_id IN (SELECT id FROM bets WHERE {}) ORDER BY receiver LIMIT 1000", state.visible_bets()))
             .fetch_all(&state.pool)
             .await?;
     Ok(Json(json!({"bettors":bettors,"receivers":receivers})))
