@@ -728,3 +728,82 @@ for (const width of [390, 1440]) {
     });
   });
 }
+
+for (const width of [390, 1440]) {
+  test(`mixed slash and letter separators preserve confirmation and submission at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const writes = await openText(page);
+    const previews: object[] = [];
+    await page.route("**/api/slips/preview", async (route) => {
+      previews.push(route.request().postDataJSON());
+      await route.fulfill({
+        json: {
+          valid: true,
+          items: [
+            { units: 2, stake: 2500, error: null },
+            { units: 2, stake: 4000, error: null },
+            { units: 2, stake: 6000, error: null },
+            { units: 2, stake: 8000, error: null },
+          ],
+          units: 8,
+          stake: 20500,
+          error: null,
+        },
+      });
+    });
+    await page
+      .getByLabel("投注原文")
+      .fill(
+        "香港特码03///15各12.5 /// 澳门特码27 ll 39各20 x 尾中2尾 ii 8尾各30 ll 一肖中鼠 x 牛各40",
+      );
+    await page.getByRole("button", { name: "校验", exact: true }).click();
+    const modal = page.getByRole("dialog", { name: "确认投注单" });
+    await modal.getByPlaceholder("填写投注人").fill("synthetic-separators");
+    await expect(modal.locator(".text-entry-rows > li")).toHaveCount(4);
+    await expect(
+      modal.getByText("4 个分项 · 8 注", { exact: true }),
+    ).toBeVisible();
+    await expect(modal.getByText("¥ 205.00", { exact: true })).toBeVisible();
+    for (const [index, amount] of ["12.5", "20", "30", "40"].entries())
+      await expect(
+        modal.getByLabel(`第${index + 1}项金额`, { exact: true }),
+      ).toHaveValue(amount);
+    const submit = modal.getByRole("button", { name: "确认录入", exact: true });
+    await expect(submit).toBeEnabled();
+    expect(writes).toHaveLength(0);
+    await submit.click();
+    await expect(modal).toBeHidden();
+    expect(writes).toHaveLength(1);
+    const { items } = writes[0] as {
+      items: {
+        play_id: number;
+        market?: string;
+        selections: number[];
+        amount: string;
+      }[];
+    };
+    expect(
+      items.map((item) => ({
+        play: plays.find((play) => play.id === item.play_id)!.rule.name,
+        market: item.market ?? "macau",
+        selections: item.selections,
+        amount: item.amount,
+      })),
+    ).toEqual([
+      { play: "特码", market: "hk", selections: [3, 15], amount: "12.5" },
+      { play: "特码", market: "macau", selections: [27, 39], amount: "20" },
+      { play: "尾中", market: "macau", selections: [2, 8], amount: "30" },
+      { play: "一肖中", market: "macau", selections: [0, 1], amount: "40" },
+    ]);
+    expect(previews.length).toBeGreaterThan(0);
+    expect(
+      previews.every(
+        (preview) =>
+          JSON.stringify((preview as { items: object[] }).items) ===
+          JSON.stringify(items),
+      ),
+    ).toBe(true);
+  });
+}

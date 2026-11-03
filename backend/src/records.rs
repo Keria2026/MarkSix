@@ -87,7 +87,7 @@ pub(crate) async fn search(
     let bettors = serde_json::to_string(&q.bettors).map_err(anyhow::Error::from)?;
     let plays = serde_json::to_string(&q.play_ids).map_err(anyhow::Error::from)?;
     let mut tx = state.pool.begin().await?;
-    let scope = crate::reporting::scope(&mut tx, &period, q.combined).await?;
+    let scope = crate::reporting::visible_scope(&state, &mut tx, &period, q.combined).await?;
     let predicate = scope.bets();
     let amount = "SUM(CASE WHEN status<>'cancelled' THEN stake ELSE 0 END)";
     let grouped = format!(
@@ -266,7 +266,7 @@ pub(crate) async fn export(
     Query(query): Query<crate::reporting::ReportQuery>,
 ) -> ApiResult<Json<Value>> {
     let mut tx = state.pool.begin().await?;
-    let scope = crate::reporting::scope(&mut tx, &id, query.combined).await?;
+    let scope = crate::reporting::visible_scope(&state, &mut tx, &id, query.combined).await?;
     let predicate = scope.bets();
     let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM bets WHERE {predicate}"))
         .bind(&scope.key)

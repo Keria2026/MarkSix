@@ -60,9 +60,18 @@ pub(super) async fn clear(
     if valid != 1 || a.disabled || a.state != "ready" || a.password_hash != first.password_hash {
         return Err(unauthorized());
     }
-    management::identifiers(&a)?;
-    let pool = tenancy::pool(&a, 1).await?;
-    let result = erase(&c, &a, &pool, &input.request_id).await;
+    let database = if let Some(id) = &a.workspace_id {
+        let workspace = super::workspaces::get(&c, id).await?;
+        if workspace.state != "ready" {
+            return Err(invalid("协作账本尚未就绪"));
+        }
+        workspace.database(&a)
+    } else {
+        a.clone()
+    };
+    management::identifiers(&database)?;
+    let pool = tenancy::pool(&database, 1).await?;
+    let result = erase(&c, &database, &pool, &input.request_id).await;
     pool.close().await;
     result?;
     control_tx.commit().await?;

@@ -146,13 +146,18 @@ async fn logout(State(r): State<Registry>, headers: HeaderMap) -> ApiResult<Resp
 }
 async fn session(State(r): State<Registry>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     let a = customer(&r.control, &headers).await?;
-    Ok(Json(json!({"username":a.username})))
+    Ok(Json(
+        json!({"username":a.username,"account_id":a.id,"collaboration":super::workspaces::information(&r.control, &a).await?}),
+    ))
 }
 async fn clear_history(
     State(r): State<Registry>,
     headers: HeaderMap,
     Json(input): Json<super::history::ClearHistory>,
 ) -> ApiResult<Response> {
+    if super::workspaces::RecordView::parse(&headers)? == super::workspaces::RecordView::History {
+        return Err(ApiError(StatusCode::FORBIDDEN, "关联前账本仅供查看".into()));
+    }
     customer(&r.control, &headers).await?;
     // Fixed internal destination. Customer input can never choose a server URL.
     let url =
@@ -271,14 +276,71 @@ async fn dispatch(State(r): State<Registry>, mut request: Request) -> ApiResult<
             )
         })?
         .map_err(anyhow::Error::from)?;
-    let state = r.lease(&a).await?;
+    let mut pin = r.control.pool.begin().await?;
+    let current: Account = sqlx::query_as("SELECT * FROM hosted_accounts WHERE id=? FOR SHARE")
+        .bind(&a.id)
+        .fetch_optional(&mut *pin)
+        .await?
+        .ok_or_else(unauthorized)?;
+    if !current.active(today())
+        || current.credential_version != a.credential_version
+        || current.workspace_id != a.workspace_id
+    {
+        return Err(unauthorized());
+    }
+    let view = super::workspaces::RecordView::parse(request.headers())?;
+    let legacy = a.workspace_id.is_some() && view == super::workspaces::RecordView::History;
+    // The former ledger remains accessible, but all newly entered bets belong
+    // to the collaborative ledger. Configuration is shared there as well.
+    if legacy
+        && !matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD
+        )
+        && !matches!(
+            path,
+            "/api/records/search" | "/api/bets/search" | "/api/text-entry/bettor-preference"
+        )
+    {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "关联前账本仅供查看，请切换到协作记录操作".into(),
+        ));
+    }
+    let state = if let Some(id) = &a.workspace_id
+        && !legacy
+    {
+        let workspace: super::workspaces::Workspace =
+            sqlx::query_as("SELECT * FROM hosted_workspaces WHERE id=?")
+                .bind(id)
+                .fetch_optional(&mut *pin)
+                .await?
+                .ok_or_else(unauthorized)?;
+        if workspace.state != "ready" {
+            return Err(crate::api::conflict(
+                "协作账本尚未就绪，请联系管理员重试关联",
+            ));
+        }
+        r.collaborative(&a, &workspace).await?
+    } else {
+        r.lease(&a).await?
+    };
+    let mut context = (*state).clone();
+    if a.workspace_id.is_some() && view == super::workspaces::RecordView::Mine {
+        context.visible_creator = Some(uuid::Uuid::parse_str(&a.id).map_err(anyhow::Error::from)?);
+    }
     request
         .extensions_mut()
         .insert(super::ValidatedCustomer(a.id));
-    Ok(state
-        .router
-        .clone()
+    let router = if context.visible_creator.is_some() {
+        crate::api::router(context)
+    } else {
+        state.router.clone()
+    };
+    let result = router
         .oneshot(request)
         .await
-        .unwrap_or_else(|never| match never {}))
+        .unwrap_or_else(|never| match never {});
+    pin.commit().await?;
+    Ok(result)
 }

@@ -6,6 +6,8 @@ use axum::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
+#[path = "collaboration.rs"]
+mod collaboration;
 async fn call(
     app: &Router,
     method: &str,

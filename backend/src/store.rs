@@ -45,6 +45,8 @@ pub struct AppState {
     pub(crate) hosted: Option<crate::hosted::Policy>,
     pub(crate) draw_cache: Option<DrawCache>,
     pub(crate) hk_draw_cache: Option<DrawCache>,
+    // This is a presentation filter, never a tenant or permission selector.
+    pub(crate) visible_creator: Option<uuid::Uuid>,
 }
 impl AppState {
     pub fn new(pool: MySqlPool) -> anyhow::Result<Self> {
@@ -75,11 +77,19 @@ impl AppState {
             hosted: None,
             draw_cache: None,
             hk_draw_cache: None,
+            visible_creator: None,
         }
     }
     pub fn now(&self) -> NaiveDateTime {
         (self.clock)()
     }
+    pub(crate) fn visible_bets(&self) -> String {
+        creator_predicate(self.visible_creator)
+    }
+}
+pub(crate) fn creator_predicate(creator: Option<uuid::Uuid>) -> String {
+    // Only a typed UUID obtained from the authenticated account reaches SQL.
+    creator.map_or_else(|| "TRUE".into(), |id| format!("created_by='{id}'"))
 }
 pub async fn connect(url: &str) -> anyhow::Result<MySqlPool> {
     let pool = MySqlPoolOptions::new()
@@ -362,7 +372,16 @@ pub async fn view(state: &AppState, period: Period) -> anyhow::Result<PeriodView
         "closed".into()
     };
     let accepting_entries = crate::market::accepts(&period, now);
-    let totals = totals(&mut tx, &period.id, period.state == "settled").await?;
+    let bets = format!("period_id=? AND {}", state.visible_bets());
+    let layoffs = format!("bet_id IN (SELECT id FROM bets WHERE {bets})");
+    let totals = totals_where(
+        &mut tx,
+        &bets,
+        &layoffs,
+        &period.id,
+        period.state == "settled",
+    )
+    .await?;
     tx.commit().await?;
     Ok(PeriodView {
         period,

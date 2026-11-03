@@ -121,13 +121,36 @@ impl Registry {
         })
     }
     pub async fn lease(&self, a: &Account) -> ApiResult<TenantLease> {
-        if let Some(entry) = self.states.lock().await.get_mut(&a.id) {
+        self.lease_database(a, &a.id, a, None).await
+    }
+    pub async fn collaborative(
+        &self,
+        a: &Account,
+        workspace: &super::workspaces::Workspace,
+    ) -> ApiResult<TenantLease> {
+        let database = workspace.database(a);
+        self.lease_database(
+            &database,
+            &format!("{}/{}", workspace.id, a.id),
+            a,
+            Some(workspace.id.clone()),
+        )
+        .await
+    }
+    async fn lease_database(
+        &self,
+        database: &Account,
+        key: &str,
+        actor: &Account,
+        workspace: Option<String>,
+    ) -> ApiResult<TenantLease> {
+        if let Some(entry) = self.states.lock().await.get_mut(key) {
             return Ok(entry.borrow());
         }
         // SQL and pool close never hold the state-map lock used by warm requests.
         let _cold = self.cold_load.lock().await;
         let mut states = self.states.lock().await;
-        if let Some(entry) = states.get_mut(&a.id) {
+        if let Some(entry) = states.get_mut(key) {
             return Ok(entry.borrow());
         }
         // Bound *all* live pools, not just each customer's pool. In-flight
@@ -153,7 +176,7 @@ impl Registry {
         if let Some(old) = evicted {
             old.state.pool.close().await;
         }
-        let pool = pool(a, 2).await?;
+        let pool = pool(database, 2).await?;
         // Tenant migrations are applied by the authority, never by customer requests.
         let mut state = AppState::with_client(pool, self.client.clone());
         state.clock = self.clock.clone();
@@ -163,7 +186,8 @@ impl Registry {
         state.hk_draw_cache = Some(self.hk_draw_cache.clone());
         state.hosted = Some(super::Policy {
             pool: self.control.pool.clone(),
-            account_id: a.id.clone(),
+            account_id: actor.id.clone(),
+            workspace_id: workspace,
         });
         let mut entry = Entry {
             router: crate::api::router(state.clone()),
@@ -172,7 +196,7 @@ impl Registry {
             touched: Instant::now(),
         };
         let lease = entry.borrow();
-        self.states.lock().await.insert(a.id.clone(), entry);
+        self.states.lock().await.insert(key.to_owned(), entry);
         Ok(lease)
     }
     pub async fn synchronize_admin(&self, a: &Account, state: &AppState) -> ApiResult<()> {
@@ -199,12 +223,21 @@ impl Registry {
         )
         .fetch_all(&self.control.pool)
         .await?;
-        let ids: std::collections::HashSet<_> = accounts.iter().map(|a| a.id.as_str()).collect();
+        let ids: std::collections::HashSet<String> = accounts
+            .iter()
+            .flat_map(|a| {
+                let mut keys = vec![a.id.clone()];
+                if let Some(id) = &a.workspace_id {
+                    keys.push(format!("{id}/{}", a.id));
+                }
+                keys
+            })
+            .collect();
         let removed = {
             let mut states = self.states.lock().await;
             let keys: Vec<_> = states
                 .keys()
-                .filter(|id| !ids.contains(id.as_str()))
+                .filter(|id| !ids.contains(*id))
                 .cloned()
                 .collect();
             keys.into_iter()
@@ -215,6 +248,7 @@ impl Registry {
             let state = entry.state;
             state.pool.close().await;
         }
+        let mut visited = std::collections::HashSet::new();
         for account in accounts {
             let _permit = self.work_gate.acquire().await?;
             match self.lease(&account).await {
@@ -226,6 +260,25 @@ impl Registry {
                 Err(e) => tracing::error!(account_id=%account.id,error=%e.1,"tenant unavailable"),
             }
             tokio::task::yield_now().await;
+            if let Some(id) = &account.workspace_id
+                && visited.insert(id.clone())
+            {
+                let workspace = super::workspaces::get(&self.control, id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.1))?;
+                if workspace.state == "ready" {
+                    match self.collaborative(&account, &workspace).await {
+                        Ok(state) => {
+                            if let Err(e) = crate::worker::tick(&state).await {
+                                tracing::error!(workspace_id=%id,error=%e,"collaborative worker failed");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(workspace_id=%id,error=%e.1,"collaboration unavailable")
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }

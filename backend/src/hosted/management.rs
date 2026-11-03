@@ -47,6 +47,7 @@ pub async fn serve(pool: MySqlPool, address: &str) -> anyhow::Result<()> {
         for grant in [
             "SELECT ON {db}._sqlx_migrations",
             "SELECT ON {db}.hosted_accounts",
+            "SELECT ON {db}.hosted_workspaces",
             "UPDATE (authorized_through) ON {db}.hosted_accounts",
             "SELECT,INSERT,DELETE ON {db}.hosted_sessions",
             "SELECT ON {db}.hosted_codes",
@@ -65,6 +66,9 @@ pub async fn serve(pool: MySqlPool, address: &str) -> anyhow::Result<()> {
     sqlx::query("UPDATE hosted_accounts SET state='failed' WHERE state='provisioning'")
         .execute(&control.pool)
         .await?;
+    sqlx::query("UPDATE hosted_workspaces SET state='failed' WHERE state='provisioning'")
+        .execute(&control.pool)
+        .await?;
     for account in sqlx::query_as::<_, Account>(
         "SELECT * FROM hosted_accounts WHERE state='ready' ORDER BY id",
     )
@@ -72,6 +76,21 @@ pub async fn serve(pool: MySqlPool, address: &str) -> anyhow::Result<()> {
     .await?
     {
         let pool = super::tenancy::pool(&account, 2).await?;
+        crate::store::MIGRATOR.run(&pool).await?;
+        pool.close().await;
+    }
+    let workspaces: Vec<super::workspaces::Workspace> =
+        sqlx::query_as("SELECT * FROM hosted_workspaces WHERE state='ready' ORDER BY id")
+            .fetch_all(&control.pool)
+            .await?;
+    for workspace in workspaces {
+        let member: Account = sqlx::query_as(
+            "SELECT * FROM hosted_accounts WHERE workspace_id=? ORDER BY id LIMIT 1",
+        )
+        .bind(&workspace.id)
+        .fetch_one(&control.pool)
+        .await?;
+        let pool = super::tenancy::pool(&workspace.database(&member), 2).await?;
         crate::store::MIGRATOR.run(&pool).await?;
         pool.close().await;
     }
@@ -108,6 +127,7 @@ pub(super) fn router(c: Control) -> Router {
         .route("/accounts", get(accounts).post(create_account))
         .route("/accounts/{id}", put(change_account))
         .route("/accounts/{id}/provision", post(retry_provision))
+        .route("/accounts/{id}/link", post(super::workspaces::link))
         .route("/accounts/{id}/codes", post(create_code))
         .route("/codes", get(codes))
         .route("/codes/{id}/revoke", post(revoke_code))
@@ -216,9 +236,24 @@ async fn accounts(State(c): State<Control>) -> ApiResult<Json<Value>> {
     )
     .fetch_all(&c.pool)
     .await?;
-    Ok(Json(
-        json!({"items":rows.iter().map(Account::public).collect::<Vec<_>>()}),
-    ))
+    let workspaces: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,state FROM hosted_workspaces")
+            .fetch_all(&c.pool)
+            .await?;
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|a| {
+            let mut value = a.public();
+            value["workspace_state"] = json!(
+                workspaces
+                    .iter()
+                    .find(|(id, _)| Some(id) == a.workspace_id.as_ref())
+                    .map(|(_, state)| state)
+            );
+            value
+        })
+        .collect();
+    Ok(Json(json!({"items":items})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -292,7 +327,7 @@ pub(super) fn identifiers(a: &Account) -> anyhow::Result<()> {
     );
     Ok(())
 }
-async fn provision_inner(c: &Control, a: &Account) -> anyhow::Result<()> {
+pub(super) async fn provision_inner(c: &Control, a: &Account) -> anyhow::Result<()> {
     identifiers(a)?;
     let root = c
         .provision
@@ -585,6 +620,30 @@ async fn delete_account(c: &Control, id: &str, confirmation: &str, owner: &str) 
         return Err(invalid("请输入“永久删除 客户账号”进行确认"));
     }
     identifiers(&a)?;
+    let shared = if let Some(id) = &a.workspace_id {
+        let members: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM hosted_accounts WHERE workspace_id=?")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if members == 1 {
+            let workspace: super::workspaces::Workspace =
+                sqlx::query_as("SELECT * FROM hosted_workspaces WHERE id=? FOR UPDATE")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            identifiers(&workspace.database(&a))?;
+            sqlx::query("UPDATE hosted_workspaces SET state='deleting' WHERE id=?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            Some(workspace)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     sqlx::query("UPDATE hosted_accounts SET state='deleting',disabled=TRUE WHERE id=?")
         .bind(id)
         .execute(&mut *tx)
@@ -609,6 +668,21 @@ async fn delete_account(c: &Control, id: &str, confirmation: &str, owner: &str) 
     sqlx::query(&format!("DROP USER IF EXISTS '{}'@'%'", a.database_user))
         .execute(root)
         .await?;
+    if let Some(workspace) = &shared {
+        remove_tree(&c.backup_root.join("tenants").join(&workspace.id)).await?;
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS `{}`",
+            workspace.database_name
+        ))
+        .execute(root)
+        .await?;
+        sqlx::query(&format!(
+            "DROP USER IF EXISTS '{}'@'%'",
+            workspace.database_user
+        ))
+        .execute(root)
+        .await?;
+    }
     let mut tx = c.pool.begin().await?;
     sqlx::query("INSERT IGNORE INTO hosted_deletions(account_id) VALUES(?)")
         .bind(id)
@@ -622,6 +696,16 @@ async fn delete_account(c: &Control, id: &str, confirmation: &str, owner: &str) 
         .bind(id)
         .execute(&mut *tx)
         .await?;
+    if let Some(workspace) = &shared {
+        sqlx::query("DELETE FROM hosted_workspaces WHERE id=?")
+            .bind(&workspace.id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT IGNORE INTO hosted_deletions(account_id) VALUES(?)")
+            .bind(&workspace.id)
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query("INSERT INTO authority_audit(administrator_id,event) VALUES(?,'permanent_delete_completed')").bind(owner).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())

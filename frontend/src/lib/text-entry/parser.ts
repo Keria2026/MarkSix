@@ -364,6 +364,54 @@ function parseNormalizedText(
     }
     return tokens[i]?.kind === "amount" && readAmount(i + 1) !== null;
   }
+  const explicitPriceLookahead = new Map<number, boolean>();
+  function explicitPriceAfterList(index: number) {
+    const visited: number[] = [];
+    let result = false;
+    for (let i = index; i < tokens.length; i++) {
+      const cached = explicitPriceLookahead.get(i);
+      if (cached !== undefined) {
+        result = cached;
+        break;
+      }
+      visited.push(i);
+      const token = tokens[i];
+      if (token.kind === "separator" && /[\r\n;；。]/u.test(token.text)) break;
+      if (
+        [
+          "number",
+          "object",
+          "separator",
+          "group-open",
+          "group-close",
+          "compound",
+        ].includes(token.kind) ||
+        ["尾", "头", "頭"].includes(token.text)
+      )
+        continue;
+      if (token.kind === "amount") {
+        if (["x", "X"].includes(token.text)) continue;
+        if (token.text === "/") break;
+        result = readAmount(i + 1) !== null;
+      }
+      break;
+    }
+    for (const i of visited) explicitPriceLookahead.set(i, result);
+    return result;
+  }
+  function xCompletesExistingAmount(index: number) {
+    if (!hasObjects()) return false;
+    const first = nextSignificant(index + 1);
+    if (!["number", "money"].includes(tokens[first]?.kind)) return false;
+    const price = readAmount(first);
+    if (!price) return false;
+    const next = tokens[nextSignificant(price.last + 1)];
+    return (
+      !!next &&
+      ["number", "object"].includes(next.kind) &&
+      !["尾", "头", "頭", "波"].includes(next.text)
+    );
+  }
   function followsAmountDot(index: number) {
     let i = index - 1;
     while (
@@ -465,6 +513,23 @@ function parseNormalizedText(
   }
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    // A literal x retains its unit-price meaning unless a later explicit price
+    // or a new play unambiguously makes it a list/clause separator.
+    if (
+      token.kind === "amount" &&
+      ["x", "X"].includes(token.text) &&
+      !/[a-z]/iu.test(raw[token.start - 1] ?? "") &&
+      !/[a-z]/iu.test(raw[token.end] ?? "") &&
+      !xCompletesExistingAmount(i) &&
+      (explicitPriceAfterList(nextSignificant(i + 1)) ||
+        (!hasObjects() &&
+          !segment.explicitPlay &&
+          rows.length > 0 &&
+          ["play", "plays"].includes(tokens[nextSignificant(i + 1)]?.kind)))
+    ) {
+      segment.content.push({ ...token, kind: "separator", text: ";" });
+      continue;
+    }
     // Once a financial row is complete, slash starts its next clause. Before
     // an amount it remains an operator, e.g. 三中三/5.
     if (

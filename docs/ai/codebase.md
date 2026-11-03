@@ -23,6 +23,7 @@
 | `hosted/portal.rs`     | 客户端入口、会话解析、授权与租户路由                 |
 | `hosted/management.rs` | 管理端入口、客户开通、迁移、管理员及删除             |
 | `hosted/tenancy.rs`    | 独立客户连接池、租用生命周期、后台扫描               |
+| `hosted/workspaces.rs` | 管理员关联、协作数据库、玩法合并与记录范围           |
 | `hosted/history.rs`    | 历史清除事务、备份处理及独立擦除回执                 |
 
 `AppState` 是客户业务上下文；`Control` 是控制库与账号上下文。租户状态从经过验证的账号构造，不能由请求中的数据库名或账号参数直接创建。

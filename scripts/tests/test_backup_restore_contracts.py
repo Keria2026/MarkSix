@@ -123,6 +123,52 @@ class Operations(unittest.TestCase):
             self.assertEqual(ops.mysql(Path("/unused"), "SELECT 1;"), ["one", "two"])
             self.assertEqual(run.call_args.kwargs["input"], "SELECT 1;")
 
+    def test_workspace_ledgers_participate_in_backup_inventory(self):
+        workspace = ("c" * 8 + "-cccc-cccc-cccc-" + "c" * 12,
+                     "marksix_t_" + "c" * 32, "mt_" + "c" * 24, "ready")
+        def mysql(shared, query):
+            if "information_schema.tables" in query:
+                return ["1"]
+            self.assertIn("UNION ALL", query)
+            self.assertIn("FROM hosted_workspaces", query)
+            return ["\t".join(ACCOUNT), "\t".join(workspace)]
+        with patch.object(ops, "mysql", side_effect=mysql):
+            self.assertEqual(ops.account_list(Path("/unused")), [ACCOUNT, workspace])
+
+    def test_restore_uses_workspace_credentials_and_drops_stale_workspace_schema(self):
+        workspace = ("c" * 8 + "-cccc-cccc-cccc-" + "c" * 12,
+                     "marksix_t_" + "c" * 32, "mt_" + "c" * 24, "ready")
+        for deleted in [False, True]:
+            with self.subTest(deleted=deleted), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                stamp = "20400101T000000Z"
+                paths = [f"control/{stamp}.sql.gz", f"tenants/{workspace[0]}/{stamp}.sql.gz"]
+                for name in paths:
+                    path = root / "backups" / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with gzip.open(path, "wb") as stream:
+                        stream.write(b"SELECT 1;")
+                def mysql(shared, query):
+                    if "SELECT account_id" in query:
+                        return [workspace[0]] if deleted else []
+                    if "information_schema.tables" in query:
+                        return ["1"]
+                    if query == "SELECT id FROM hosted_workspaces;":
+                        return [workspace[0]]
+                    return []
+                with (patch.object(ops, "validate_restore", return_value={"created_at":stamp,"files":dict.fromkeys(paths,"test")}),
+                      patch.object(ops, "account_list", return_value=[workspace]),
+                      patch.object(ops, "mysql", side_effect=mysql) as execute,
+                      patch.object(ops.subprocess, "Popen", return_value=Process())):
+                    ops.restore_data(root, root / "manifest")
+                sql = "\n".join(call.args[1] for call in execute.call_args_list)
+                self.assertIn("DROP TABLE hosted_workspaces", sql)
+                if deleted:
+                    self.assertIn("DELETE FROM hosted_workspaces", sql)
+                    self.assertNotIn("CREATE DATABASE", sql)
+                else:
+                    self.assertIn("QUOTE(database_password)) FROM hosted_workspaces", sql)
+
     def test_restore_recreates_only_live_accounts_and_clears_sessions(self):
         for failure in [None, "exit", "pipe"]:
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
