@@ -4,6 +4,7 @@ import type { Mapping, Play, Rule, SlipLine } from "../types";
 import { dragPreview } from "../drag";
 import { tokenize } from "./lexer";
 import type { TextRow } from "../text-entry";
+import { numberGroups } from "./number-groups";
 
 function zodiacNumbers(selected: number[], mapping: Mapping): number[] {
   if (
@@ -296,34 +297,40 @@ export function compileRow(
         grouping.outside.replace(/[\s,，、;；:：.。/]/gu, "")
       )
         throw new Error("括号外还有未归组的投注项，请核对分组");
+      const numericGroups =
+        rule.kind === "number"
+          ? numberGroups(body, compound ? rule.combination_size : rule.quantity)
+          : null;
       const groups = grouping.groups.length
         ? grouping.groups
-        : completeLines
-          ? lines
-          : rule.quantity > 1 &&
-              parts.length > 1 &&
-              parts.every((s) => {
-                let n: number;
-                try {
-                  n = values(s, rule.kind, mapping).length;
-                } catch {
-                  return false;
-                }
-                return compound
-                  ? n >= rule.combination_size
-                  : n === rule.quantity;
-              })
-            ? parts
-            : rule.kind === "zodiac" &&
-                !compound &&
-                rule.quantity > 1 &&
-                /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s]+$/u.test(body) &&
-                body.replace(/\s/gu, "").length > rule.quantity &&
-                body.replace(/\s/gu, "").length % rule.quantity === 0
-              ? body
-                  .replace(/\s/gu, "")
-                  .match(new RegExp(`.{${rule.quantity}}`, "gu"))!
-              : [body];
+        : numericGroups
+          ? numericGroups
+          : completeLines
+            ? lines
+            : rule.quantity > 1 &&
+                parts.length > 1 &&
+                parts.every((s) => {
+                  let n: number;
+                  try {
+                    n = values(s, rule.kind, mapping).length;
+                  } catch {
+                    return false;
+                  }
+                  return compound
+                    ? n >= rule.combination_size
+                    : n === rule.quantity;
+                })
+              ? parts
+              : rule.kind === "zodiac" &&
+                  !compound &&
+                  rule.quantity > 1 &&
+                  /^[鼠牛虎兔龙蛇马羊猴鸡狗猪\s]+$/u.test(body) &&
+                  body.replace(/\s/gu, "").length > rule.quantity &&
+                  body.replace(/\s/gu, "").length % rule.quantity === 0
+                ? body
+                    .replace(/\s/gu, "")
+                    .match(new RegExp(`.{${rule.quantity}}`, "gu"))!
+                : [body];
       items = groups.map((group) => {
         const selections = values(group, rule.kind, mapping);
         if (
@@ -342,6 +349,8 @@ export function compileRow(
           throw new Error(
             `本玩法需要 ${rule.quantity} 项；更多候选请明确写“复式”`,
           );
+        if (!basicCount(rule, selections, compound))
+          throw new Error("每个投注组均须满足当前玩法的数量和复式限制");
         return { ...base, selections, compound };
       });
     }

@@ -860,3 +860,105 @@ for (const account of ["A", "B"] as const) {
     });
   });
 }
+
+for (const width of [390, 1440]) {
+  test(`number groups keep their shared prices through review and submission at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const writes = await openText(page);
+    const expectedSelections = [
+      [29, 6, 27],
+      [41, 30, 2],
+      [3, 17, 23],
+      [41, 34, 43],
+      [48, 26, 11],
+      [48, 26, 23],
+      [8, 9],
+      [8, 33],
+      [8, 45],
+    ];
+    await page.route("**/api/slips/preview", async (route) => {
+      const { items } = route.request().postDataJSON();
+      const quotes = items.map((item: { amount: string }) => ({
+        units: 1,
+        stake: Number(item.amount) * 100,
+        error: null,
+      }));
+      await route.fulfill({
+        json: {
+          valid: true,
+          items: quotes,
+          units: 9,
+          stake: quotes.reduce(
+            (sum: number, item: { stake: number }) => sum + item.stake,
+            0,
+          ),
+          error: null,
+        },
+      });
+    });
+    await page
+      .getByLabel("投注原文")
+      .fill(
+        "29.06.27，41.30.02，03.17.23，41.34.43，三中三一组十块\n三中三，48 26 11 /48 26 23/一组10米\n08.09 08.33 08.45 二中二各50\n9组共210",
+      );
+    await page.getByRole("button", { name: "校验", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "确认投注单" });
+    await dialog.getByPlaceholder("填写投注人").fill("synthetic-number-groups");
+    const submit = dialog.getByRole("button", {
+      name: "确认录入",
+      exact: true,
+    });
+    await expect(submit).toBeEnabled();
+    await expect(dialog.locator(".text-entry-rows > li")).toHaveCount(4);
+    await expect(dialog.locator(".text-interpretation").nth(0)).toContainText(
+      "29",
+    );
+    await dialog.getByLabel("第1项金额", { exact: true }).fill("20");
+    await expect(submit).toBeDisabled();
+    await expect(dialog.getByRole("alert")).toContainText("合计与投注不符");
+    expect(writes).toHaveLength(0);
+    await dialog.getByLabel("第4项投注项", { exact: true }).fill("9组共250");
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(dialog).toBeHidden();
+    expect(writes).toHaveLength(1);
+    const { items } = writes[0] as {
+      items: {
+        play_id: number;
+        selections: number[];
+        amount: string;
+        compound: boolean;
+      }[];
+    };
+    expect(items.map((item) => item.selections)).toEqual(expectedSelections);
+    expect(items.map((item) => item.amount)).toEqual([
+      "20",
+      "20",
+      "20",
+      "20",
+      "10",
+      "10",
+      "50",
+      "50",
+      "50",
+    ]);
+    expect(
+      items.map(
+        (item) => plays.find((play) => play.id === item.play_id)!.rule.name,
+      ),
+    ).toEqual([
+      "三中三",
+      "三中三",
+      "三中三",
+      "三中三",
+      "三中三",
+      "三中三",
+      "二中二",
+      "二中二",
+      "二中二",
+    ]);
+    expect(items.every((item) => item.compound === false)).toBe(true);
+  });
+}
