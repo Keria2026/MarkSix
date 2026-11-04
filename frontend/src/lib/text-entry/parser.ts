@@ -5,6 +5,7 @@ import type { TextPreference, TextRow } from "../text-entry";
 import { resolvePlay, playCandidates } from "./vocabulary";
 import type { Token } from "./lexer";
 import { monetaryLiteral } from "./amount";
+import { numberGroups } from "./number-groups";
 
 interface Context {
   label: string;
@@ -365,11 +366,13 @@ function parseNormalizedText(
     return tokens[i]?.kind === "amount" && readAmount(i + 1) !== null;
   }
   const explicitPriceLookahead = new Map<number, boolean>();
-  function explicitPriceAfterList(index: number) {
+  const groupPriceLookahead = new Map<number, boolean>();
+  function explicitPriceAfterList(index: number, groupSlash = false) {
+    const cache = groupSlash ? groupPriceLookahead : explicitPriceLookahead;
     const visited: number[] = [];
     let result = false;
     for (let i = index; i < tokens.length; i++) {
-      const cached = explicitPriceLookahead.get(i);
+      const cached = cache.get(i);
       if (cached !== undefined) {
         result = cached;
         break;
@@ -377,6 +380,10 @@ function parseNormalizedText(
       visited.push(i);
       const token = tokens[i];
       if (token.kind === "separator" && /[\r\n;；。]/u.test(token.text)) break;
+      if (groupSlash && token.kind === "number" && readAmount(i)?.perGroup) {
+        result = true;
+        break;
+      }
       if (
         [
           "number",
@@ -391,12 +398,15 @@ function parseNormalizedText(
         continue;
       if (token.kind === "amount") {
         if (["x", "X"].includes(token.text)) continue;
-        if (token.text === "/") break;
+        if (token.text === "/") {
+          if (groupSlash) continue;
+          break;
+        }
         result = readAmount(i + 1) !== null;
       }
       break;
     }
-    for (const i of visited) explicitPriceLookahead.set(i, result);
+    for (const i of visited) cache.set(i, result);
     return result;
   }
   function xCompletesExistingAmount(index: number) {
@@ -470,7 +480,14 @@ function parseNormalizedText(
       tokens[nextSignificant(currency + 1)]?.text === "一组";
     if (tokens[currency]?.kind === "currency" || groupPoint) i = currency;
     const suffix = nextSignificant(i + 1);
-    const perGroup = tokens[suffix]?.text === "一组";
+    const following = nextSignificant(suffix + 1);
+    const prefixGroup =
+      ["number", "money"].includes(tokens[following]?.kind) &&
+      /^[\s:：]*$/u.test(
+        raw.slice(tokens[suffix]?.end, tokens[following]?.start),
+      ) &&
+      !/[\r\n]/u.test(raw.slice(tokens[suffix]?.end, tokens[following]?.start));
+    const perGroup = tokens[suffix]?.text === "一组" && !prefixGroup;
     if (perGroup) i = suffix;
     return {
       amount: (monetaryLiteral(amount) ?? amount).replace(
@@ -501,6 +518,10 @@ function parseNormalizedText(
       rule.relation === "eq" &&
       rule.quantity > 1 &&
       rule.compound_enabled &&
+      !numberGroups(
+        segment.content.map((token) => token.text).join(""),
+        rule.quantity,
+      ) &&
       numbers.length > rule.quantity &&
       numbers.every(
         (token) => token.kind === "number" && /^\d{1,2}$/u.test(token.text),
@@ -757,11 +778,18 @@ function parseNormalizedText(
       continue;
     if (token.kind === "amount") {
       const next = nextSignificant(i + 1);
-      // 羊/狗 is an object list; numeric lists use / as an amount marker.
+      const rule = active.find((play) => play.id === segment.context.id)?.rule;
+      // Keep slash prices unless a later explicit price establishes shared
+      // pricing for number-combination groups, e.g. 01 02/03 04/每组10.
       if (
         token.text === "/" &&
-        tokens[next]?.kind === "object" &&
-        zodiac.test(tokens[next].text)
+        ((tokens[next]?.kind === "object" && zodiac.test(tokens[next].text)) ||
+          (tokens[next]?.kind === "number" &&
+            rule?.kind === "number" &&
+            rule.quantity > 1 &&
+            hasObjects() &&
+            !readAmount(next)?.perGroup &&
+            explicitPriceAfterList(next, true)))
       ) {
         segment.content.push({ ...token, kind: "separator" });
         continue;
@@ -832,6 +860,7 @@ function parseNormalizedText(
         ((bareAfterZodiac && (money.perGroup || !followedByListAmount(i))) ||
           afterGroup ||
           currency ||
+          (money.perGroup && hasObjects()) ||
           ["单平", "4头不中", "四头不中"].includes(segment.context.label) ||
           (segment.explicitPlay &&
             active.find((p) => p.id === segment.context.id)?.rule.kind ===
