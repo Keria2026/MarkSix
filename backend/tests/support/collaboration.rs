@@ -563,6 +563,28 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
                 .sum::<i64>(),
             stake
         );
+        for (market, expected) in [("macau", stake), ("hk", 0)] {
+            let distribution = visible(
+                &app,
+                "GET",
+                &format!(
+                    "/api/periods/{period}/received-distribution?combined=true&market={market}"
+                ),
+                json!({}),
+                cookie,
+                view,
+            )
+            .await;
+            assert_eq!(
+                distribution["special"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_i64().unwrap())
+                    .sum::<i64>(),
+                expected
+            );
+        }
     }
     assert_eq!(
         viewed(&app, "GET", "/api/bootstrap", json!({}), c, &reserved)

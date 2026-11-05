@@ -222,16 +222,25 @@ impl ReceivedDistribution {
         Ok(())
     }
 }
+#[derive(Deserialize, Default)]
+pub(crate) struct ReceivedQuery {
+    #[serde(default)]
+    combined: bool,
+    market: Option<crate::market::Market>,
+}
 pub(crate) async fn received_distribution(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(query): Query<ReportQuery>,
+    Query(query): Query<ReceivedQuery>,
 ) -> ApiResult<Json<ReceivedDistribution>> {
     let mut tx = state.pool.begin().await?;
     let scope = visible_scope(&state, &mut tx, &id, query.combined).await?;
     let rows: Vec<(String, sqlx::types::Json<Vec<Atom>>)> = sqlx::query_as(&format!(
-        "SELECT period_id,atoms FROM bets WHERE {} AND status<>'cancelled' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind')) IN ('number','zodiac','tail') AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.condition'))='all'",scope.bets()
-    )).bind(&scope.key).fetch_all(&mut *tx).await?;
+        "SELECT period_id,atoms FROM bets WHERE {} AND (? IS NULL OR market=?) AND status<>'cancelled' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind')) IN ('number','zodiac','tail') AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.condition'))='all'",scope.bets()
+    )).bind(&scope.key)
+        .bind(query.market.map(crate::market::Market::as_str))
+        .bind(query.market.map(crate::market::Market::as_str))
+        .fetch_all(&mut *tx).await?;
     let mut distribution = ReceivedDistribution::empty();
     for (period_id, atoms) in rows {
         let draw = scope
