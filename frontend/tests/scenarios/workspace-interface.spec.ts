@@ -1247,14 +1247,14 @@ test("received distribution failure stays visible and retries without fabricatin
   page,
 }) => {
   await page.route(
-    "**/api/periods/*/received-distribution?combined=true",
+    "**/api/periods/*/received-distribution?combined=true*",
     (route) =>
       route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
   );
   // Newer routes take precedence; override the synthetic workspace handler after opening.
   await workspace(page);
   await page.route(
-    "**/api/periods/*/received-distribution?combined=true",
+    "**/api/periods/*/received-distribution?combined=true*",
     (route) =>
       route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
   );
@@ -1263,7 +1263,7 @@ test("received distribution failure stays visible and retries without fabricatin
   await expect(panel.getByRole("alert")).toContainText("统计暂时不可用");
   await expect(panel.getByRole("list")).toBeHidden();
   await page.route(
-    "**/api/periods/*/received-distribution?combined=true",
+    "**/api/periods/*/received-distribution?combined=true*",
     (route) =>
       route.fulfill({
         json: {
@@ -1276,4 +1276,106 @@ test("received distribution failure stays visible and retries without fabricatin
   await panel.getByRole("button", { name: "重试", exact: true }).click();
   await expect(panel.getByRole("listitem")).toHaveCount(49);
   await expect(panel).toContainText("本日暂无该类受注");
+});
+
+for (const width of [390, 1440]) {
+  test(`received statistics separate markets for all three categories at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await workspace(page);
+    const requested: string[] = [];
+    await page.route(
+      "**/api/periods/*/received-distribution?*",
+      async (route) => {
+        const market = new URL(route.request().url()).searchParams.get(
+          "market",
+        );
+        requested.push(market ?? "missing");
+        const special = Array(49).fill(0),
+          zodiac = Array(12).fill(0),
+          tail = Array(10).fill(0);
+        special[market === "hk" ? 1 : 0] = market === "hk" ? 49000 : 4900;
+        special[market === "hk" ? 2 : 48] = market === "hk" ? 49000 : 4900;
+        zodiac[0] = zodiac[11] = market === "hk" ? 6000 : 1200;
+        tail[0] = tail[9] = market === "hk" ? 5000 : 1000;
+        await route.fulfill({ json: { special, zodiac, tail } });
+      },
+    );
+    const panel = page.getByRole("region", { name: "受注金额分布" });
+    await expect(
+      panel.getByRole("button", { name: "新澳门", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await panel.getByRole("button", { name: "三列网格", exact: true }).click();
+    await panel.getByRole("button", { name: "香港", exact: true }).click();
+    await expect(panel.locator(".received-summary")).toContainText("¥ 980.00");
+    await expect(panel.locator(".received-summary")).toContainText("¥ 20.00");
+    await expect(panel.getByRole("listitem").nth(1)).toContainText("¥ 490.00");
+    await expect(panel.getByRole("listitem").first()).toContainText("¥ 0.00");
+    await panel.getByRole("tab", { name: "一肖中", exact: true }).click();
+    await expect(panel.getByRole("listitem")).toHaveCount(12);
+    await expect(panel.locator(".received-summary")).toContainText("¥ 120.00");
+    await expect(panel.locator(".received-summary")).toContainText("¥ 10.00");
+    await panel.getByRole("tab", { name: "尾中", exact: true }).click();
+    await expect(panel.getByRole("listitem")).toHaveCount(10);
+    await expect(panel.locator(".received-summary")).toContainText("¥ 100.00");
+    await expect(panel.getByRole("listitem").first()).toContainText("¥ 50.00");
+    await panel.getByRole("button", { name: "新澳门", exact: true }).click();
+    await expect(panel.locator(".received-summary")).toContainText("¥ 20.00");
+    await expect(panel.getByRole("listitem").first()).toContainText("¥ 10.00");
+    await expect(
+      panel.getByRole("button", { name: "三列网格", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      panel.getByRole("tab", { name: "尾中", exact: true }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(requested).toEqual(["hk", "macau"]);
+    await accessible(page);
+  });
+}
+
+test("a late market response cannot overwrite the market selected after it", async ({
+  page,
+}) => {
+  await workspace(page);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let entered = false,
+    finished = false;
+  await page.route(
+    "**/api/periods/*/received-distribution?*",
+    async (route) => {
+      const hk =
+        new URL(route.request().url()).searchParams.get("market") === "hk";
+      if (hk) {
+        entered = true;
+        await gate;
+      }
+      const special = Array(49).fill(0);
+      special[0] = hk ? 98000 : 9800;
+      try {
+        await route.fulfill({
+          json: { special, zodiac: Array(12).fill(0), tail: Array(10).fill(0) },
+        });
+      } catch {
+      } finally {
+        if (hk) finished = true;
+      }
+    },
+  );
+  const panel = page.getByRole("region", { name: "受注金额分布" });
+  await panel.getByRole("button", { name: "香港", exact: true }).click();
+  await expect.poll(() => entered).toBe(true);
+  await expect(panel.locator(".received-summary")).toHaveCount(0);
+  await panel.getByRole("button", { name: "新澳门", exact: true }).click();
+  await expect(panel.locator(".received-summary")).toContainText("¥ 98.00");
+  release();
+  await expect.poll(() => finished).toBe(true);
+  await expect(
+    panel.getByRole("button", { name: "新澳门", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(panel.locator(".received-summary")).toContainText("¥ 98.00");
+  await expect(panel.locator(".received-summary")).not.toContainText(
+    "¥ 980.00",
+  );
 });

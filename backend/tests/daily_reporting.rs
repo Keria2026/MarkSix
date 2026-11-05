@@ -99,6 +99,26 @@ async fn daily_reports_keep_markets_together_without_moving_hk_bets_across_dates
     .await;
     assert_eq!(distribution["special"][6], 10000);
     assert_eq!(distribution["special"][30], 20000);
+    for (market, number, amount) in [("macau", 6, 10000), ("hk", 30, 20000)] {
+        let selected = ok(
+            &app,
+            "GET",
+            &format!("/api/periods/{day1}/received-distribution?combined=true&market={market}"),
+            json!({}),
+            &cookie,
+        )
+        .await;
+        assert_eq!(selected["special"][number], amount);
+        assert_eq!(
+            selected["special"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_i64().unwrap())
+                .sum::<i64>(),
+            amount
+        );
+    }
     assert_eq!(first["periods"].as_array().unwrap().len(), 2);
     let filters = ok(
         &app,
@@ -428,11 +448,64 @@ async fn received_distribution_sums_both_markets_and_tracks_corrections_and_canc
     assert_eq!(d["zodiac"][11], 1000);
     assert_eq!(d["tail"][0], 2000);
     assert_eq!(d["tail"][9], 2000);
+    for (market, special, zodiac, tail) in [("macau", 25000, 1000, 0), ("hk", 20000, 0, 2000)] {
+        let selected = ok(
+            &app,
+            "GET",
+            &format!("{endpoint}&market={market}"),
+            json!({}),
+            &cookie,
+        )
+        .await;
+        assert_eq!(selected["special"][6], special);
+        assert_eq!(
+            selected["special"][48],
+            if market == "macau" { 10000 } else { 0 }
+        );
+        assert_eq!(selected["zodiac"][0], zodiac);
+        assert_eq!(selected["zodiac"][11], zodiac);
+        assert_eq!(selected["tail"][0], tail);
+        assert_eq!(selected["tail"][9], tail);
+    }
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            &format!("{endpoint}&market=unknown"),
+            json!({}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     let bet: String=sqlx::query_scalar("SELECT id FROM bets WHERE market='hk' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind'))='number'").fetch_one(&pool).await.unwrap();
     ok(&app,"PUT",&format!("/api/bets/{bet}/amount"),json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":1,"amount":"120","receiver":null}),&cookie).await;
     assert_eq!(
         ok(&app, "GET", &endpoint, json!({}), &cookie).await["special"][6],
         37000
+    );
+    assert_eq!(
+        ok(
+            &app,
+            "GET",
+            &format!("{endpoint}&market=hk"),
+            json!({}),
+            &cookie
+        )
+        .await["special"][6],
+        12000
+    );
+    assert_eq!(
+        ok(
+            &app,
+            "GET",
+            &format!("{endpoint}&market=macau"),
+            json!({}),
+            &cookie
+        )
+        .await["special"][6],
+        25000
     );
     ok(
         &app,
@@ -444,6 +517,28 @@ async fn received_distribution_sums_both_markets_and_tracks_corrections_and_canc
     .await;
     assert_eq!(
         ok(&app, "GET", &endpoint, json!({}), &cookie).await["special"][6],
+        25000
+    );
+    assert_eq!(
+        ok(
+            &app,
+            "GET",
+            &format!("{endpoint}&market=hk"),
+            json!({}),
+            &cookie
+        )
+        .await["special"][6],
+        0
+    );
+    assert_eq!(
+        ok(
+            &app,
+            "GET",
+            &format!("{endpoint}&market=macau"),
+            json!({}),
+            &cookie
+        )
+        .await["special"][6],
         25000
     );
 }

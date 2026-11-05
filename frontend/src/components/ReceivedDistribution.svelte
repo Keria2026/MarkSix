@@ -1,6 +1,6 @@
 <script lang="ts">
   import { money, zodiacs, wave } from "../lib/types";
-  import type { api as Api } from "../lib/types";
+  import type { api as Api, Market } from "../lib/types";
   import { readReceived, receivedSummary } from "../lib/received";
   import type { ReceivedDistribution, ReceivedKind } from "../lib/received";
   let {
@@ -14,29 +14,38 @@
     { kind: "tail", title: "尾中" },
   ];
   let selected = $state<ReceivedKind>("special");
+  let market = $state<Market>("macau");
   let layout = $state<"list" | "grid">("list");
   let data = $state<ReceivedDistribution | null>(null);
   let loadedPeriod = $state("");
+  let loadedMarket = $state<Market | null>(null);
   let busy = $state(false);
   let error = $state("");
   let retry = $state(0);
-  const current = $derived(loadedPeriod === period ? data : null);
+  const current = $derived(
+    loadedPeriod === period && loadedMarket === market ? data : null,
+  );
   const summary = $derived(current ? receivedSummary(current[selected]) : null);
   const title = $derived(categories.find((c) => c.kind === selected)!.title);
   $effect(() => {
     const id = period;
+    const requestedMarket = market;
     revision;
     retry;
     const controller = new AbortController();
     busy = true;
     error = "";
-    void api<unknown>(`/periods/${id}/received-distribution?combined=true`, {
-      signal: controller.signal,
-    })
+    void api<unknown>(
+      `/periods/${id}/received-distribution?combined=true&market=${requestedMarket}`,
+      {
+        signal: controller.signal,
+      },
+    )
       .then((value) => {
         if (controller.signal.aborted) return;
         data = readReceived(value);
         loadedPeriod = id;
+        loadedMarket = requestedMarket;
       })
       .catch((e) => {
         if (!controller.signal.aborted)
@@ -71,9 +80,25 @@
   <div class="received-heading">
     <div>
       <h2>受注金额分布</h2>
-      <p>全部投注人 · 港澳合并 · 原受注本金</p>
+      <p>全部投注人 · {market === "hk" ? "香港" : "新澳门"} · 原受注本金</p>
     </div>
     <div class="received-controls">
+      <div
+        class="segmented received-market"
+        role="group"
+        aria-label="受注统计市场"
+      >
+        <button
+          class:active={market === "macau"}
+          aria-pressed={market === "macau"}
+          onclick={() => (market = "macau")}>新澳门</button
+        >
+        <button
+          class:active={market === "hk"}
+          aria-pressed={market === "hk"}
+          onclick={() => (market = "hk")}>香港</button
+        >
+      </div>
       <div
         class="segmented received-switch"
         role="tablist"
@@ -207,6 +232,7 @@
     flex-wrap: wrap;
     gap: 12px;
   }
+  .received-market button,
   .received-layout button {
     min-width: 88px;
     min-height: 44px;
@@ -325,13 +351,16 @@
       gap: 16px;
     }
     .received-controls,
-    .received-layout {
+    .received-layout,
+    .received-market {
       width: 100%;
     }
-    .received-layout {
+    .received-layout,
+    .received-market {
       display: flex;
     }
-    .received-layout button {
+    .received-layout button,
+    .received-market button {
       flex: 1;
       min-width: 0;
     }

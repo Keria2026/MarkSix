@@ -269,22 +269,44 @@ export function tokenize(
       cursor += head[0].length;
       continue;
     }
+    // Chinese quantities are unambiguous before 连尾. Compact Arabic digits
+    // retain the existing “2683连尾” selection + single-play interpretation.
+    const tailQuantities =
+      /^[二三四五六七八九](?:[\s./、,，]*[二三四五六七八九])+\s*(?:连\s*尾|尾\s*连)|^[2-9](?:\s*[./、,，]\s*[2-9])+\s*(?:连\s*尾|尾\s*连)/u.exec(
+        rest,
+      )?.[0];
+    const quantities = [...(tailQuantities ?? "")].flatMap((char) => {
+      const n = "二三四五六七八九".indexOf(char);
+      return n >= 0 ? [n + 2] : /[2-9]/u.test(char) ? [Number(char)] : [];
+    });
+    const combinedTails =
+      tailQuantities &&
+      (previousSignificant()?.kind === "compound" ||
+        quantities.every((n, i) => i === 0 || n > quantities[i - 1]))
+        ? tailQuantities
+        : undefined;
     const combined =
-      !/[二三四五2345特]/u.test(rest[0]) ||
+      combinedTails ??
+      (!/[二三四五2345特]/u.test(rest[0]) ||
       (previousSignificant()?.kind === "amount" && /^\d/u.test(rest))
         ? undefined
         : /^(?:[二三四五2345]\s*[有友](?:\s*[,、/])?\s*)+[二三四五2345](?=\s*[鼠牛虎兔龙蛇马羊猴鸡狗猪])|^(?:[二三四五2345]\s*[有友](?:\s*[,、/])?\s*){2,}|^[二三四五2345](?:(?:\s*[./、])?\s*[二三四五2345])+\s*(?:连肖|有|友)|^特\s*平/u.exec(
             rest,
-          )?.[0];
+          )?.[0]);
     if (combined && !playNames.includes(combined)) {
       const labels =
         combined.replace(/\s/gu, "") === "特平"
           ? ["特码", "平码"]
           : [...combined].flatMap((c) => {
-              const n = "二三四五".includes(c)
-                ? "二三四五".indexOf(c) + 2
+              const n = "二三四五六七八九".includes(c)
+                ? "二三四五六七八九".indexOf(c) + 2
                 : Number(c);
-              return n >= 2 && n <= 5 ? ["一二三四五"[n - 1] + "有"] : [];
+              return n >= 2 && n <= (combinedTails ? 9 : 5)
+                ? [
+                    "一二三四五六七八九"[n - 1] +
+                      (combinedTails ? "尾连" : "有"),
+                  ]
+                : [];
             });
       const end = cursor + combined.length;
       tokens.push({

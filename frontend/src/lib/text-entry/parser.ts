@@ -235,10 +235,25 @@ function parseNormalizedText(
       .join("")
       .replace(/(?:复式[\s,，]*){2,}/gu, "复式 ")
       .replace(/^[\s:：,，;；.。]+|[\s,，;；.。]+$/gu, "");
-    const implicitSpecial =
-      ["各肖", "各数"].includes(segment.marker) &&
+    const firstNumber = segment.content.find(
+      (token) => token.kind === "number",
+    );
+    const newNumberLine = !!(
       !segment.explicitPlay &&
-      (!segment.context.label || segment.context.defaultSpecial === true);
+      rows.at(-1)?.amount &&
+      active.find((play) => play.id === segment.context.id)?.rule.kind ===
+        "zodiac" &&
+      firstNumber &&
+      /[\r\n]/u.test(raw.slice(start, firstNumber.start)) &&
+      segment.content.every((token) =>
+        ["number", "separator"].includes(token.kind),
+      )
+    );
+    const implicitSpecial =
+      newNumberLine ||
+      (["各肖", "各数"].includes(segment.marker) &&
+        !segment.explicitPlay &&
+        (!segment.context.label || segment.context.defaultSpecial === true));
     if (segment.explicitPlay || hasSelections || segment.amount) {
       if (implicitSpecial) {
         segment.context = { ...context("特码"), defaultSpecial: true };
@@ -422,6 +437,35 @@ function parseNormalizedText(
       !["尾", "头", "頭", "波"].includes(next.text)
     );
   }
+  const postfixPrices = new Map<number, boolean>();
+  function priceAfterPostfixList(index: number) {
+    const visited: number[] = [];
+    let priced = false;
+    for (let i = index; i < tokens.length; i++) {
+      if (postfixPrices.has(i)) {
+        priced = postfixPrices.get(i)!;
+        break;
+      }
+      visited.push(i);
+      const token = tokens[i];
+      if (token.kind === "separator" && /[\r\n;；。]/u.test(token.text)) break;
+      if (
+        ["number", "object", "separator", "compound"].includes(token.kind) ||
+        token.text === "*"
+      )
+        continue;
+      if (["play", "plays"].includes(token.kind)) {
+        let next = nextSignificant(i + 1);
+        while (["play", "plays", "compound"].includes(tokens[next]?.kind))
+          next = nextSignificant(next + 1);
+        priced =
+          tokens[next]?.kind === "amount" && readAmount(next + 1) !== null;
+      } else if (token.kind === "amount") priced = readAmount(i + 1) !== null;
+      break;
+    }
+    for (const i of visited) postfixPrices.set(i, priced);
+    return priced;
+  }
   function followsAmountDot(index: number) {
     let i = index - 1;
     while (
@@ -534,6 +578,14 @@ function parseNormalizedText(
   }
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (
+      token.text === "*" &&
+      hasObjects() &&
+      priceAfterPostfixList(nextSignificant(i + 1))
+    ) {
+      segment.content.push({ ...token, kind: "separator", text: "." });
+      continue;
+    }
     // A literal x retains its unit-price meaning unless a later explicit price
     // or a new play unambiguously makes it a list/clause separator.
     if (
@@ -719,6 +771,24 @@ function parseNormalizedText(
         context(token.text).id === segment.context.id
       )
         continue;
+      // Adjacent postfix play names share the already written selection pool
+      // and the following price; a new play with its own objects still emits.
+      const additional = context(token.text);
+      if (
+        segment.explicitPlay &&
+        segment.objectBeforePlay &&
+        hasObjects() &&
+        !segment.amount &&
+        ["play", "plays"].includes(previousSignificant(i)?.kind ?? "") &&
+        active.find((play) => play.id === additional.id)?.rule.kind ===
+          active.find((play) => play.id === segment.context.id)?.rule.kind
+      ) {
+        segment.contexts = [
+          ...(segment.contexts.length ? segment.contexts : [segment.context]),
+          additional,
+        ];
+        continue;
+      }
       // A new explicit play interrupts an incomplete record. An object before its
       // first play is retained, so 牛特500 is assembled as one semantic record.
       const flatLinkedQualifier =
@@ -731,7 +801,11 @@ function parseNormalizedText(
       segment.objectBeforePlay = hasObjects();
       segment.contexts = token.labels?.map(context) ?? [];
       segment.context = segment.contexts[0] ?? context(token.text);
-      if (token.labels?.every((label) => label.endsWith("有")))
+      if (
+        token.labels?.every(
+          (label) => label.endsWith("有") || label.endsWith("尾连"),
+        )
+      )
         segment.content.unshift({
           kind: "compound",
           text: "复式",

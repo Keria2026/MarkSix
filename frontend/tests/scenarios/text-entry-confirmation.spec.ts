@@ -962,3 +962,101 @@ for (const width of [390, 1440]) {
     expect(items.every((item) => item.compound === false)).toBe(true);
   });
 }
+
+for (const width of [390, 1440]) {
+  test(`shared tail quantities and new numeric lines submit exact play selections at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const writes = await openText(page);
+    await page.route("**/api/slips/preview", async (route) => {
+      const { items } = route.request().postDataJSON();
+      const quotes = items.map(
+        (item: { play_id: number; amount: string; selections: number[] }) => {
+          const name = plays.find((play) => play.id === item.play_id)!.rule
+            .name;
+          const units =
+            name === "三尾连" || name === "三有"
+              ? 4
+              : name === "四尾连" || name === "一肖中" || name === "二有"
+                ? 1
+                : item.selections.length;
+          return {
+            units,
+            stake: units * Number(item.amount) * 100,
+            error: null,
+          };
+        },
+      );
+      await route.fulfill({
+        json: {
+          valid: true,
+          items: quotes,
+          units: quotes.reduce(
+            (sum: number, q: { units: number }) => sum + q.units,
+            0,
+          ),
+          stake: quotes.reduce(
+            (sum: number, q: { stake: number }) => sum + q.stake,
+            0,
+          ),
+          error: null,
+        },
+      });
+    });
+    await page
+      .getByLabel("投注原文")
+      .fill(
+        "7.8.5.4付三四连尾各200\n一肖龙400\n二有龙虎100\n复试3有龙虎兔猴30一组\n03.05.08.11.19个数10\n总1670",
+      );
+    await page.getByRole("button", { name: "校验", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "确认投注单" });
+    await dialog.getByPlaceholder("填写投注人").fill("synthetic-tail-context");
+    const submit = dialog.getByRole("button", {
+      name: "确认录入",
+      exact: true,
+    });
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(dialog).toBeHidden();
+    expect(writes).toHaveLength(1);
+    const { items } = writes[0] as {
+      items: {
+        play_id: number;
+        amount: string;
+        selections: number[];
+        compound: boolean;
+      }[];
+    };
+    expect(
+      items.map((item) => ({
+        play: plays.find((play) => play.id === item.play_id)!.rule.name,
+        selections: item.selections,
+        amount: item.amount,
+        compound: item.compound,
+      })),
+    ).toEqual([
+      {
+        play: "三尾连",
+        selections: [7, 8, 5, 4],
+        amount: "200",
+        compound: true,
+      },
+      {
+        play: "四尾连",
+        selections: [7, 8, 5, 4],
+        amount: "200",
+        compound: true,
+      },
+      { play: "一肖中", selections: [4], amount: "400", compound: false },
+      { play: "二有", selections: [4, 2], amount: "100", compound: false },
+      { play: "三有", selections: [4, 2, 3, 8], amount: "30", compound: true },
+      {
+        play: "特码",
+        selections: [3, 5, 8, 11, 19],
+        amount: "10",
+        compound: false,
+      },
+    ]);
+  });
+}
