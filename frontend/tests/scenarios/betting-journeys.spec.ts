@@ -1,5 +1,6 @@
 import { test, expect } from "./scenario-fixtures";
 import AxeBuilder from "@axe-core/playwright";
+import { money } from "../../src/lib/types";
 declare global {
   interface Window {
     clip?: string;
@@ -229,7 +230,41 @@ test("mixed markets share daily overview, statistics and export with per-entry l
     .getByRole("navigation")
     .getByRole("button", { name: "本期概览", exact: true })
     .click();
-  await expect(page.getByLabel("统计市场")).toHaveCount(0);
+  await expect(page.getByLabel("统计市场", { exact: true })).toHaveCount(0);
+  const distribution = page.getByRole("region", { name: "受注金额分布" });
+  const marketSwitch = distribution.getByRole("group", {
+    name: "受注统计市场",
+    exact: true,
+  });
+  await expect(marketSwitch).toBeVisible();
+  await expect(
+    marketSwitch.getByRole("button", { name: "新澳门", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  for (const [market, title] of [
+    ["hk", "香港"],
+    ["macau", "新澳门"],
+  ]) {
+    const response = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname.endsWith("/received-distribution") &&
+        url.searchParams.get("market") === market &&
+        response.ok()
+      );
+    });
+    await marketSwitch
+      .getByRole("button", { name: title, exact: true })
+      .click();
+    const received = await (await response).json();
+    if (market === "hk")
+      expect(received.special[21]).toBeGreaterThanOrEqual(10000);
+    await expect(
+      distribution.getByRole("listitem").nth(21).locator("strong"),
+    ).toHaveText(money(received.special[21]));
+    await expect(
+      marketSwitch.getByRole("button", { name: title, exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+  }
   await expect(
     page.getByRole("heading", { name: "新澳门开奖", exact: true }),
   ).toBeVisible();
@@ -273,7 +308,10 @@ test("mixed markets share daily overview, statistics and export with per-entry l
     .getByRole("navigation")
     .getByRole("button", { name: "本期统计", exact: true })
     .click();
-  await expect(page.getByLabel("统计市场")).toHaveCount(0);
+  await expect(page.getByLabel("统计市场", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("group", { name: "受注统计市场", exact: true }),
+  ).toHaveCount(0);
   const stats = await (
     await page.request.get(
       `/api/periods/${boot.today.id}/statistics?combined=true`,
