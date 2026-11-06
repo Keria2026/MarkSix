@@ -104,3 +104,48 @@ test("labelled evaluator validates the full slip total instead of accepting rows
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("rule interaction CLI exports reproducible labelled cases and a complete report", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "marksix-rule-campaign-"));
+  try {
+    const cases = join(directory, "cases.jsonl");
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        new URL(
+          "../../../scripts/check_text_entry_campaign.ts",
+          import.meta.url,
+        ).pathname,
+        "--suite",
+        "rules",
+        "--seed",
+        "80173",
+        "--size",
+        "66",
+        "--output",
+        directory,
+        "--cases",
+        cases,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [exit, output, error] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ exit, error }).toEqual({ exit: 0, error: "" });
+    const report = JSON.parse(output);
+    expect(report).toMatchObject({ suite: "rules", tested: 66, failures: 0 });
+    expect(Object.keys(report.families)).toHaveLength(33);
+    const records = (await readFile(cases, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records).toHaveLength(66);
+    expect(records.some((record) => record.accept)).toBe(true);
+    expect(records.some((record) => !record.accept)).toBe(true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -35,7 +35,19 @@ export function parseText(
 ): TextRow[] {
   if (raw.length > 12000)
     throw Error("每单原文最多 12,000 字，请核对后缩短；不会自动拆成多张单");
-  const normalized = normalizeLanguage(raw);
+  const normalized = normalizeLanguage(raw, [
+    ...plays.filter((play) => play.enabled).map((play) => play.rule.name),
+    ...learned
+      .filter((habit) =>
+        plays.some(
+          (play) =>
+            play.enabled &&
+            play.id === habit.play_id &&
+            play.version === habit.play_version,
+        ),
+      )
+      .map((habit) => habit.alias),
+  ]);
   if (normalized.review)
     return [
       {
@@ -134,9 +146,7 @@ function parseNormalizedText(
         .filter((token) => token.kind === "object")
         .map((token) => token.text),
     ).size >= 2 ||
-    (parts[0]?.kind === "number" &&
-      Number(parts[0].text) >= 0 &&
-      Number(parts[0].text) <= 49);
+    ["number", "money"].includes(parts[0]?.kind ?? "");
   let headingToken = 0;
   for (const line of raw.matchAll(/^[^\r\n]+/gmu)) {
     const end = line.index! + line[0].length;
