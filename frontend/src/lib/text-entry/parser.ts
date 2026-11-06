@@ -249,7 +249,20 @@ function parseNormalizedText(
         ["number", "separator"].includes(token.kind),
       )
     );
+    const implicitEachZodiac =
+      !segment.context.label &&
+      !segment.explicitPlay &&
+      ["各", "各号", "每注", "各注"].includes(segment.marker) &&
+      segment.content.some(
+        (token) => token.kind === "object" && zodiac.test(token.text),
+      ) &&
+      segment.content.every(
+        (token) =>
+          token.kind === "separator" ||
+          (token.kind === "object" && zodiac.test(token.text)),
+      );
     const implicitSpecial =
+      implicitEachZodiac ||
       newNumberLine ||
       (["各肖", "各数"].includes(segment.marker) &&
         !segment.explicitPlay &&
@@ -480,15 +493,21 @@ function parseNormalizedText(
     while (
       tokens[i]?.kind === "separator" &&
       !/[\r\n。.;；]/u.test(tokens[i].text)
-    )
+    ) {
+      // A comma after a complete inherited bet starts its next clause, rather
+      // than letting that clause's play steal the completed amount and pool.
+      if (segment.context.id && /[,，]/u.test(tokens[i].text)) return false;
       i++;
+    }
     while (tokens[i]?.kind === "compound") {
       i++;
       while (
         tokens[i]?.kind === "separator" &&
         !/[\r\n。.;；]/u.test(tokens[i].text)
-      )
+      ) {
+        if (segment.context.id && /[,，]/u.test(tokens[i].text)) return false;
         i++;
+      }
     }
     return ["play", "plays"].includes(tokens[i]?.kind);
   }
@@ -860,7 +879,6 @@ function parseNormalizedText(
         ((tokens[next]?.kind === "object" && zodiac.test(tokens[next].text)) ||
           (tokens[next]?.kind === "number" &&
             rule?.kind === "number" &&
-            rule.quantity > 1 &&
             hasObjects() &&
             !readAmount(next)?.perGroup &&
             explicitPriceAfterList(next, true)))
@@ -945,7 +963,9 @@ function parseNormalizedText(
             followsAmountDot(i) &&
             !followedByListAmount(i)) ||
           (hasObjects() &&
-            !followedByListAmount(i) &&
+            ((segment.objectBeforePlay &&
+              previousSignificant(i)?.kind === "play") ||
+              !followedByListAmount(i)) &&
             ["play", "connector"].includes(previousSignificant(i)?.kind ?? "")))
       ) {
         applyAmount(money);

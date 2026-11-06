@@ -510,3 +510,81 @@ for (const width of [390, 1440]) {
     ).toBe(true);
   });
 }
+
+for (const sample of [
+  {
+    name: "bare-zodiac-and-postfix-prices",
+    raw: "狗各25，牛兔各数5，33特50，09，30各25，复式四有龙牛狗兔马虎10一组。",
+    amounts: ["25", "5", "50", "25", "10"],
+    units: 30,
+    stake: 39000,
+  },
+  {
+    name: "issue-prefixed-slash-lists",
+    raw: "312期澳特19/39/47/28/09/06/40/30/22/34/23/42各买10米！04/16/02/38/27/21各买5米！",
+    amounts: ["10", "5"],
+    units: 18,
+    stake: 15000,
+  },
+]) {
+  test(`text entry prices ${sample.name} exactly without using issue metadata as money`, async ({
+    page,
+  }) => {
+    await signIn(page);
+    await textMode(page);
+    const boot = await (await page.request.get("/api/bootstrap")).json();
+    const bettor = `synthetic-${sample.name}-${Date.now()}`;
+    const dialog = await check(page, sample.raw, bettor);
+    const response = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/api/slips",
+    );
+    await dialog.getByRole("button", { name: "确认录入", exact: true }).click();
+    const saved = await response;
+    expect(saved.ok()).toBe(true);
+    const body = saved.request().postDataJSON();
+    expect(body.period).toBe(boot.today.id);
+    expect(body.items.map((item: { amount: string }) => item.amount)).toEqual(
+      sample.amounts,
+    );
+    const slip = await (
+      await page.request.get(`/api/slips/${(await saved.json()).id}`)
+    ).json();
+    const records = slip.items as { stake: number; unit_count: number }[];
+    expect(
+      records.reduce(
+        (sum: number, item: { stake: number }) => sum + item.stake,
+        0,
+      ),
+    ).toBe(sample.stake);
+    expect(
+      records.reduce(
+        (sum: number, item: { unit_count: number }) => sum + item.unit_count,
+        0,
+      ),
+    ).toBe(sample.units);
+    if (sample.name === "issue-prefixed-slash-lists") {
+      expect(
+        body.items.map((item: { selections: number[] }) => item.selections),
+      ).toEqual([
+        [19, 39, 47, 28, 9, 6, 40, 30, 22, 34, 23, 42],
+        [4, 16, 2, 38, 27, 21],
+      ]);
+    } else {
+      expect(
+        body.items
+          .slice(2, 4)
+          .map((item: { selections: number[] }) => item.selections),
+      ).toEqual([[33], [9, 30]]);
+      expect(
+        body.items.map(
+          (item: { play_id: number }) =>
+            boot.plays.find((play: { id: number }) => play.id === item.play_id)
+              .rule.name,
+        ),
+      ).toEqual(["特码", "特码", "特码", "特码", "四有"]);
+    }
+    await expect(dialog).toBeHidden();
+  });
+}

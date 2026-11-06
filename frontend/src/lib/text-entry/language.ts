@@ -44,6 +44,14 @@ export function normalizeLanguage(raw: string) {
   )
     return { text: raw, spans, review: true };
 
+  // Issue labels at the start of a message/line are metadata, never selections
+  // or prices. Keep line breaks and the original span mapping for review.
+  replace(
+    /(^|[\r\n])[^\S\r\n]*(?:第[^\S\r\n]*)?[0-9０-９零〇一二两三四五六七八九十百千万]{1,12}[^\S\r\n]*期[^\S\r\n]*[:：]?[^\S\r\n]*/gu,
+    (m) => m[1],
+  );
+  replace(/[!！]/gu, "；");
+
   replace(
     /[連組複復試數碼龍馬雞豬藍綠]/gu,
     (m) =>
