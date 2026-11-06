@@ -51,6 +51,19 @@ export function normalizeLanguage(raw: string) {
     (m) => m[1],
   );
   replace(/[!！]/gu, "；");
+  replace(/𤠣/gu, "猴");
+  replace(/二中二[\s,，]*[韩韓含]特/gu, "二中二含特");
+  // The digit-letter confusion is bounded to a marked amount with currency;
+  // arbitrary letters in selections or notes must remain reviewable.
+  replace(
+    /((?:各|每注|每组|每號|每号)[ \t]*)([0-9]+)[OoＯｏ](?=[ \t]*(?:元|米|块|塊))/gu,
+    (m) => m[1] + m[2] + "0",
+  );
+  replace(/一甲数|一甲數|一个数|一個數/gu, "各数");
+  replace(
+    /([0-9]{1,2})码(?=[ \t]*[0-9]+(?:\.[0-9]+)?[ \t]*(?:元|米|块|塊))/gu,
+    (m) => m[1] + "号",
+  );
 
   replace(
     /[連組複復試數碼龍馬雞豬藍綠]/gu,

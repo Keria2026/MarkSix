@@ -588,3 +588,102 @@ for (const sample of [
     await expect(dialog).toBeHidden();
   });
 }
+
+for (const sample of [
+  {
+    name: "linked-aliases-and-rare-monkey",
+    raw: "5友复式牛龙兔狗猴马各150元，5友牛龙兔狗猴／100\n5友复式牛羊虎鸡猪𤠣各80\n总1480",
+    amounts: ["150", "100", "80"],
+    units: 13,
+    stake: 148000,
+    selections: [
+      [1, 4, 3, 10, 8, 6],
+      [1, 4, 3, 10, 8],
+      [1, 7, 2, 9, 11, 8],
+    ],
+  },
+  {
+    name: "dotted-pools-and-alternating-prices",
+    raw: "特29，33，34各200元，30.31.32.35.36.37.38各100\n特08.200.26.100.二有牛狗200\n总1800",
+    amounts: ["200", "100", "200", "100", "200"],
+    units: 13,
+    stake: 180000,
+    selections: [
+      [29, 33, 34],
+      [30, 31, 32, 35, 36, 37, 38],
+      [8],
+      [26],
+      [1, 10],
+    ],
+  },
+  {
+    name: "suffix-prices-qualified-drag-and-double-slash",
+    raw: "奥虎兔特各90元一肖，28码60元，特04.07.12.15.18.20.23.28.各2O元一甲数，奥三有虎兔猴80元。\n六尾拖九尾，二中二，韩特各六元\n十不中06.30.20.32.10.46.26.38.11.31//200\n总830",
+    amounts: ["90", "60", "20", "80", "6", "200"],
+    units: 44,
+    stake: 83000,
+    selections: [
+      [],
+      [28],
+      [4, 7, 12, 15, 18, 20, 23, 28],
+      [2, 3, 8],
+      [],
+      [6, 30, 20, 32, 10, 46, 26, 38, 11, 31],
+    ],
+  },
+]) {
+  test(`colloquial text ${sample.name} persists exact options and prices`, async ({
+    page,
+  }) => {
+    await signIn(page);
+    await textMode(page);
+    const dialog = await check(
+      page,
+      sample.raw,
+      `synthetic-${sample.name}-${Date.now()}`,
+    );
+    const sent = page.waitForResponse(
+      (r) =>
+        r.request().method() === "POST" &&
+        new URL(r.url()).pathname === "/api/slips",
+    );
+    await dialog.getByRole("button", { name: "确认录入", exact: true }).click();
+    const response = await sent;
+    expect(response.ok()).toBe(true);
+    const body = response.request().postDataJSON();
+    expect(body.items.map((item: { amount: string }) => item.amount)).toEqual(
+      sample.amounts,
+    );
+    expect(
+      body.items.map((item: { selections: number[] }) => item.selections),
+    ).toEqual(sample.selections);
+    if (sample.name === "suffix-prices-qualified-drag-and-double-slash") {
+      expect(body.items[0].package_zodiacs).toEqual([2, 3]);
+      expect(body.items[4].drag).toEqual({
+        left: [6, 16, 26, 36, 46],
+        right: [9, 19, 29, 39, 49],
+        zodiac: false,
+      });
+      const play = (
+        await (await page.request.get("/api/bootstrap")).json()
+      ).plays.find((p: { id: number }) => p.id === body.items[4].play_id);
+      expect(play.rule.name).toBe("二中二含特");
+    }
+    const saved = await (
+      await page.request.get(`/api/slips/${(await response.json()).id}`)
+    ).json();
+    expect(
+      saved.items.reduce(
+        (sum: number, item: { stake: number }) => sum + item.stake,
+        0,
+      ),
+    ).toBe(sample.stake);
+    expect(
+      saved.items.reduce(
+        (sum: number, item: { unit_count: number }) => sum + item.unit_count,
+        0,
+      ),
+    ).toBe(sample.units);
+    await expect(dialog).toBeHidden();
+  });
+}

@@ -1,6 +1,6 @@
 import { assignMarkets, tokenizeMarkets, type MarketRange } from "./markets";
 import { normalizeLanguage } from "./language";
-import type { Play } from "../types";
+import { entryCents, type Play } from "../types";
 import type { TextPreference, TextRow } from "../text-entry";
 import { resolvePlay, playCandidates } from "./vocabulary";
 import type { Token } from "./lexer";
@@ -513,7 +513,13 @@ function parseNormalizedText(
   }
   function readAmount(
     index: number,
-  ): { amount: string; last: number; perGroup: boolean } | null {
+    integerOnly = false,
+  ): {
+    amount: string;
+    last: number;
+    perGroup: boolean;
+    suffixMarker?: string;
+  } | null {
     let i = index;
     while (
       tokens[i]?.kind === "separator" &&
@@ -526,6 +532,7 @@ function parseNormalizedText(
     if (!["number", "money"].includes(tokens[i]?.kind)) return null;
     let amount = tokens[i].text;
     if (
+      !integerOnly &&
       tokens[i + 1]?.text === "." &&
       tokens[i + 2]?.kind === "number" &&
       tokens[i].lexicalEnd === tokens[i + 1].lexicalStart &&
@@ -552,6 +559,35 @@ function parseNormalizedText(
       !/[\r\n]/u.test(raw.slice(tokens[suffix]?.end, tokens[following]?.start));
     const perGroup = tokens[suffix]?.text === "一组" && !prefixGroup;
     if (perGroup) i = suffix;
+    let suffixMarker: string | undefined;
+    const adjacentSuffix = /^[^\S\r\n]*$/u.test(
+      raw.slice(tokens[i].end, tokens[suffix]?.start),
+    );
+    const suffixPlay = active.find((play) => play.id === segment.context.id);
+    const zodiacSuffix =
+      tokens[suffix]?.text === "一肖" &&
+      suffixPlay?.rule.quantity === 1 &&
+      ["number", "zodiac"].includes(suffixPlay.rule.kind) &&
+      tokens[following]?.kind !== "object" &&
+      segment.content.some(
+        (token) => token.kind === "object" && zodiac.test(token.text),
+      ) &&
+      segment.content.every(
+        (token) =>
+          token.kind === "separator" ||
+          (token.kind === "object" && zodiac.test(token.text)),
+      );
+    if (
+      !perGroup &&
+      !prefixGroup &&
+      adjacentSuffix &&
+      ((tokens[suffix]?.text === "各数" &&
+        (tokens[currency]?.kind === "currency" || Number(amount) > 49)) ||
+        zodiacSuffix)
+    ) {
+      suffixMarker = tokens[suffix].text === "一肖" ? "各肖" : "各数";
+      i = suffix;
+    }
     return {
       amount: (monetaryLiteral(amount) ?? amount).replace(
         /(\.\d*?[1-9])0+$|\.0+$/u,
@@ -559,13 +595,15 @@ function parseNormalizedText(
       ),
       last: i,
       perGroup,
+      suffixMarker,
     };
   }
   function applyAmount(
-    money: { amount: string; perGroup: boolean },
+    money: { amount: string; perGroup: boolean; suffixMarker?: string },
     marker = "",
   ) {
     segment.amount = money.amount;
+    if (money.suffixMarker) segment.marker = money.suffixMarker;
     const rule = active.find((play) => play.id === segment.context.id)?.rule;
     const first = segment.content.findIndex((token) => token.kind === "number");
     const list = segment.content.slice(first);
@@ -597,6 +635,29 @@ function parseNormalizedText(
   }
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (
+      token.kind === "separator" &&
+      hasObjects() &&
+      /^\/(?:[ \t]*\/)+$/u.test(
+        raw.slice(token.start, token.end).normalize("NFKC"),
+      )
+    ) {
+      const money = readAmount(i + 1);
+      const cents = money && entryCents(money.amount);
+      if (
+        money &&
+        cents !== null &&
+        cents !== undefined &&
+        cents > 4900n &&
+        !followedByListAmount(money.last)
+      ) {
+        applyAmount(money, "/");
+        segment.marker = money.suffixMarker ?? "/";
+        emit(tokens[money.last].end);
+        i = money.last;
+        continue;
+      }
+    }
     if (
       token.text === "*" &&
       hasObjects() &&
@@ -889,7 +950,7 @@ function parseNormalizedText(
       const money = readAmount(i + 1);
       if (money && !segment.amount) {
         applyAmount(money, token.text);
-        segment.marker = token.text;
+        segment.marker = money.suffixMarker ?? token.text;
         if (
           !(!segment.explicitPlay && postfixPlayAfter(money.last)) &&
           (hasObjects() ||
@@ -943,7 +1004,30 @@ function parseNormalizedText(
       const bareAfterZodiac =
         previous?.kind === "object" &&
         /[鼠牛虎兔龙蛇马羊猴鸡狗猪红蓝绿大小单双尾波头頭]/u.test(previous.text);
-      const money = readAmount(i);
+      const decimal = readAmount(i);
+      // An invalid fractional price followed by a complete number/price pair
+      // can instead be the established 09.200.27.100 shorthand. Valid decimal
+      // amounts are never rounded or reinterpreted to force acceptance.
+      const priceRule = active.find(
+        (play) => play.id === segment.context.id,
+      )?.rule;
+      const dotPair =
+        priceRule?.kind === "number" &&
+        priceRule.quantity === 1 &&
+        hasObjects() &&
+        followsAmountDot(i) &&
+        Number(token.text) > 49 &&
+        decimal &&
+        entryCents(decimal.amount) === null &&
+        tokens[i + 1]?.text === "." &&
+        tokens[i + 2]?.kind === "number" &&
+        Number(tokens[i + 2].text) >= 1 &&
+        Number(tokens[i + 2].text) <= 49 &&
+        tokens[i + 3]?.text === "." &&
+        tokens[i + 4]?.kind === "number" &&
+        Number(tokens[i + 4].text) > 49 &&
+        entryCents(tokens[i + 4].text) !== null;
+      const money = dotPair ? readAmount(i, true) : decimal;
       const currency = money && tokens[money.last].kind === "currency";
       if (
         money &&
@@ -952,7 +1036,7 @@ function parseNormalizedText(
         ((bareAfterZodiac && (money.perGroup || !followedByListAmount(i))) ||
           afterGroup ||
           currency ||
-          (money.perGroup && hasObjects()) ||
+          ((money.perGroup || money.suffixMarker) && hasObjects()) ||
           ["单平", "4头不中", "四头不中"].includes(segment.context.label) ||
           (segment.explicitPlay &&
             active.find((p) => p.id === segment.context.id)?.rule.kind ===
