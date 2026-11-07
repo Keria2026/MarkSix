@@ -542,3 +542,304 @@ async fn received_distribution_sums_both_markets_and_tracks_corrections_and_canc
         25000
     );
 }
+
+#[tokio::test]
+#[ignore = "requires isolated marksix_test database"]
+async fn home_display_reductions_are_cumulative_isolated_and_leave_the_ledger_unchanged() {
+    let pool = database::reset().await.unwrap();
+    let date = chrono::NaiveDate::from_ymd_opt(2040, 1, 1).unwrap();
+    let time = Arc::new(RwLock::new(date.and_hms_opt(12, 0, 0).unwrap()));
+    let clock = time.clone();
+    let mut state = store::AppState::new(pool.clone()).unwrap();
+    state.clock = Arc::new(move || *clock.read().unwrap());
+    let app = api::router(state);
+    let (_, _, cookie) = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"username":"test-admin","password":std::env::var("TEST_ADMIN_PASSWORD").unwrap()}),
+        "",
+    )
+    .await;
+    let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let id = boot["today"]["id"].as_str().unwrap();
+    let endpoint = format!("/api/periods/{id}/received-display?market=macau");
+    let hong_kong = format!("/api/periods/{id}/received-display?market=hk");
+    let line = |name: &str, market: &str, selections: Value, amount: &str| {
+        let p = boot["plays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["rule"]["name"] == name)
+            .unwrap();
+        json!({"play_id":p["id"],"play_version":p["version"],"market":market,"selections":selections,"amount":amount,"compound":false})
+    };
+    ok(&app,"POST","/api/slips",json!({"request_id":uuid::Uuid::new_v4().to_string(),"period":id,"bettor":"synthetic-display","items":[line("特码","macau",json!([7,9]),"100"),line("一肖中","macau",json!([0,1]),"50"),line("尾中","macau",json!([0,9]),"30"),line("特码","hk",json!([7,9]),"200"),line("一肖中","hk",json!([0,1]),"100"),line("尾中","hk",json!([0,9]),"60")]}),&cookie).await;
+    assert_eq!(
+        call(&app, "GET", &endpoint, json!({}), "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let original = ok(&app, "GET", &endpoint, json!({}), &cookie).await;
+    assert_eq!(original["revision"], 0);
+    assert_eq!(original["received"], original["display"]);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM received_display_states")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    let ledger = ok(&app, "GET", &format!("/api/days/{id}"), json!({}), &cookie).await;
+    let audit: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let version: i64 = sqlx::query_scalar("SELECT bet_version FROM periods WHERE id=?")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let change = |revision: i64, kind: &str, items: Value| json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":revision,"kind":kind,"change":{"action":"deduct","items":items}});
+    let first = change(
+        0,
+        "special",
+        json!([{"index":6,"amount":"30"},{"index":8,"amount":"20"}]),
+    );
+    let (first_response, concurrent_retry) = tokio::join!(
+        call(&app, "POST", &endpoint, first.clone(), &cookie),
+        call(&app, "POST", &endpoint, first.clone(), &cookie)
+    );
+    assert_eq!(first_response.0, StatusCode::OK, "{first_response:?}");
+    assert_eq!(concurrent_retry.0, StatusCode::OK, "{concurrent_retry:?}");
+    assert_eq!(first_response.1, concurrent_retry.1);
+    let saved = first_response.1;
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(
+        ok(&app, "POST", &endpoint, first.clone(), &cookie).await,
+        saved
+    );
+    let shown = ok(&app, "GET", &endpoint, json!({}), &cookie).await;
+    assert_eq!(shown["display"]["special"][6], 7000);
+    assert_eq!(shown["display"]["special"][8], 8000);
+    assert_eq!(shown["received"], original["received"]);
+    let (_, _, relogged) = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"username":"test-admin","password":std::env::var("TEST_ADMIN_PASSWORD").unwrap()}),
+        "",
+    )
+    .await;
+    assert_eq!(
+        ok(&app, "GET", &endpoint, json!({}), &relogged).await,
+        shown
+    );
+    assert_eq!(
+        ok(&app, "GET", &format!("/api/days/{id}"), json!({}), &cookie).await["totals"],
+        ledger["totals"]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM audit_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        audit
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT bet_version FROM periods WHERE id=?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        version
+    );
+    let raw = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{id}/received-distribution?combined=true&market=macau"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(raw, original["received"]);
+    for invalid in [
+        change(
+            1,
+            "special",
+            json!([{"index":6,"amount":"1"},{"index":8,"amount":"999"}]),
+        ),
+        change(1, "special", json!([{"index":49,"amount":"1"}])),
+        change(1, "special", json!([{"index":6,"amount":"1.001"}])),
+        change(1, "special", json!([{"index":6,"amount":"-1"}])),
+        change(
+            1,
+            "special",
+            json!([{"index":6,"amount":"1"},{"index":6,"amount":"1"}]),
+        ),
+    ] {
+        assert_eq!(
+            call(&app, "POST", &endpoint, invalid, &cookie).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(ok(&app, "GET", &endpoint, json!({}), &cookie).await, shown);
+    }
+    let mut changed_id = first.clone();
+    changed_id["change"]["items"][0]["amount"] = json!("31");
+    assert_eq!(
+        call(&app, "POST", &endpoint, changed_id, &cookie).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &endpoint,
+            change(0, "special", json!([{"index":6,"amount":"1"}])),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    ok(&app,"POST","/api/slips",json!({"request_id":uuid::Uuid::new_v4().to_string(),"period":id,"bettor":"synthetic-display-later","items":[line("特码","macau",json!([7]),"50")]}),&cookie).await;
+    assert_eq!(
+        ok(&app, "GET", &endpoint, json!({}), &cookie).await["display"]["special"][6],
+        12000
+    );
+    ok(
+        &app,
+        "POST",
+        &endpoint,
+        change(1, "special", json!([{"index":6,"amount":"20"}])),
+        &cookie,
+    )
+    .await;
+    ok(
+        &app,
+        "POST",
+        &endpoint,
+        change(2, "zodiac", json!([{"index":0,"amount":"10"}])),
+        &cookie,
+    )
+    .await;
+    ok(
+        &app,
+        "POST",
+        &endpoint,
+        change(3, "tail", json!([{"index":9,"amount":"5"}])),
+        &cookie,
+    )
+    .await;
+    let macau = ok(&app, "GET", &endpoint, json!({}), &cookie).await;
+    assert_eq!(macau["display"]["special"][6], 10000);
+    assert_eq!(macau["display"]["zodiac"][0], 4000);
+    assert_eq!(macau["display"]["tail"][9], 2500);
+    let hk = ok(&app, "GET", &hong_kong, json!({}), &cookie).await;
+    assert_eq!(hk["revision"], 0);
+    assert_eq!(hk["display"]["special"][6], 20000);
+    for (revision, kind, index, amount) in [
+        (0, "special", 6, "40"),
+        (1, "zodiac", 0, "15"),
+        (2, "tail", 9, "6"),
+    ] {
+        ok(
+            &app,
+            "POST",
+            &hong_kong,
+            change(revision, kind, json!([{"index":index,"amount":amount}])),
+            &cookie,
+        )
+        .await;
+    }
+    let hk = ok(&app, "GET", &hong_kong, json!({}), &cookie).await;
+    assert_eq!(hk["display"]["special"][6], 16000);
+    assert_eq!(hk["display"]["zodiac"][0], 8500);
+    assert_eq!(hk["display"]["tail"][9], 5400);
+    assert_eq!(ok(&app, "GET", &endpoint, json!({}), &cookie).await, macau);
+    let reset = json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":4,"kind":"special","change":{"action":"reset"}});
+    ok(&app, "POST", &endpoint, reset, &cookie).await;
+    let restored = ok(&app, "GET", &endpoint, json!({}), &cookie).await;
+    assert_eq!(restored["display"]["special"][6], 15000);
+    assert_eq!(restored["display"]["zodiac"][0], 4000);
+    assert_eq!(
+        ok(&app, "POST", &endpoint, first.clone(), &cookie).await,
+        saved
+    );
+    assert_eq!(
+        ok(&app, "GET", &endpoint, json!({}), &cookie).await,
+        restored
+    );
+    let a = change(5, "special", json!([{"index":6,"amount":"1"}]));
+    let b = change(5, "special", json!([{"index":6,"amount":"2"}]));
+    let (left, right) = tokio::join!(
+        call(&app, "POST", &endpoint, a, &cookie),
+        call(&app, "POST", &endpoint, b, &cookie)
+    );
+    assert!(
+        (left.0 == StatusCode::OK && right.0 == StatusCode::CONFLICT)
+            || (right.0 == StatusCode::OK && left.0 == StatusCode::CONFLICT)
+    );
+    assert_eq!(
+        ok(&app, "GET", &endpoint, json!({}), &cookie).await["revision"],
+        6
+    );
+    *time.write().unwrap() = (date + chrono::Duration::days(1))
+        .and_hms_opt(6, 0, 0)
+        .unwrap();
+    let next = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let next_id = next["today"]["id"].as_str().unwrap();
+    let new = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{next_id}/received-display?market=hk"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(new["revision"], 0);
+    assert!(
+        new["deducted"]["special"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n == 0)
+    );
+    for market in ["macau", "hk"] {
+        let fresh = ok(
+            &app,
+            "GET",
+            &format!("/api/periods/{next_id}/received-display?market={market}"),
+            json!({}),
+            &cookie,
+        )
+        .await;
+        for kind in ["special", "zodiac", "tail"] {
+            assert!(
+                fresh["deducted"][kind]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|n| n == 0)
+            );
+            assert!(
+                fresh["display"][kind]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|n| n == 0)
+            );
+        }
+    }
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &endpoint,
+            change(6, "special", json!([{"index":6,"amount":"1"}])),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(ok(&app, "POST", &endpoint, first, &cookie).await, saved);
+    pool.close().await;
+}

@@ -247,7 +247,7 @@ test("mixed markets share daily overview, statistics and export with per-entry l
     const response = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return (
-        url.pathname.endsWith("/received-distribution") &&
+        url.pathname.endsWith("/received-display") &&
         url.searchParams.get("market") === market &&
         response.ok()
       );
@@ -255,7 +255,7 @@ test("mixed markets share daily overview, statistics and export with per-entry l
     await marketSwitch
       .getByRole("button", { name: title, exact: true })
       .click();
-    const received = await (await response).json();
+    const received = (await (await response).json()).display;
     if (market === "hk")
       expect(received.special[21]).toBeGreaterThanOrEqual(10000);
     await expect(

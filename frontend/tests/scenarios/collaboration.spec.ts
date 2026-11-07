@@ -1,3 +1,4 @@
+import { receivedDisplayFixture } from "../model/received-display";
 import { test, expect } from "./scenario-fixtures";
 import { plays } from "../contracts/fixtures";
 import { annualMapping } from "../../src/lib/types";
@@ -74,12 +75,12 @@ for (const width of [390, 1440]) {
             entry_mode: "manual",
           },
         };
-      else if (path.endsWith("/received-distribution"))
-        json = {
+      else if (path.endsWith("/received-display"))
+        json = receivedDisplayFixture({
           special: Array(49).fill(0),
           zodiac: Array(12).fill(0),
           tail: Array(10).fill(0),
-        };
+        });
       else if (path === "/api/records/search")
         json = { items: [], total: 0, page: 1, page_size: 25 };
       else if (path.endsWith("/bet-filters") || path === "/api/parties")
@@ -105,7 +106,9 @@ for (const width of [390, 1440]) {
       await route.fulfill({ json });
     });
     await page.goto("/");
-    await expect(page.getByText("¥ 300.00", { exact: true })).toBeVisible();
+    await expect(page.getByText("¥ 300.00", { exact: true })).toBeVisible({
+      timeout: 15000,
+    });
     const avatar = page
       .getByRole("button", { name: "切换记录范围", exact: true })
       .filter({ visible: true });

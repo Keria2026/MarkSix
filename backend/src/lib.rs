@@ -5,6 +5,7 @@ pub mod api;
 mod betting;
 mod features;
 mod queries;
+mod received_display;
 mod records;
 mod reporting;
 pub mod store;

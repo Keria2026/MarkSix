@@ -93,6 +93,10 @@ pub fn router(state: AppState) -> Router {
             "/periods/{id}/received-distribution",
             get(crate::reporting::received_distribution),
         )
+        .route(
+            "/periods/{id}/received-display",
+            get(crate::received_display::read).post(crate::received_display::change),
+        )
         .route("/bets", post(crate::betting::single))
         .route("/slips", post(crate::betting::slip))
         .route("/slips/preview", post(crate::text_entry::preview))

@@ -1101,6 +1101,7 @@
           {api}
           period={active.id}
           revision={active.totals}
+          readonly={recordView === "history"}
         />
       {:else}
         {#if report && report.period === active.id}<StatisticsPanel
