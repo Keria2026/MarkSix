@@ -1270,7 +1270,7 @@ test("received distribution failure stays visible and retries without fabricatin
   );
   await panel.getByRole("button", { name: "重试", exact: true }).click();
   await expect(panel.getByRole("listitem")).toHaveCount(49);
-  await expect(panel).toContainText("本日暂无该类受注");
+  await expect(panel).toContainText("本板块暂无显示金额");
 });
 
 for (const width of [390, 1440]) {

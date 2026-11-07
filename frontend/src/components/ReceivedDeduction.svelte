@@ -119,14 +119,14 @@
   >
     <p class="deduction-note">
       {restore
-        ? "恢复当前板块的原受注金额。"
+        ? "恢复当前板块减出前的首页金额。"
         : "只调整首页显示，不修改投注、结算或账单。"}
     </p>
     {#if restore}
       <p>
         将清除{marketName(
           market,
-        )}{title}本业务日的累计减出，后续仍按原受注金额显示。
+        )}{title}本业务日的累计减出，后续按投注人比例计算首页金额。
       </p>
     {:else}
       <div class="deduction-tools">

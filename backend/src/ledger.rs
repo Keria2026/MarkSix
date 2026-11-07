@@ -462,7 +462,7 @@ pub async fn statistics(
 }
 pub async fn parties(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let bettors: Vec<String> = sqlx::query_scalar(&format!(
-        "SELECT DISTINCT bettor FROM bets WHERE {} AND bettor<>'' ORDER BY bettor LIMIT 1000",
+        "SELECT bettor FROM (SELECT bettor FROM bets WHERE {} AND bettor<>'' UNION SELECT bettor FROM bettor_display_ratios) AS names ORDER BY bettor LIMIT 1000",
         state.visible_bets()
     ))
     .fetch_all(&state.pool)

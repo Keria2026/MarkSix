@@ -250,6 +250,15 @@ async fn daily_reports_keep_markets_together_without_moving_hk_bets_across_dates
             assert!(stats["receivers"][0]["totals"]["net"].is_null());
         }
     }
+    // A home-only percentage must not change actual payout or exported settlement.
+    ok(
+        &app,
+        "PUT",
+        "/api/settings/bettors",
+        json!({"bettor":"synthetic-day","percent":"50"}),
+        &cookie,
+    )
+    .await;
     // Macau settles first. Combined net stays unknown until HK has its own draw.
     *time.write().unwrap() = next.and_hms_opt(22, 0, 0).unwrap();
     let raw = json!({"expect":day1,"openTime":"2026-10-31 21:34:00","openCode":"1,2,3,4,5,6,7","zodiac":"鼠,牛,虎,兔,龙,蛇,马","wave":"red,red,blue,blue,green,green,red"});
@@ -841,5 +850,172 @@ async fn home_display_reductions_are_cumulative_isolated_and_leave_the_ledger_un
         StatusCode::CONFLICT
     );
     assert_eq!(ok(&app, "POST", &endpoint, first, &cookie).await, saved);
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated marksix_test database"]
+async fn bettor_ratios_adjust_only_home_distribution_and_preserve_deductions() {
+    let pool = database::reset().await.unwrap();
+    let mut state = store::AppState::new(pool.clone()).unwrap();
+    state.clock = Arc::new(|| {
+        chrono::NaiveDate::from_ymd_opt(2040, 1, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    });
+    let app = api::router(state);
+    let (_, _, cookie) = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"username":"test-admin","password":std::env::var("TEST_ADMIN_PASSWORD").unwrap()}),
+        "",
+    )
+    .await;
+    let boot = ok(&app, "GET", "/api/bootstrap", json!({}), &cookie).await;
+    let id = boot["today"]["id"].as_str().unwrap();
+    let config = "/api/settings/bettors";
+    ok(
+        &app,
+        "PUT",
+        config,
+        json!({"bettor":"Ratio A","percent":"80"}),
+        &cookie,
+    )
+    .await;
+    let parties = ok(&app, "GET", "/api/parties", json!({}), &cookie).await;
+    assert!(
+        parties["bettors"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Ratio A"))
+    );
+    for bad in ["-1", "100.01", "1.001", "NaN"] {
+        assert_eq!(
+            call(
+                &app,
+                "PUT",
+                config,
+                json!({"bettor":"Ratio A","percent":bad}),
+                &cookie
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let line = |name: &str, market: &str, selections: Value, amount: &str| {
+        let p = boot["plays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["rule"]["name"] == name)
+            .unwrap();
+        json!({"play_id":p["id"],"play_version":p["version"],"market":market,"selections":selections,"amount":amount,"compound":false})
+    };
+    for (bettor, amount) in [("Ratio A", "100"), ("Ratio B", "50")] {
+        ok(&app,"POST","/api/slips",json!({"request_id":uuid::Uuid::new_v4().to_string(),"period":id,"bettor":bettor,"items":[line("特码","macau",json!([7]),amount),line("一肖中","macau",json!([0]),amount),line("尾中","macau",json!([9]),amount),line("特码","hk",json!([7]),amount),line("一肖中","hk",json!([0]),amount),line("尾中","hk",json!([9]),amount)]}),&cookie).await;
+    }
+    let totals =
+        ok(&app, "GET", &format!("/api/days/{id}"), json!({}), &cookie).await["totals"].clone();
+    for market in ["macau", "hk"] {
+        let url = format!("/api/periods/{id}/received-display?market={market}");
+        let raw = ok(
+            &app,
+            "GET",
+            &format!("/api/periods/{id}/received-distribution?combined=true&market={market}"),
+            json!({}),
+            &cookie,
+        )
+        .await;
+        let home = ok(&app, "GET", &url, json!({}), &cookie).await;
+        for (kind, index) in [("special", 6), ("zodiac", 0), ("tail", 9)] {
+            assert_eq!(raw[kind][index], 15000);
+            assert_eq!(home["received"][kind][index], 13000);
+            assert_eq!(home["display"][kind][index], 13000);
+        }
+        ok(&app,"POST",&url,json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":0,"kind":"special","change":{"action":"deduct","items":[{"index":6,"amount":"20"}]}}),&cookie).await;
+    }
+    ok(
+        &app,
+        "PUT",
+        config,
+        json!({"bettor":"Ratio A","percent":"50"}),
+        &cookie,
+    )
+    .await;
+    for market in ["macau", "hk"] {
+        let home = ok(
+            &app,
+            "GET",
+            &format!("/api/periods/{id}/received-display?market={market}"),
+            json!({}),
+            &cookie,
+        )
+        .await;
+        assert_eq!(home["display"]["special"][6], 8000);
+        assert_eq!(home["deducted"]["special"][6], 2000);
+        assert_eq!(home["display"]["zodiac"][0], 10000);
+        assert_eq!(home["display"]["tail"][9], 10000);
+    }
+    assert_eq!(
+        ok(&app, "GET", &format!("/api/days/{id}"), json!({}), &cookie).await["totals"],
+        totals
+    );
+    ok(
+        &app,
+        "PUT",
+        config,
+        json!({"bettor":"Ratio A","percent":"0"}),
+        &cookie,
+    )
+    .await;
+    let zero = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{id}/received-display?market=macau"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(zero["display"]["special"][6], 3000);
+    assert_eq!(zero["display"]["tail"][9], 5000);
+    ok(
+        &app,
+        "PUT",
+        config,
+        json!({"bettor":"Ratio A","percent":"33.33"}),
+        &cookie,
+    )
+    .await;
+    ok(&app,"POST","/api/slips",json!({"request_id":uuid::Uuid::new_v4().to_string(),"period":id,"bettor":"Ratio A","items":[line("特码","macau",json!([7]),"0.1"),line("特码","macau",json!([7]),"0.1")]}),&cookie).await;
+    let rounded = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{id}/received-display?market=macau"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    // Aggregate this bettor's 100.20 before applying 33.33% and rounding to cents.
+    assert_eq!(rounded["display"]["special"][6], 6340);
+    ok(
+        &app,
+        "DELETE",
+        "/api/settings/bettors/Ratio%20A",
+        json!({}),
+        &cookie,
+    )
+    .await;
+    let home = ok(
+        &app,
+        "GET",
+        &format!("/api/periods/{id}/received-display?market=macau"),
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(home["display"]["special"][6], 13020);
     pool.close().await;
 }
