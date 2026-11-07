@@ -627,6 +627,59 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
     let other_mine = visible(&app, "GET", &display_url, json!({}), b, "mine").await;
     assert_eq!(other_mine["revision"], 0);
     assert_eq!(other_mine["display"]["special"][14], 2000);
+    visible(
+        &app,
+        "PUT",
+        "/api/settings/bettors",
+        json!({"bettor":"synthetic-collaborator","percent":"80"}),
+        a,
+        "shared",
+    )
+    .await;
+    assert_eq!(
+        visible(&app, "GET", "/api/settings/bettors", json!({}), b, "shared").await["items"][0]["ratio"],
+        8000
+    );
+    assert_eq!(
+        visible(&app, "GET", &display_url, json!({}), b, "shared").await["display"]["special"][2],
+        600
+    );
+    assert_eq!(
+        visible(&app, "GET", &display_url, json!({}), a, "mine").await["display"]["special"][2],
+        700
+    );
+    assert_eq!(
+        visible(&app, "GET", &display_url, json!({}), b, "mine").await["display"]["special"][14],
+        1600
+    );
+    assert!(
+        ok(&app, "GET", "/api/settings/bettors", json!({}), c).await["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        viewed(
+            &app,
+            "PUT",
+            "/api/settings/bettors",
+            json!({"bettor":"synthetic-collaborator","percent":"10"}),
+            a,
+            "history"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    visible(
+        &app,
+        "DELETE",
+        "/api/settings/bettors/synthetic-collaborator",
+        json!({}),
+        a,
+        "shared",
+    )
+    .await;
     assert_eq!(
         ok(&app, "GET", &display_url, json!({}), c).await["revision"],
         0

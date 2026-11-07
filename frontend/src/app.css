@@ -3458,7 +3458,7 @@ body {
 }
 .settings-switcher {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 24px;
   width: fit-content;
   max-width: 100%;
@@ -3477,6 +3477,12 @@ body {
   padding: 10px 20px;
   font-size: 14px;
   border-radius: 7px;
+}
+@media (max-width: 560px) {
+  .settings-switcher > button {
+    padding: 10px 8px;
+    gap: 6px;
+  }
 }
 .settings-switcher > button.active {
   background: #edf2fc;

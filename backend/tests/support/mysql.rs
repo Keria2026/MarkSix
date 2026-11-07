@@ -7,6 +7,7 @@ pub async fn reset() -> anyhow::Result<sqlx::MySqlPool> {
     );
     let pool = store::connect(&url).await?;
     for table in [
+        "bettor_display_ratios",
         "bettor_play_preferences",
         "text_entry_preferences",
         "audit_events",

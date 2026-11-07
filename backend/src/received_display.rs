@@ -3,7 +3,7 @@ use crate::{
     api::{ApiResult, ReceivedAt, conflict, digest},
     domain::{MONEY_LIMIT, RuleResult, business_date, checked_sum, scaled},
     market::Market,
-    reporting::{ReceivedDistribution, read_distribution, visible_scope},
+    reporting::{ReceivedDistribution, read_home_distribution, visible_scope},
     store::AppState,
 };
 use axum::{
@@ -162,7 +162,7 @@ pub(crate) async fn read(
 ) -> ApiResult<Json<Display>> {
     let mut tx = state.pool.begin().await?;
     let scope = visible_scope(&state, &mut tx, &id, true).await?;
-    let received = read_distribution(&mut tx, &scope, Some(query.market)).await?;
+    let received = read_home_distribution(&mut tx, &scope, Some(query.market)).await?;
     let saved:Option<(i64,DbJson<ReceivedDistribution>)>=sqlx::query_as("SELECT revision,deductions FROM received_display_states WHERE period_id=? AND view_creator=? AND market=? FOR SHARE")
         .bind(&id).bind(creator(&state)).bind(query.market.as_str()).fetch_optional(&mut *tx).await?;
     let (revision, deducted) = saved
@@ -216,7 +216,7 @@ pub(crate) async fn change(
     if input.revision != revision {
         return Err(conflict("首页减出记录已更新，请刷新后重新确认"));
     }
-    let received = read_distribution(&mut tx, &scope, Some(query.market)).await?;
+    let received = read_home_distribution(&mut tx, &scope, Some(query.market)).await?;
     let next = apply(&received, deducted.0.clone(), input.kind, &input.change)?;
     let next_revision = revision
         .checked_add(1)

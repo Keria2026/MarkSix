@@ -42,6 +42,7 @@
   import PasswordChange from "./components/PasswordChange.svelte";
   import RecordsTable from "./components/RecordsTable.svelte";
   import SystemSettings from "./components/SystemSettings.svelte";
+  import BettorDisplaySettings from "./components/BettorDisplaySettings.svelte";
   import PlayEditor from "./components/PlayEditor.svelte";
   import SlipComposer from "./components/SlipComposer.svelte";
   import SlipDetail from "./components/SlipDetail.svelte";
@@ -285,7 +286,7 @@
     editingPlay = play ? structuredClone($state.snapshot(play)) : null;
     editor = true;
   }
-  let settingsSection = $state<"plays" | "system">("plays");
+  let settingsSection = $state<"plays" | "system" | "bettors">("plays");
   let settingsSearch = $state("");
   let selectedPlayIds = $state<number[]>([]);
   let batchOpen = $state<"update" | "delete" | null>(null);
@@ -1346,6 +1347,11 @@
           aria-pressed={settingsSection === "system"}
           onclick={() => (settingsSection = "system")}
           ><Settings2 size={20} /><span>配置设置</span></button
+        ><button
+          class:active={settingsSection === "bettors"}
+          aria-pressed={settingsSection === "bettors"}
+          onclick={() => (settingsSection = "bettors")}
+          ><span>投注人</span></button
         >
       </section>
       {#if settingsSection === "plays"}
@@ -1439,6 +1445,14 @@
               </div>{/each}
           </div>
         </section>
+      {:else if settingsSection === "bettors"}
+        <BettorDisplaySettings
+          {api}
+          bettors={parties.bettors}
+          onchanged={async () => {
+            parties = await api("/parties");
+          }}
+        />
       {:else}
         <PasswordChange {api} onchanged={onlogout} />
         <SystemSettings

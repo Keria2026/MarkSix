@@ -131,6 +131,14 @@ pub fn router(state: AppState) -> Router {
             "/periods/{id}/bet-filters",
             get(crate::queries::bet_filters),
         )
+        .route(
+            "/settings/bettors",
+            get(crate::bettor_display::list).put(crate::bettor_display::save),
+        )
+        .route(
+            "/settings/bettors/{name}",
+            axum::routing::delete(crate::bettor_display::remove),
+        )
         .route("/parties", get(crate::ledger::parties))
         .route("/bets/{id}", get(bet_detail))
         .route("/bets/{id}/cancel", post(cancel_bet))

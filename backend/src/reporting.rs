@@ -245,14 +245,35 @@ pub(crate) async fn read_distribution(
     scope: &Scope,
     market: Option<crate::market::Market>,
 ) -> ApiResult<ReceivedDistribution> {
-    let rows: Vec<(String, sqlx::types::Json<Vec<Atom>>)> = sqlx::query_as(&format!(
-        "SELECT period_id,atoms FROM bets WHERE {} AND (? IS NULL OR market=?) AND status<>'cancelled' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind')) IN ('number','zodiac','tail') AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.condition'))='all'",scope.bets()
+    read_distribution_mode(tx, scope, market, false).await
+}
+
+pub(crate) async fn read_home_distribution(
+    tx: &mut Transaction<'_, MySql>,
+    scope: &Scope,
+    market: Option<crate::market::Market>,
+) -> ApiResult<ReceivedDistribution> {
+    read_distribution_mode(tx, scope, market, true).await
+}
+
+async fn read_distribution_mode(
+    tx: &mut Transaction<'_, MySql>,
+    scope: &Scope,
+    market: Option<crate::market::Market>,
+    weighted: bool,
+) -> ApiResult<ReceivedDistribution> {
+    let rows: Vec<(String, String, i64, sqlx::types::Json<Vec<Atom>>)> = sqlx::query_as(&format!(
+        "SELECT bets.period_id,bets.bettor,CAST(COALESCE(bettor_display_ratios.ratio,10000) AS SIGNED),bets.atoms FROM bets LEFT JOIN bettor_display_ratios ON bets.bettor=bettor_display_ratios.bettor WHERE {} AND (? IS NULL OR market=?) AND status<>'cancelled' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind')) IN ('number','zodiac','tail') AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.condition'))='all'",scope.bets()
     )).bind(&scope.key)
         .bind(market.map(crate::market::Market::as_str))
         .bind(market.map(crate::market::Market::as_str))
         .fetch_all(&mut **tx).await?;
-    let mut distribution = ReceivedDistribution::empty();
-    for (period_id, atoms) in rows {
+    let mut grouped: std::collections::HashMap<(String, i64), ReceivedDistribution> =
+        std::collections::HashMap::new();
+    for (period_id, bettor, ratio, atoms) in rows {
+        let group = grouped
+            .entry((bettor, if weighted { ratio } else { 10000 }))
+            .or_insert_with(ReceivedDistribution::empty);
         let draw = scope
             .periods
             .iter()
@@ -260,7 +281,19 @@ pub(crate) async fn read_distribution(
             .and_then(|p| p.draw.as_ref());
         for atom in &atoms.0 {
             if !draw.is_some_and(|d| is_void(atom, d)) {
-                distribution.add(atom)?;
+                group.add(atom)?;
+            }
+        }
+    }
+    let mut distribution = ReceivedDistribution::empty();
+    for ((_, ratio), group) in grouped {
+        for (target, source) in [
+            (&mut distribution.special, &group.special),
+            (&mut distribution.zodiac, &group.zodiac),
+            (&mut distribution.tail, &group.tail),
+        ] {
+            for (total, amount) in target.iter_mut().zip(source) {
+                *total = checked_sum([*total, rounded_product(*amount, ratio)?])?;
             }
         }
     }

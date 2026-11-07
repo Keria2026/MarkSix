@@ -3,6 +3,7 @@ pub mod market;
 
 pub mod api;
 mod betting;
+mod bettor_display;
 mod features;
 mod queries;
 mod received_display;

@@ -131,7 +131,7 @@
   function complete() {
     const restore = editor?.restore;
     editor = null;
-    saved = restore ? "已恢复原受注显示" : "已减出，仅调整首页显示";
+    saved = restore ? "已恢复减出前显示" : "已减出，仅调整首页显示";
     focusAfterLoad = editorTrigger;
     retry++;
   }
@@ -162,7 +162,7 @@
       <p>
         全部投注人 · {market === "hk" ? "香港" : "新澳门"} · {deducted > 0n
           ? "已扣除首页减出"
-          : "原受注本金"}
+          : "首页统计金额"}
       </p>
     </div>
     <div class="received-controls">
@@ -242,9 +242,7 @@
       {#if saved}<p class="received-note" role="status">{saved}</p>{/if}
       <div class="received-summary">
         <div>
-          <span>{title}{deducted > 0n ? "显示总额" : "受注总额"}</span><strong
-            >{money(summary.total)}</strong
-          >
+          <span>{title}显示总额</span><strong>{money(summary.total)}</strong>
         </div>
         <div>
           <span>平均每项</span><strong>{money(summary.average)}</strong>
@@ -261,12 +259,12 @@
           本板块累计减出 {money(deducted)}，仅影响首页展示。
         </p>{/if}
       <p class="received-note">
-        平均按全部 {summary.cells.length} 项计算，包含未受注项。{busy
+        平均按全部 {summary.cells.length} 项计算，包含零金额项目。{busy
           ? "正在更新…"
           : summary.total === 0n
             ? deducted > 0n
               ? "本板块显示金额已全部减出。"
-              : "本日暂无该类受注。"
+              : "本板块暂无显示金额。"
             : "高于平均的项目已标记。"}
       </p>
       <div
@@ -301,7 +299,7 @@
                 >{cell.amount === 0
                   ? current?.deducted[selected][index]
                     ? "已减出"
-                    : "未受注"
+                    : "无显示金额"
                   : "平均以内"}</small
               >{/if}
           </div>
