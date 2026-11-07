@@ -586,6 +586,84 @@ async fn future_only_collaboration_ownership_shared_edits_configuration_and_life
             );
         }
     }
+    // Home presentation state follows the server-derived shared/mine view;
+    // changing it never changes the collaborator's financial scope.
+    let display_url = format!("/api/periods/{period}/received-display?market=macau");
+    let display_change = |revision: i64, index: usize, amount: &str| json!({"request_id":uuid::Uuid::new_v4().to_string(),"revision":revision,"kind":"special","change":{"action":"deduct","items":[{"index":index,"amount":amount}]}});
+    let shared = visible(&app, "GET", &display_url, json!({}), a, "shared").await;
+    visible(
+        &app,
+        "POST",
+        &display_url,
+        display_change(0, 2, "2"),
+        a,
+        "shared",
+    )
+    .await;
+    let partner = visible(&app, "GET", &display_url, json!({}), b, "shared").await;
+    assert_eq!(partner["received"], shared["received"]);
+    assert_eq!(partner["display"]["special"][2], 800);
+    assert_eq!(partner["deducted"]["special"][2], 200);
+    let mine = visible(&app, "GET", &display_url, json!({}), a, "mine").await;
+    assert_eq!(mine["revision"], 0);
+    assert_eq!(mine["display"]["special"][2], 1000);
+    visible(
+        &app,
+        "POST",
+        &display_url,
+        display_change(0, 2, "1"),
+        a,
+        "mine",
+    )
+    .await;
+    assert_eq!(
+        visible(&app, "GET", &display_url, json!({}), a, "mine").await["display"]["special"][2],
+        900
+    );
+    assert_eq!(
+        visible(&app, "GET", &display_url, json!({}), b, "shared").await,
+        partner
+    );
+    let other_mine = visible(&app, "GET", &display_url, json!({}), b, "mine").await;
+    assert_eq!(other_mine["revision"], 0);
+    assert_eq!(other_mine["display"]["special"][14], 2000);
+    assert_eq!(
+        ok(&app, "GET", &display_url, json!({}), c).await["revision"],
+        0
+    );
+    assert_eq!(
+        viewed(
+            &app,
+            "POST",
+            &display_url,
+            display_change(0, 2, "1"),
+            a,
+            "history"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut forged = display_change(0, 2, "1");
+    forged["view_creator"] = json!(accounts[1].id);
+    assert_eq!(
+        viewed(&app, "POST", &display_url, forged, a, "mine")
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        visible(
+            &app,
+            "GET",
+            &format!("/api/days/{period}"),
+            json!({}),
+            b,
+            "shared"
+        )
+        .await["totals"]["stake"],
+        3000
+    );
     assert_eq!(
         viewed(&app, "GET", "/api/bootstrap", json!({}), c, &reserved)
             .await

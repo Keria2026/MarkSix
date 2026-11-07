@@ -1,13 +1,25 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { money, zodiacs, wave } from "../lib/types";
   import type { api as Api, Market } from "../lib/types";
-  import { readReceived, receivedSummary } from "../lib/received";
-  import type { ReceivedDistribution, ReceivedKind } from "../lib/received";
+  import { receivedSummary } from "../lib/received";
+  import {
+    readReceivedDisplay,
+    type ReceivedDisplay,
+  } from "../lib/received-display";
+  import ReceivedDeduction from "./ReceivedDeduction.svelte";
+  import type { ReceivedKind } from "../lib/received";
   let {
     api,
     period,
     revision,
-  }: { api: typeof Api; period: string; revision: unknown } = $props();
+    readonly = false,
+  }: {
+    api: typeof Api;
+    period: string;
+    revision: unknown;
+    readonly?: boolean;
+  } = $props();
   const categories: { kind: ReceivedKind; title: string }[] = [
     { kind: "special", title: "特码" },
     { kind: "zodiac", title: "一肖中" },
@@ -16,16 +28,32 @@
   let selected = $state<ReceivedKind>("special");
   let market = $state<Market>("macau");
   let layout = $state<"list" | "grid">("list");
-  let data = $state<ReceivedDistribution | null>(null);
+  let data = $state<ReceivedDisplay | null>(null);
+  let editor = $state<{
+    period: string;
+    market: Market;
+    kind: ReceivedKind;
+    title: string;
+    snapshot: ReceivedDisplay;
+    restore: boolean;
+  } | null>(null);
+  let saved = $state("");
   let loadedPeriod = $state("");
   let loadedMarket = $state<Market | null>(null);
   let busy = $state(false);
   let error = $state("");
   let retry = $state(0);
+  let editorTrigger: HTMLElement | null = null;
+  let focusAfterLoad: HTMLElement | null = null;
   const current = $derived(
     loadedPeriod === period && loadedMarket === market ? data : null,
   );
-  const summary = $derived(current ? receivedSummary(current[selected]) : null);
+  const summary = $derived(
+    current ? receivedSummary(current.display[selected]) : null,
+  );
+  const deducted = $derived(
+    current ? receivedSummary(current.deducted[selected]).total : 0n,
+  );
   const title = $derived(categories.find((c) => c.kind === selected)!.title);
   $effect(() => {
     const id = period;
@@ -36,14 +64,14 @@
     busy = true;
     error = "";
     void api<unknown>(
-      `/periods/${id}/received-distribution?combined=true&market=${requestedMarket}`,
+      `/periods/${id}/received-display?market=${requestedMarket}`,
       {
         signal: controller.signal,
       },
     )
       .then((value) => {
         if (controller.signal.aborted) return;
-        data = readReceived(value);
+        data = readReceivedDisplay(value);
         loadedPeriod = id;
         loadedMarket = requestedMarket;
       })
@@ -51,11 +79,62 @@
         if (!controller.signal.aborted)
           error = e instanceof Error ? e.message : "受注分布加载失败，请重试";
       })
-      .finally(() => {
-        if (!controller.signal.aborted) busy = false;
+      .finally(async () => {
+        if (controller.signal.aborted) return;
+        busy = false;
+        const trigger = focusAfterLoad;
+        focusAfterLoad = null;
+        if (trigger) {
+          await tick();
+          if (
+            trigger.isConnected &&
+            (document.activeElement === document.body ||
+              document.activeElement === trigger)
+          ) {
+            const target = trigger.matches(":disabled")
+              ? trigger
+                  .closest(".received-controls")
+                  ?.querySelector<HTMLButtonElement>("button:not(:disabled)")
+              : trigger;
+            target?.focus({ preventScroll: true });
+          }
+        }
       });
     return () => controller.abort();
   });
+  $effect(() => {
+    if (editor && (editor.period !== period || editor.market !== market))
+      editor = null;
+  });
+  $effect(() => {
+    market;
+    selected;
+    saved = "";
+  });
+  function open(restore = false) {
+    if (current && !busy && !readonly) {
+      editorTrigger =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      saved = "";
+      editor = {
+        period,
+        market,
+        kind: selected,
+        title,
+        snapshot: current,
+        restore,
+      };
+    }
+  }
+  function complete() {
+    const restore = editor?.restore;
+    editor = null;
+    saved = restore ? "已恢复原受注显示" : "已减出，仅调整首页显示";
+    focusAfterLoad = editorTrigger;
+    retry++;
+  }
   function move(event: KeyboardEvent, index: number) {
     const next =
       event.key === "ArrowRight"
@@ -80,9 +159,23 @@
   <div class="received-heading">
     <div>
       <h2>受注金额分布</h2>
-      <p>全部投注人 · {market === "hk" ? "香港" : "新澳门"} · 原受注本金</p>
+      <p>
+        全部投注人 · {market === "hk" ? "香港" : "新澳门"} · {deducted > 0n
+          ? "已扣除首页减出"
+          : "原受注本金"}
+      </p>
     </div>
     <div class="received-controls">
+      {#if !readonly}<button
+          class="button secondary"
+          disabled={busy || !summary || summary.total === 0n || !!error}
+          onclick={() => open()}>减出</button
+        >
+        <button
+          class="button secondary"
+          disabled={busy || deducted === 0n || !!error}
+          onclick={() => open(true)}>恢复显示</button
+        >{/if}
       <div
         class="segmented received-market"
         role="group"
@@ -146,9 +239,12 @@
         >
       </div>
     {:else if summary}
+      {#if saved}<p class="received-note" role="status">{saved}</p>{/if}
       <div class="received-summary">
         <div>
-          <span>{title}受注总额</span><strong>{money(summary.total)}</strong>
+          <span>{title}{deducted > 0n ? "显示总额" : "受注总额"}</span><strong
+            >{money(summary.total)}</strong
+          >
         </div>
         <div>
           <span>平均每项</span><strong>{money(summary.average)}</strong>
@@ -161,11 +257,16 @@
           >
         </div>
       </div>
+      {#if deducted > 0n}<p class="received-note">
+          本板块累计减出 {money(deducted)}，仅影响首页展示。
+        </p>{/if}
       <p class="received-note">
         平均按全部 {summary.cells.length} 项计算，包含未受注项。{busy
           ? "正在更新…"
           : summary.total === 0n
-            ? "本日暂无该类受注。"
+            ? deducted > 0n
+              ? "本板块显示金额已全部减出。"
+              : "本日暂无该类受注。"
             : "高于平均的项目已标记。"}
       </p>
       <div
@@ -196,7 +297,12 @@
                 >{cell.excess === 0n
                   ? "超出不足 ¥ 0.01"
                   : `超出 ${money(cell.excess)}`}</small
-              >{:else}<small>{cell.amount === 0 ? "未受注" : "平均以内"}</small
+              >{:else}<small
+                >{cell.amount === 0
+                  ? current?.deducted[selected][index]
+                    ? "已减出"
+                    : "未受注"
+                  : "平均以内"}</small
               >{/if}
           </div>
         {/each}
@@ -204,6 +310,24 @@
     {:else}<p class="empty-note" role="status">正在加载受注分布…</p>{/if}
   </div>
 </section>
+
+{#if editor}
+  <ReceivedDeduction
+    {api}
+    period={editor.period}
+    market={editor.market}
+    kind={editor.kind}
+    title={editor.title}
+    snapshot={editor.snapshot}
+    restore={editor.restore}
+    onclose={() => {
+      editor = null;
+      focusAfterLoad = editorTrigger;
+      retry++;
+    }}
+    onsuccess={complete}
+  />
+{/if}
 
 <style>
   .received-panel {

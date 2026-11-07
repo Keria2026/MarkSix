@@ -1,3 +1,4 @@
+import { receivedDisplayFixture } from "../model/received-display";
 import { test, expect } from "./scenario-fixtures";
 import AxeBuilder from "@axe-core/playwright";
 import type { Download, Page } from "@playwright/test";
@@ -97,7 +98,7 @@ async function workspace(page: Page, statement?: BettorStatement) {
     else if (path === "/api/license") json = { active: true, permanent: true };
     else if (path === "/api/bootstrap") json = boot;
     else if (path.endsWith("/statistics")) json = report;
-    else if (path.endsWith("/received-distribution")) {
+    else if (path.endsWith("/received-display")) {
       const special = Array(49).fill(0),
         zodiac = Array(12).fill(0),
         tail = Array(10).fill(0);
@@ -107,7 +108,7 @@ async function workspace(page: Page, statement?: BettorStatement) {
       zodiac[11] = 1200;
       tail[0] = 1000;
       tail[9] = 1000;
-      json = { special, zodiac, tail };
+      json = receivedDisplayFixture({ special, zodiac, tail });
     } else if (path.endsWith("/bet-filters"))
       json = {
         bettors: [
@@ -1226,7 +1227,7 @@ for (const width of [390, 1440]) {
     await expect(panel.locator(".received-grid")).toHaveClass(/received-list/);
     const refreshed = page.waitForResponse(
       (response) =>
-        response.url().includes("/received-distribution") && response.ok(),
+        response.url().includes("/received-display") && response.ok(),
     );
     await page.getByRole("button", { name: "刷新数据", exact: true }).click();
     await refreshed;
@@ -1246,32 +1247,26 @@ for (const width of [390, 1440]) {
 test("received distribution failure stays visible and retries without fabricating zeros", async ({
   page,
 }) => {
-  await page.route(
-    "**/api/periods/*/received-distribution?combined=true*",
-    (route) =>
-      route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
+  await page.route("**/api/periods/*/received-display?*", (route) =>
+    route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
   );
   // Newer routes take precedence; override the synthetic workspace handler after opening.
   await workspace(page);
-  await page.route(
-    "**/api/periods/*/received-distribution?combined=true*",
-    (route) =>
-      route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
+  await page.route("**/api/periods/*/received-display?*", (route) =>
+    route.fulfill({ status: 503, json: { error: "统计暂时不可用" } }),
   );
   await page.getByRole("button", { name: "刷新数据", exact: true }).click();
   const panel = page.getByRole("region", { name: "受注金额分布" });
   await expect(panel.getByRole("alert")).toContainText("统计暂时不可用");
   await expect(panel.getByRole("list")).toBeHidden();
-  await page.route(
-    "**/api/periods/*/received-distribution?combined=true*",
-    (route) =>
-      route.fulfill({
-        json: {
-          special: Array(49).fill(0),
-          zodiac: Array(12).fill(0),
-          tail: Array(10).fill(0),
-        },
+  await page.route("**/api/periods/*/received-display?*", (route) =>
+    route.fulfill({
+      json: receivedDisplayFixture({
+        special: Array(49).fill(0),
+        zodiac: Array(12).fill(0),
+        tail: Array(10).fill(0),
       }),
+    }),
   );
   await panel.getByRole("button", { name: "重试", exact: true }).click();
   await expect(panel.getByRole("listitem")).toHaveCount(49);
@@ -1285,23 +1280,20 @@ for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
     await workspace(page);
     const requested: string[] = [];
-    await page.route(
-      "**/api/periods/*/received-distribution?*",
-      async (route) => {
-        const market = new URL(route.request().url()).searchParams.get(
-          "market",
-        );
-        requested.push(market ?? "missing");
-        const special = Array(49).fill(0),
-          zodiac = Array(12).fill(0),
-          tail = Array(10).fill(0);
-        special[market === "hk" ? 1 : 0] = market === "hk" ? 49000 : 4900;
-        special[market === "hk" ? 2 : 48] = market === "hk" ? 49000 : 4900;
-        zodiac[0] = zodiac[11] = market === "hk" ? 6000 : 1200;
-        tail[0] = tail[9] = market === "hk" ? 5000 : 1000;
-        await route.fulfill({ json: { special, zodiac, tail } });
-      },
-    );
+    await page.route("**/api/periods/*/received-display?*", async (route) => {
+      const market = new URL(route.request().url()).searchParams.get("market");
+      requested.push(market ?? "missing");
+      const special = Array(49).fill(0),
+        zodiac = Array(12).fill(0),
+        tail = Array(10).fill(0);
+      special[market === "hk" ? 1 : 0] = market === "hk" ? 49000 : 4900;
+      special[market === "hk" ? 2 : 48] = market === "hk" ? 49000 : 4900;
+      zodiac[0] = zodiac[11] = market === "hk" ? 6000 : 1200;
+      tail[0] = tail[9] = market === "hk" ? 5000 : 1000;
+      await route.fulfill({
+        json: receivedDisplayFixture({ special, zodiac, tail }),
+      });
+    });
     const panel = page.getByRole("region", { name: "受注金额分布" });
     await expect(
       panel.getByRole("button", { name: "新澳门", exact: true }),
@@ -1342,27 +1334,28 @@ test("a late market response cannot overwrite the market selected after it", asy
   const gate = new Promise<void>((resolve) => (release = resolve));
   let entered = false,
     finished = false;
-  await page.route(
-    "**/api/periods/*/received-distribution?*",
-    async (route) => {
-      const hk =
-        new URL(route.request().url()).searchParams.get("market") === "hk";
-      if (hk) {
-        entered = true;
-        await gate;
-      }
-      const special = Array(49).fill(0);
-      special[0] = hk ? 98000 : 9800;
-      try {
-        await route.fulfill({
-          json: { special, zodiac: Array(12).fill(0), tail: Array(10).fill(0) },
-        });
-      } catch {
-      } finally {
-        if (hk) finished = true;
-      }
-    },
-  );
+  await page.route("**/api/periods/*/received-display?*", async (route) => {
+    const hk =
+      new URL(route.request().url()).searchParams.get("market") === "hk";
+    if (hk) {
+      entered = true;
+      await gate;
+    }
+    const special = Array(49).fill(0);
+    special[0] = hk ? 98000 : 9800;
+    try {
+      await route.fulfill({
+        json: receivedDisplayFixture({
+          special,
+          zodiac: Array(12).fill(0),
+          tail: Array(10).fill(0),
+        }),
+      });
+    } catch {
+    } finally {
+      if (hk) finished = true;
+    }
+  });
   const panel = page.getByRole("region", { name: "受注金额分布" });
   await panel.getByRole("button", { name: "香港", exact: true }).click();
   await expect.poll(() => entered).toBe(true);

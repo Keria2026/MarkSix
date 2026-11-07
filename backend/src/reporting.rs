@@ -191,14 +191,14 @@ pub(crate) async fn days(
     ))
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ReceivedDistribution {
-    special: Vec<i64>,
-    zodiac: Vec<i64>,
-    tail: Vec<i64>,
+    pub(crate) special: Vec<i64>,
+    pub(crate) zodiac: Vec<i64>,
+    pub(crate) tail: Vec<i64>,
 }
 impl ReceivedDistribution {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             special: vec![0; 49],
             zodiac: vec![0; 12],
@@ -235,12 +235,22 @@ pub(crate) async fn received_distribution(
 ) -> ApiResult<Json<ReceivedDistribution>> {
     let mut tx = state.pool.begin().await?;
     let scope = visible_scope(&state, &mut tx, &id, query.combined).await?;
+    let distribution = read_distribution(&mut tx, &scope, query.market).await?;
+    tx.commit().await?;
+    Ok(Json(distribution))
+}
+
+pub(crate) async fn read_distribution(
+    tx: &mut Transaction<'_, MySql>,
+    scope: &Scope,
+    market: Option<crate::market::Market>,
+) -> ApiResult<ReceivedDistribution> {
     let rows: Vec<(String, sqlx::types::Json<Vec<Atom>>)> = sqlx::query_as(&format!(
         "SELECT period_id,atoms FROM bets WHERE {} AND (? IS NULL OR market=?) AND status<>'cancelled' AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.kind')) IN ('number','zodiac','tail') AND JSON_UNQUOTE(JSON_EXTRACT(rule,'$.condition'))='all'",scope.bets()
     )).bind(&scope.key)
-        .bind(query.market.map(crate::market::Market::as_str))
-        .bind(query.market.map(crate::market::Market::as_str))
-        .fetch_all(&mut *tx).await?;
+        .bind(market.map(crate::market::Market::as_str))
+        .bind(market.map(crate::market::Market::as_str))
+        .fetch_all(&mut **tx).await?;
     let mut distribution = ReceivedDistribution::empty();
     for (period_id, atoms) in rows {
         let draw = scope
@@ -258,8 +268,7 @@ pub(crate) async fn received_distribution(
     checked_sum(distribution.special.iter().copied())?;
     checked_sum(distribution.zodiac.iter().copied())?;
     checked_sum(distribution.tail.iter().copied())?;
-    tx.commit().await?;
-    Ok(Json(distribution))
+    Ok(distribution)
 }
 
 #[cfg(test)]
