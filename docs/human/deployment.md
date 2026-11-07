@@ -48,7 +48,9 @@ sudo python3 configure.py \
 
 ## 发布
 
-推送开发变更至 `dev`，通过 Pull Request 验收后合并至 `master`。Actions 对该提交完成验证、镜像构建及运行检查，生成 Ubuntu 工件，再经 SSH 传输至服务器部署。
+推送开发变更至 `dev`，通过 Pull Request 验收后合并至 `master`。Actions 在 dev 完成验证、镜像构建及运行检查并保存 Ubuntu 工件。master 合并后仅选择同仓库成功的 dev CI 工件，核对完整代码树及验证任务后经 SSH 部署；缺少匹配工件时部署失败。生产版本显示经过验收的 dev 构建提交，工件按 Actions 保留期限过期。
+
+启用此流程时，在 `master` 分支规则中要求 `verify`、`images`、`release` 三项状态检查通过，并保留现有审查规则。先推送新工作流到 `dev` 并等待三项成功及部署工件生成，再合并工作流变更。后续修改需要重新通过 dev 检查；如果工件已过期，重新运行该版本的 dev CI 后再部署。
 
 首次发布会加载镜像、初始化数据库并申请 TLS 证书。发布结束后，检查 Actions 的部署结果及两个域名的 `/api/health`。
 

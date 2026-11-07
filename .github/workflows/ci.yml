@@ -15,6 +15,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
 jobs:
   frontend:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/master'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +68,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
   integration:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/master'
     # Playwright 1.58.2 supports Ubuntu 24.04; ubuntu-latest may select 26.04.
     runs-on: ubuntu-24.04
     services:
@@ -149,7 +151,7 @@ jobs:
           path: frontend/playwright-report
           retention-days: 7
   verify:
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/master')
     needs: [frontend, integration]
     runs-on: ubuntu-24.04
     steps:
@@ -178,6 +180,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
   images:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/master'
     runs-on: ubuntu-24.04
     env:
       DOCKER_BUILD_RECORD_UPLOAD: "false"
@@ -228,7 +231,7 @@ jobs:
           python3 ubuntu-package/verify.py
           bash -n ubuntu-package/hosted/*.sh
       - uses: actions/upload-artifact@v4
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/dev') || github.event_name == 'workflow_dispatch'
         with:
           name: image-package-input
           path: ubuntu-package/
@@ -236,7 +239,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
   release:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/dev') || github.event_name == 'workflow_dispatch'
     needs: [verify, images]
     runs-on: ubuntu-24.04
     steps:
@@ -249,7 +252,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         id: ubuntu-package
         with:
-          name: MarkSix-Ubuntu-x64
+          name: ${{ github.event_name == 'push' && 'marksix-verified-dev' || 'MarkSix-Ubuntu-x64' }}
           path: ubuntu-package/
           compression-level: 0
           retention-days: 30
@@ -294,7 +297,6 @@ jobs:
   deploy:
     name: Deploy MarkSix to VPS
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [verify, images, release]
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: production
@@ -306,6 +308,11 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+      - name: Find a validated matching dev artifact
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/select_dev_artifact.py >> "$GITHUB_OUTPUT"
       - name: Reject superseded master builds inside the production queue
         id: gate
         uses: actions/github-script@v7
@@ -318,11 +325,21 @@ jobs:
       - uses: actions/download-artifact@v4
         if: steps.gate.outputs.allowed == 'true'
         with:
-          name: MarkSix-Ubuntu-x64
+          name: marksix-verified-dev
           path: tested-release
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run_id }}
+      - name: Verify downloaded tested package
+        if: steps.gate.outputs.allowed == 'true'
+        env:
+          TESTED_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          python3 tested-release/verify.py
+          python3 -c 'import json, os; assert json.load(open("tested-release/manifest.json"))["version"] == os.environ["TESTED_SHA"]'
       - name: Transfer and deploy the tested artifact
         if: steps.gate.outputs.allowed == 'true'
         env:
+          TESTED_SHA: ${{ steps.source.outputs.sha }}
           VPS_HOST: ${{ vars.VPS_HOST }}
           VPS_USER: ${{ vars.VPS_USER }}
           VPS_PORT: ${{ vars.VPS_PORT }}
@@ -336,7 +353,7 @@ jobs:
           [[ "$VPS_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
           [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]]
           (( VPS_PORT >= 1 && VPS_PORT <= 65535 ))
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ -n "$VPS_KNOWN_HOSTS" && -n "$VPS_SSH_KEY" ]]
           [[ "$PUBLIC_APP_URL" == https://* && "$PUBLIC_ADMIN_URL" == https://* ]]
           install -d -m 700 "$HOME/.ssh"
@@ -359,20 +376,21 @@ jobs:
           package_bytes=$(python3 -c 'import tarfile; print(sum(m.size for m in tarfile.open("tested-release.tar")))')
           image_bytes=$(python3 -c 'import json; print(json.load(open("tested-release/manifest.json"))["image_unpacked_bytes"])')
           for bytes in "$archive_bytes" "$package_bytes" "$image_bytes" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT"; do [[ "$bytes" =~ ^[1-9][0-9]*$ ]]; done
-          receive_args="$GITHUB_SHA $GITHUB_RUN_NUMBER $GITHUB_RUN_ATTEMPT $archive_bytes $package_bytes $image_bytes"
+          receive_args="$TESTED_SHA $GITHUB_RUN_NUMBER $GITHUB_RUN_ATTEMPT $archive_bytes $package_bytes $image_bytes"
           ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "python3 - prepare $receive_args" < deploy/vps/receive.py
-          stage="/opt/marksix/releases/.incoming-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA"
+          stage="/opt/marksix/releases/.incoming-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT-$TESTED_SHA"
           scp "${ssh_options[@]}" -P "$VPS_PORT" tested-release.tar "$VPS_USER@$VPS_HOST:$stage/package.tar"
           ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "python3 - extract $receive_args" < deploy/vps/receive.py
-          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "sudo -n systemd-run --unit=marksix-deploy-$GITHUB_SHA-$GITHUB_RUN_ATTEMPT --collect --wait --pipe /bin/bash /opt/marksix/releases/$GITHUB_SHA/hosted/release.sh $GITHUB_SHA $VPS_USER $GITHUB_RUN_NUMBER $GITHUB_RUN_ATTEMPT"
+          ssh "${ssh_options[@]}" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "sudo -n systemd-run --unit=marksix-deploy-$TESTED_SHA-$GITHUB_RUN_ATTEMPT --collect --wait --pipe /bin/bash /opt/marksix/releases/$TESTED_SHA/hosted/release.sh $TESTED_SHA $VPS_USER $GITHUB_RUN_NUMBER $GITHUB_RUN_ATTEMPT"
       - name: Verify public domain routing
         if: steps.gate.outputs.allowed == 'true'
         env:
+          TESTED_SHA: ${{ steps.source.outputs.sha }}
           PUBLIC_APP_URL: ${{ vars.APP_URL }}
           PUBLIC_ADMIN_URL: ${{ vars.ADMIN_URL }}
         run: |
           set -euo pipefail
           [[ "$PUBLIC_APP_URL" == https://* && "$PUBLIC_ADMIN_URL" == https://* ]]
-          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_APP_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="hosted" and data["commit"]==os.environ["GITHUB_SHA"]'
-          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_ADMIN_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="authority" and data["commit"]==os.environ["GITHUB_SHA"]'
-          printf 'MarkSix production commit: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_APP_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="hosted" and data["commit"]==os.environ["TESTED_SHA"]'
+          curl --fail --silent --show-error --retry 3 --max-time 20 "${PUBLIC_ADMIN_URL%/}/api/site" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["mode"]=="authority" and data["commit"]==os.environ["TESTED_SHA"]'
+          printf 'MarkSix production commit: `%s`\n' "$TESTED_SHA" >> "$GITHUB_STEP_SUMMARY"
