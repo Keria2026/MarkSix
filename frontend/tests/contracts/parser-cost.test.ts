@@ -40,3 +40,12 @@ test("compound suffixes preserve both successive clauses and source bounds", () 
     expect(span.end).toBeGreaterThan(span.start);
   }
 });
+
+test("normalization preserves repeated exact configured spellings within its resource bound", () => {
+  const raw = "９".repeat(12000);
+  const started = performance.now();
+  const result = normalizeLanguage(raw, ["９", "９９"]);
+  expect(result.text).toBe(raw);
+  expect(result.spans).toHaveLength(raw.length);
+  expect(performance.now() - started).toBeLessThan(5000);
+}, 10000);

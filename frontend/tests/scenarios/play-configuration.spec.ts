@@ -260,7 +260,9 @@ test("account statement exports a real PNG archive and supports cancelling an ou
   });
   expect(response.ok()).toBe(true);
   await page.getByLabel("账单导出格式").selectOption("png");
-  const download = page.waitForEvent("download");
+  // This renders every bettor accumulated by the real ledger journeys. Image
+  // generation is a bounded batch job, rather than a 15-second control action.
+  const download = page.waitForEvent("download", { timeout: 60000 });
   await page.getByRole("button", { name: "导出账单（全部投注人）" }).click();
   const file = await download;
   expect(file.suggestedFilename()).toContain("png.zip");

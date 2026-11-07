@@ -49,3 +49,54 @@ export function monetaryLiteral(text: string): string | null {
   if (digit && last > 10n && !normalized.includes("零")) return null;
   return String(total + section + digit);
 }
+
+// Canonicalize only amount operators; ordinary words and configured play names
+// retain their spelling and source span.
+export const amountAliases: Record<string, string> = {
+  ...Object.fromEntries(
+    ["个", "個", "各", "各个", "各個", "每个", "每個", "每"].flatMap((prefix) =>
+      ["数字", "數字", "号码", "號碼"].map((noun) => [prefix + noun, "各数"]),
+    ),
+  ),
+  总: "合计",
+  个: "各",
+  個: "各",
+  每号: "各数",
+  个数: "各数",
+  各个数: "各数",
+  個數: "各数",
+  各個數: "各数",
+  个肖: "各肖",
+  個肖: "各肖",
+  个组: "各组",
+  個組: "各组",
+  各打: "各",
+  各买: "各",
+};
+
+export const amountMarkers = [
+  "各号",
+  ...Object.keys(amountAliases),
+  "各组",
+  "每组",
+  "每尾",
+  "一组",
+  "1组",
+  "各肖",
+  "各/",
+  "各数",
+  "各注",
+  "每个",
+  "每注",
+  "每肖",
+  "合计",
+  "各",
+  "共",
+  "下",
+  "x",
+  "X",
+  "×",
+  "*",
+  "$",
+  "/",
+];

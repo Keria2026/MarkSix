@@ -1,13 +1,103 @@
-import { monetaryLiteral } from "./amount";
+import { monetaryLiteral, amountMarkers, amountAliases } from "./amount";
+const choices = (words: string[]) =>
+  [...new Set(words)]
+    .sort((a, b) => b.length - a.length)
+    .map((word) => word.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+    .join("|");
+const numberMarkers = choices([
+  "各数",
+  "每号",
+  "各号",
+  ...Object.keys(amountAliases).filter(
+    (alias) => amountAliases[alias] === "各数",
+  ),
+]);
+const packageMarkers = choices([
+  "各肖",
+  "每肖",
+  ...Object.keys(amountAliases).filter(
+    (alias) => amountAliases[alias] === "各肖",
+  ),
+]);
+const numeral = "[零〇一二两三四五六七八九十百千万\\d]+(?:\\.\\d+)?";
+const repeatedNumberPrice = new RegExp(
+  "(?:" +
+    numberMarkers +
+    ")[ \t]*(" +
+    numeral +
+    ")[ \t]*(?:元|米|斤|块)?[，,][ \t]*是每个号码[ \t]*(" +
+    numeral +
+    ")[ \t]*(?:元|米|斤|块)?(?=[，,。；;\r\n]|$)",
+  "gu",
+);
+const previousClassifier = new RegExp(
+  "(" +
+    numberMarkers +
+    "|" +
+    packageMarkers +
+    ")[ \t]*" +
+    numeral +
+    "[ \t]*(?:元|米|斤|块)?[，, \t]*$",
+  "u",
+);
+const ocrPrice = new RegExp(
+  "((?:" +
+    choices(amountMarkers) +
+    ")[ \t]*)([0-9]+)[OoＯｏ](?=[ \t]*(?:元|米|斤|块|塊))",
+  "gu",
+);
 
 // Normalization is deliberately finite: unknown words survive for correction.
 // Each replacement retains its original interval, including reordered fields.
-export function normalizeLanguage(raw: string) {
+export function normalizeLanguage(raw: string, names: string[] = []) {
   let text = raw;
+  const protectedNames = [...new Set(names)]
+    .filter(Boolean)
+    .flatMap((name) => {
+      const ranges: { start: number; end: number; name: string }[] = [];
+      let start = raw.indexOf(name);
+      while (start >= 0) {
+        ranges.push({ start, end: start + name.length, name });
+        start = raw.indexOf(name, start + 1);
+      }
+      return ranges;
+    })
+    .sort((a, b) => a.start - b.start);
+  let furthest = 0;
+  const ends = protectedNames.map(
+    (name) => (furthest = Math.max(furthest, name.end)),
+  );
   let spans = Array.from({ length: raw.length }, (_, start) => ({
     start,
     end: start + 1,
   }));
+  function changesConfiguredName(
+    range: { start: number; end: number },
+    next: string,
+  ) {
+    let left = 0,
+      right = ends.length;
+    while (left < right) {
+      const mid = (left + right) >>> 1;
+      if (ends[mid] <= range.start) left = mid + 1;
+      else right = mid;
+    }
+    let protectedChange = false;
+    for (
+      let i = left;
+      i < protectedNames.length && protectedNames[i].start < range.end;
+      i++
+    ) {
+      if (
+        protectedNames[i].end > range.start &&
+        !next.includes(protectedNames[i].name)
+      ) {
+        protectedChange = true;
+        break;
+      }
+    }
+    return protectedChange;
+  }
   function replace(
     pattern: RegExp,
     render: string | ((match: RegExpExecArray) => string),
@@ -22,12 +112,15 @@ export function normalizeLanguage(raw: string) {
         end = start + match[0].length;
       const next = typeof render === "string" ? render : render(match);
       if (next === match[0]) continue;
-      pieces.push(text.slice(cursor, start), next);
-      for (let i = cursor; i < start; i++) mapped.push(spans[i]);
       const range = {
         start: spans[start]?.start ?? raw.length,
         end: spans[end - 1]?.end ?? raw.length,
       };
+      // Exact configured names and valid confirmed aliases own their spelling.
+      // Adjacent qualifiers may still change when they preserve that name.
+      if (changesConfiguredName(range, next)) continue;
+      pieces.push(text.slice(cursor, start), next);
+      for (let i = cursor; i < start; i++) mapped.push(spans[i]);
       for (let i = 0; i < next.length; i++) mapped.push(range);
       cursor = end;
     }
@@ -38,14 +131,16 @@ export function normalizeLanguage(raw: string) {
   }
   // Corrections, cancellations and unresolved historical references are not noise.
   if (
-    /作废|取消|先别|不要下|暂停|转发|引用|啊不|哦[，,]?是|算了|昨天|照旧|前面别动|不是.*那个|是不是这样/u.test(
+    /作废|取消|先别|不要下|暂停|转发|引用|啊不|哦[，,]?是|算了|昨天|前天|昨晚|明天|上(?:一)?期|下(?:一)?期|上次|照抄|同上|照旧|前面别动|不是.*那个|是不是这样/u.test(
       raw,
     )
   )
     return { text: raw, spans, review: true };
 
+  replace(/[０-９]/gu, (m) => m[0].normalize("NFKC"));
+
   replace(
-    /[連組複復試數碼龍馬雞豬藍綠]/gu,
+    /[連組複復試數碼龍馬雞豬藍綠個號]/gu,
     (m) =>
       ({
         連: "连",
@@ -61,10 +156,12 @@ export function normalizeLanguage(raw: string) {
         豬: "猪",
         藍: "蓝",
         綠: "绿",
+        個: "个",
+        號: "号",
       })[m[0]]!,
   );
   replace(
-    /[壹贰叁肆伍陆柒捌玖拾]/gu,
+    /[壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩塊]/gu,
     (m) =>
       ({
         壹: "一",
@@ -77,8 +174,34 @@ export function normalizeLanguage(raw: string) {
         捌: "八",
         玖: "九",
         拾: "十",
+        貳: "二",
+        參: "三",
+        陸: "六",
+        佰: "百",
+        仟: "千",
+        萬: "万",
+        兩: "两",
+        塊: "块",
       })[m[0]]!,
   );
+  // Issue labels at the start of a message/line are metadata, never selections
+  // or prices. Keep line breaks and the original span mapping for review.
+  replace(
+    /(^|[\r\n])[^\S\r\n]*(?:第[^\S\r\n]*)?[0-9０-９零〇一二两三四五六七八九十百千万]{1,12}[^\S\r\n]*期[^\S\r\n]*[:：]?[^\S\r\n]*/gu,
+    (m) => m[1],
+  );
+  replace(/[!！]/gu, "；");
+  replace(/𤠣/gu, "猴");
+  replace(/二中二[\s,，]*[韩韓含]特/gu, "二中二含特");
+  // The digit-letter confusion is bounded to a marked amount with currency;
+  // arbitrary letters in selections or notes must remain reviewable.
+  replace(ocrPrice, (m) => m[1] + m[2] + "0");
+  replace(/一甲数|一甲數|一个数|一個數/gu, "各数");
+  replace(
+    /([0-9]{1,2})码(?=[ \t]*[0-9]+(?:\.[0-9]+)?[ \t]*(?:元|米|块|塊))/gu,
+    (m) => m[1] + "号",
+  );
+
   replace(/散(?=[二三四五2345]+(?:有|友|连))/gu, "三");
   replace(/—{2,}/gu, " ");
   replace(/平特尾中/gu, "尾中");
@@ -87,12 +210,27 @@ export function normalizeLanguage(raw: string) {
     /(新[澳奥傲]|澳门|澳们)下(?=(?:[二三四五2345][ \t./、]*)+\s*(?:有|友|连|連|中|不))/gu,
     (m) => m[1],
   );
-  replace(
-    /各数([零〇一二两三四五六七八九十百千万\d]+)[，,]是每个号码([零〇一二两三四五六七八九十百千万\d]+)/gu,
-    (m) =>
-      monetaryLiteral(m[1]) === monetaryLiteral(m[2]) ? "各数" + m[1] : m[0],
+  replace(repeatedNumberPrice, (m) => {
+    const canonical = (value: string) =>
+      monetaryLiteral(value)?.replace(/(\.\d*?[1-9])0+$|\.0+$/u, "$1");
+    const first = canonical(m[1]);
+    return first !== undefined && first === canonical(m[2])
+      ? "各数" + first
+      : m[0];
+  });
+  // Financial explanations are not generic politeness. A redundant classifier
+  // may be removed only when the preceding explicit price already has that mode.
+  function precedingMode(index: number): "each" | "package" | undefined {
+    const marker = previousClassifier.exec(text.slice(0, index))?.[1];
+    return marker
+      ? /^(?:各肖|每肖)$/u.test(amountAliases[marker] ?? marker)
+        ? "package"
+        : "each"
+      : undefined;
+  }
+  replace(/这项是每肖[，,]不是总共[。.]?/gu, (m) =>
+    precedingMode(m.index!) === "package" ? "" : m[0],
   );
-  replace(/这项是每肖[，,]不是总共[。.]?/gu, "");
   replace(/([零〇一二两三四五六七八九十百千万\d]+)码那边是([0-9]+)号/gu, (m) =>
     Number(monetaryLiteral(m[1])) === Number(m[2]) ? m[2] + "号" : m[0],
   );
@@ -228,12 +366,22 @@ export function normalizeLanguage(raw: string) {
   );
   replace(/\n以上全是新澳[。.]?\s*$/gu, "");
   replace(
-    /(?:别弄成包肖|是包号那种|是每肖|是每个号码\s*[\d]+|是每个号码|每个号码)(?=[，,。；;]|$)/gu,
-    "",
+    /(?:别弄成包肖|是包号那种|是每肖|是每个号码|每个号码)(?=[，,。；;]|$)/gu,
+    (m) =>
+      precedingMode(m.index!) ===
+      (/是包号那种|是每肖/u.test(m[0]) ? "package" : "each")
+        ? ""
+        : m[0],
   );
   replace(
     /(?:不要把[鼠牛虎兔龙蛇马羊猴鸡狗猪]+也按每肖包|别的不要|不是总共)(?:[。.;；]|$)/gu,
-    "",
+    (m) =>
+      m[0].startsWith("别的不要") ||
+      (m[0].startsWith("不是总共")
+        ? precedingMode(m.index!) !== undefined
+        : precedingMode(m.index!) === "each")
+        ? ""
+        : m[0],
   );
   replace(/(?<=[鼠牛虎兔龙蛇马羊猴鸡狗猪])(?:两只|两肖)/gu, "");
   replace(/还是这([一二三四五六七八九\d]+)肖/gu, (m) => {
@@ -283,6 +431,7 @@ export function normalizeLanguage(raw: string) {
         start: spans[region.start].start,
         end: spans[region.end - 1].end,
       };
+      if (changesConfiguredName(range, region.next)) continue;
       text = text.slice(0, region.start) + region.next + text.slice(region.end);
       spans.splice(
         region.start,

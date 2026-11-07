@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { parseText, compileText } from "../frontend/src/lib/text-entry";
 import type { Play, SlipLine } from "../frontend/src/lib/types";
 import { textCases, type TextCase } from "../frontend/tests/model/text-slips";
+import { ruleBoundaryCases } from "../frontend/tests/model/text-rule-boundaries";
 import {
   price,
   totals,
@@ -18,8 +19,13 @@ const { values } = parseArgs({
     output: { type: "string", default: "test-results/text-entry-campaign" },
     "max-failures": { type: "string", default: "100" },
     vectors: { type: "string" },
+    suite: { type: "string", default: "standard" },
+    cases: { type: "string" },
   },
 });
+if (!["standard", "rules"].includes(values.suite!))
+  throw Error("Unknown text suite");
+const records: string[] = [];
 const seed = Number(values.seed),
   size = Number(values.size),
   maximum = Number(values["max-failures"]);
@@ -110,7 +116,10 @@ function check(record: TextCase) {
     return { reason: "lost-source-tail", rows };
   return null;
 }
-for (const record of textCases(rules, seed, size)) {
+for (const record of values.suite === "rules"
+  ? ruleBoundaryCases(seed, size)
+  : textCases(rules, seed, size)) {
+  if (values.cases) records.push(JSON.stringify(record));
   tested++;
   const family = (families[record.family] ??= { total: 0, exact: 0 });
   family.total++;
@@ -184,6 +193,7 @@ for (const record of textCases(rules, seed, size)) {
 }
 const report = {
   schema: 1,
+  suite: values.suite,
   seed,
   requested: size,
   tested,
@@ -213,5 +223,7 @@ if (values.vectors)
     resolve(values.vectors),
     JSON.stringify({ schema: 1, seed, vectors }) + "\n",
   );
+if (values.cases)
+  await writeFile(resolve(values.cases), records.join("\n") + "\n");
 console.log(JSON.stringify(report, null, 2));
 if (failures.length || tested !== size) process.exitCode = 1;
